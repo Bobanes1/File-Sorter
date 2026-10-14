@@ -1,13 +1,13 @@
 """End-to-end test: real Firefox downloads into a watched folder.
 
-Starts the sorter in watch mode (the built exe or `python -m file_sorter`), serves
+Starts the sorter in watch mode (the built exe, or `cargo run --release` by default), serves
 PDFs slowly from a local web server so Firefox's placeholder phase is exercised,
 lets headless Firefox download them, and checks they land in the right module
 folder, complete and exactly once.
 
     python tests/e2e_firefox.py [--exe dist/FileSorter.exe]
 
-Needs Firefox, geckodriver and `pip install selenium`. Not part of the pytest run.
+Needs Firefox, geckodriver and `pip install selenium`. Not part of `cargo test`.
 """
 
 from __future__ import annotations
@@ -17,14 +17,37 @@ import http.server
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from conftest import make_pdf  # noqa: E402
+
+
+def make_pdf(path: Path, text: str) -> Path:
+    """Write a minimal one-page PDF containing `text`."""
+    safe = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream = f"BT /F1 24 Tf 72 720 Td ({safe}) Tj ET".encode()
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, obj in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % i + obj + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    for off in offsets:
+        out += b"%010d 00000 n \n" % off
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+    path.write_bytes(bytes(out))
+    return path
 
 DOWNLOAD_SECONDS = 6  # how long each download takes; longer than the sorter's 2 s "stable" wait
 TIMEOUT = 90
@@ -109,7 +132,7 @@ def listing(root: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exe", help="path to FileSorter.exe; default runs python -m file_sorter")
+    parser.add_argument("--exe", help="path to FileSorter.exe; default runs cargo run --release")
     args = parser.parse_args()
 
     work = Path(tempfile.mkdtemp(prefix="fs-e2e-"))
@@ -142,7 +165,7 @@ def main() -> int:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
 
-    cmd = [args.exe] if args.exe else [sys.executable, "-m", "file_sorter"]
+    cmd = [args.exe] if args.exe else ["cargo", "run", "--release", "--quiet", "--"]
     log_path = work / "sorter-output.txt"
     log_fh = open(log_path, "w")
     repo = Path(__file__).resolve().parent.parent

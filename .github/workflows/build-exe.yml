@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Create a GitHub release with this tag (e.g. v0.2). Leave empty to only build."
+        description: "Create a GitHub release with this tag (e.g. v0.4). Leave empty to only build."
         required: false
         default: ""
 
@@ -20,40 +20,71 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt pyinstaller
+      - uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: python -m pytest -q
+        run: cargo test --release
 
       - name: Build FileSorter.exe
-        run: pyinstaller --noconfirm --clean FileSorter.spec
+        run: |
+          cargo build --release
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\file-sorter.exe dist\FileSorter.exe
 
-      - name: Smoke-test the exe
+      - name: Smoke-test the exe (sort once)
         shell: pwsh
         run: |
           $root = Join-Path $env:RUNNER_TEMP "smoke"
           New-Item -ItemType Directory -Force "$root\Downloads" | Out-Null
-          python -c "import sys; sys.path.insert(0, 'tests'); from pathlib import Path; from conftest import make_pdf, make_pptx; d = Path(sys.argv[1]); make_pdf(d / 'week1.pdf', 'Intro to Programming'); make_pptx(d / 'slides.pptx', 'Matrix basics')" "$root\Downloads"
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\week1.pptx"
+          Copy-Item tests\fixtures\analysis_chromium.pdf "$root\Downloads\vorlesung4.pdf"
           @{
             watch_folder = "$root\Downloads"
-            destination_root = "$root\University"
+            destination_root = "$root\Studium"
             courses = @(
-              @{ name = "Programming Course"; keywords = @("programming") },
-              @{ name = "Linear Algebra"; keywords = @("matrix") }
+              @{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("programming") },
+              @{ name = "Analysis I"; subject = "Mathematik"; keywords = @("analysis i") }
             )
           } | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
           $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--config", "`"$root\config.json`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
-          if (-not (Test-Path "$root\University\Programming Course\week1.pdf")) { throw "PDF was not sorted" }
-          if (-not (Test-Path "$root\University\Linear Algebra\slides.pptx")) { throw "PPTX was not sorted" }
+          Get-Content "$root\file-sorter.log"
+          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\week1.pptx")) { throw "PPTX was not sorted" }
+          if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\vorlesung4.pdf")) { throw "PDF was not sorted" }
           Write-Host "exe sorted both files correctly"
+
+      - name: Smoke-test the window (wgpu)
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "gui"
+          New-Item -ItemType Directory -Force "$root\Downloads", "$root\Studium\Informatik\Programmierung 1", "$root\Studium\Mathematik\Analysis II" | Out-Null
+          @{ watch_folder = "$root\Downloads"; destination_root = "$root\Studium" } | ConvertTo-Json | Set-Content "$root\config.json"
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--config", "`"$root\config.json`"" -PassThru
+          Start-Sleep -Seconds 10
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          $bmp.Save("$env:RUNNER_TEMP\window.png")
+          if ($p.HasExited) {
+            Get-Content "$root\file-sorter.log" -ErrorAction SilentlyContinue
+            throw "the window closed by itself (exit code $($p.ExitCode))"
+          }
+          Stop-Process -Id $p.Id
+          Write-Host "window opened and stayed up"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: window-screenshot
+          path: ${{ runner.temp }}/window.png
+          if-no-files-found: ignore
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Real Firefox download test
         run: |
@@ -75,6 +106,6 @@ jobs:
           name: File Sorter ${{ inputs.release_tag || github.ref_name }}
           files: dist/FileSorter.exe
           body: |
-            Download **FileSorter.exe** below and double-click it – no Python needed.
+            Download **FileSorter.exe** below and double-click it – nothing else to install.
             Windows SmartScreen may warn because the exe isn't signed: click *More info → Run anyway*.
             See the README for setup and autostart instructions.

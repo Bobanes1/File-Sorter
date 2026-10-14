@@ -16,11 +16,11 @@ Download `Prog1_VL03.pdf` → it lands in `Studium\Informatik\Programmierung 1\`
 Download `vorlesung5.pdf` whose title page says "Lineare Algebra" → it lands in `Studium\Mathematik\Lineare Algebra\`.
 Everything that doesn't belong to a module stays in Downloads, untouched.
 
-Works on Windows, macOS and Linux.
+Written in Rust with an [egui](https://github.com/emilk/egui) window drawn through wgpu. Works on Windows, macOS and Linux.
 
 ## Windows: just use the .exe
 
-No Python needed.
+Nothing to install.
 
 1. On GitHub open the **Actions** tab → **Build Windows exe** → the latest green run → download **FileSorter-windows** under *Artifacts* (it's a zip containing `FileSorter.exe`). Released versions are on the **Releases** page (easiest).
 2. Put `FileSorter.exe` anywhere you like (e.g. `Documents\FileSorter\`) and double-click it.
@@ -28,27 +28,23 @@ No Python needed.
 
 To start it automatically at login: press `Win+R`, type `shell:startup`, and put a shortcut to `FileSorter.exe` there. Add `--headless` to the shortcut's *Target* to run it silently in the background with your saved settings (set up your modules in the window first).
 
-To build the exe yourself on a Windows PC with Python installed, double-click `build_exe.bat`; the result is `dist\FileSorter.exe`.
+The window is drawn with the graphics card (DirectX 12 or Vulkan). On PCs without one, Windows' built-in software renderer takes over automatically.
 
-## Install from source (any OS)
+## Build from source (any OS)
 
-You need **Python 3.10 or newer** ([python.org](https://www.python.org/downloads/)). On Windows, tick "Add Python to PATH" in the installer.
+You need [Rust](https://rustup.rs) (stable).
 
 ```bash
 git clone https://github.com/bobanes1/file-sorter.git
 cd file-sorter
-pip install -r requirements.txt
+cargo build --release      # → target/release/file-sorter(.exe)
 ```
 
-> Linux only: if you get `No module named 'tkinter'`, install it with `sudo apt install python3-tk` (Debian/Ubuntu) or `sudo dnf install python3-tkinter` (Fedora).
+> Linux only: the window needs the usual desktop libraries, e.g. on Debian/Ubuntu `sudo apt install libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers`.
 
 ## Use it
 
-```bash
-python -m file_sorter
-```
-
-A window opens:
+Double-click `FileSorter.exe` (or run `cargo run --release`). A window opens:
 
 1. **Watch (Downloads)** – the folder to watch. Defaults to your Downloads folder; pick any folder with *Browse…*.
 2. **Study folder** – your `Studium` folder, containing one folder per study program with the module folders inside.
@@ -84,14 +80,14 @@ You can turn off reading file contents in the window if you only want name-based
 ## Run it without a window / start automatically
 
 ```bash
-python -m file_sorter --headless   # watch in the background using saved settings
-python -m file_sorter --sort-now   # sort what's already in the folder once and exit
+FileSorter.exe --headless   # watch in the background using saved settings
+FileSorter.exe --sort-now   # sort what's already in the folder once and exit
 ```
 
 Set up your modules in the window once; the headless mode uses the same settings.
 
 **Windows:** press `Win+R`, type `shell:startup`, and create a shortcut there with target
-`pythonw -m file_sorter --headless` and "Start in" set to the `file-sorter` folder.
+`"C:\path\to\FileSorter.exe" --headless`.
 
 **macOS:** create `~/Library/LaunchAgents/com.filesorter.plist`:
 
@@ -101,14 +97,13 @@ Set up your modules in the window once; the headless mode uses the same settings
 <plist version="1.0"><dict>
   <key>Label</key><string>com.filesorter</string>
   <key>ProgramArguments</key><array>
-    <string>/usr/bin/python3</string><string>-m</string><string>file_sorter</string><string>--headless</string>
+    <string>/Users/YOU/file-sorter/target/release/file-sorter</string><string>--headless</string>
   </array>
-  <key>WorkingDirectory</key><string>/Users/YOU/file-sorter</string>
   <key>RunAtLoad</key><true/>
 </dict></plist>
 ```
 
-then run `launchctl load ~/Library/LaunchAgents/com.filesorter.plist`. (macOS may ask you to allow Python access to the Downloads folder under *System Settings → Privacy & Security → Files and Folders*.)
+then run `launchctl load ~/Library/LaunchAgents/com.filesorter.plist`. (macOS may ask you to allow file-sorter access to the Downloads folder under *System Settings → Privacy & Security → Files and Folders*.)
 
 **Linux:** create `~/.config/autostart/file-sorter.desktop`:
 
@@ -116,7 +111,7 @@ then run `launchctl load ~/Library/LaunchAgents/com.filesorter.plist`. (macOS ma
 [Desktop Entry]
 Type=Application
 Name=File Sorter
-Exec=sh -c "cd ~/file-sorter && python3 -m file_sorter --headless"
+Exec=sh -c "~/file-sorter/target/release/file-sorter --headless"
 X-GNOME-Autostart-enabled=true
 ```
 
@@ -128,7 +123,7 @@ X-GNOME-Autostart-enabled=true
 | macOS   | `~/Library/Application Support/FileSorter/config.json` |
 | Linux   | `~/.config/file-sorter/config.json` |
 
-It's plain JSON, so you can also edit it by hand. Use `--config path/to/config.json` to use a different file. A module can have an optional `"folder"` entry to send its files somewhere else entirely.
+It's plain JSON, so you can also edit it by hand. Settings from the earlier Python versions (v0.1/v0.2) keep working. Use `--config path/to/config.json` to use a different file. A module can have an optional `"folder"` entry to send its files somewhere else entirely.
 
 A log of everything the sorter did is written to `file-sorter.log` in the same folder. If something doesn't get sorted, that's the place to look.
 
@@ -141,10 +136,22 @@ If PDFs open in Firefox's built-in viewer instead of being downloaded, they neve
 ## Development
 
 ```bash
-pip install -r requirements-dev.txt
-python -m pytest
+cargo test                       # unit tests, incl. simulated Firefox/Chrome downloads
+cargo clippy --all-targets
 ```
+
+| File | What it does |
+|------|--------------|
+| `src/main.rs` | command line (`--headless`, `--sort-now`, `--config`), starts the window |
+| `src/gui.rs` | the egui window |
+| `src/watcher.rs` | watches the folder, waits for downloads to finish, rescans every 10 s |
+| `src/matcher.rs` | keyword scoring |
+| `src/extract.rs` | text from PDF / PPTX / DOCX |
+| `src/sorter.rs` | moving files (also across drives) |
+| `src/config.rs` | settings, module-folder import |
+
+`tests/e2e_firefox.py` downloads files with a real (headless) Firefox and checks they are sorted; it runs in CI on Windows (`pip install selenium`, then `python tests/e2e_firefox.py --exe dist/FileSorter.exe`).
 
 ### Making a release
 
-Push a tag like `v0.2`, or run the **Build Windows exe** workflow manually (Actions tab → *Run workflow*) and fill in *release_tag*. Either way the exe is built, tested and attached to a GitHub release.
+Push a tag like `v0.4`, or run the **Build Windows exe** workflow manually (Actions tab → *Run workflow*) and fill in *release_tag*. Either way the exe is built, tested and attached to a GitHub release.

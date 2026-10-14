@@ -1,0 +1,30 @@
+[package]
+name = "file-sorter"
+version = "0.3.0"
+edition = "2024"
+description = "Automatically sorts downloaded course files into study-program/module folders"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+dirs = "7.0.0"
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
+log = "0.4.34"
+# Same version pdf-extract uses, so documents can be passed between the two.
+lopdf = "0.42"
+notify = "8.2.0"
+pdf-extract = "0.12.1"
+quick-xml = "0.42.0"
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+unicode-normalization = "0.1.25"
+zip = { version = "9.0.3", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

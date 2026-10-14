@@ -7,7 +7,9 @@
 
 mod config;
 mod extract;
+mod fx;
 mod gui;
+mod i18n;
 mod keywords;
 mod logger;
 mod matcher;
@@ -48,6 +50,11 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     Ok(args)
+}
+
+/// Lock file next to the settings: only one File Sorter may watch at a time.
+pub fn watch_lock_path(config_path: &std::path::Path) -> PathBuf {
+    config_path.parent().map(|p| p.join("watch.lock")).unwrap_or_else(|| PathBuf::from("watch.lock"))
 }
 
 fn main() -> ExitCode {
@@ -98,7 +105,7 @@ fn main() -> ExitCode {
 
     // Headless: results are logged by the watcher itself.
     let watch_path = config.watch_path();
-    let mut watcher = watcher::FolderWatcher::new(config, Arc::new(|_| {}));
+    let mut watcher = watcher::FolderWatcher::new(config, Arc::new(|_| {})).with_lock(watch_lock_path(&args.config));
     if let Err(e) = watcher.start() {
         log::error!("{e}");
         return ExitCode::FAILURE;

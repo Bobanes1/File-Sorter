@@ -11,12 +11,35 @@ const FILENAME_WEIGHT: usize = 10;
 /// A keyword repeated 50 times in a PDF shouldn't outweigh several different keywords.
 const MAX_CONTENT_HITS_PER_KEYWORD: usize = 5;
 
+/// Why a file was matched to a module, with the keywords that matched.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reason {
+    FileName(Vec<String>),
+    Content(Vec<String>),
+}
+
+impl Reason {
+    pub fn keywords(&self) -> &[String] {
+        match self {
+            Reason::FileName(k) | Reason::Content(k) => k,
+        }
+    }
+
+    /// English description, for the log file.
+    pub fn describe(&self) -> String {
+        match self {
+            Reason::FileName(k) => format!("filename contains {}", k.join(", ")),
+            Reason::Content(k) => format!("content mentions {}", k.join(", ")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Match {
     /// Index into the course list that was passed in.
     pub course: usize,
     pub score: usize,
-    pub reason: String,
+    pub reason: Reason,
 }
 
 /// Lowercase, strip accents and turn separators like `_ - .` into spaces.
@@ -142,11 +165,7 @@ pub fn match_file(
     let name_scores: Vec<_> = courses.iter().map(|c| score_text(&name, c, None)).collect();
     if let Some((idx, _)) = best(&name_scores) {
         let (hits, kw) = &name_scores[idx];
-        return Some(Match {
-            course: idx,
-            score: hits * FILENAME_WEIGHT,
-            reason: format!("filename contains {}", kw.join(", ")),
-        });
+        return Some(Match { course: idx, score: hits * FILENAME_WEIGHT, reason: Reason::FileName(kw.clone()) });
     }
     if !read_contents {
         return None;
@@ -166,7 +185,7 @@ pub fn match_file(
         })
         .collect();
     let (idx, score) = best(&combined)?;
-    Some(Match { course: idx, score, reason: format!("content mentions {}", dedup(&combined[idx].1).join(", ")) })
+    Some(Match { course: idx, score, reason: Reason::Content(dedup(&combined[idx].1)) })
 }
 
 #[cfg(test)]
@@ -262,7 +281,8 @@ mod tests {
         let text = "Lecture 5: Linear Algebra\nEigenvalues of a matrix";
         let m = match_file(Path::new("lecture5.pdf"), &c, true, |_| text.into()).unwrap();
         assert_eq!(c[m.course].name, "Linear Algebra");
-        assert!(m.reason.starts_with("content mentions"));
+        assert!(matches!(m.reason, Reason::Content(_)));
+        assert!(m.reason.describe().starts_with("content mentions"));
     }
 
     #[test]

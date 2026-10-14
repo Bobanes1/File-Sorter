@@ -12,7 +12,9 @@ use notify::event::{ModifyKind, RenameMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::config::Config;
-use crate::sorter::{SortResult, TEMP_SUFFIXES, file_name, is_candidate, sort_existing, sort_file};
+use crate::sorter::{
+    LeftReason, Outcome, SortResult, TEMP_SUFFIXES, file_name, is_candidate, sort_existing, sort_file,
+};
 
 pub const STABLE_FOR: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -23,15 +25,41 @@ const DETECT_DELAY: Duration = Duration::from_secs(1);
 /// What the watcher reports back to the GUI (or the log in headless mode).
 #[derive(Debug, Clone)]
 pub enum WatchEvent {
-    Message(String),
+    /// A new file showed up; waiting for the download to finish.
+    Detected(String),
+    /// A file announced with `Detected` disappeared before it could be sorted.
+    Vanished(String),
     Result(SortResult),
 }
 
 impl WatchEvent {
+    /// English description, for the log file.
     pub fn text(&self) -> String {
         match self {
-            WatchEvent::Message(m) => m.clone(),
+            WatchEvent::Detected(name) => format!("Detected {name} – waiting for the download to finish…"),
+            WatchEvent::Vanished(name) => format!("{name} disappeared before it could be sorted"),
             WatchEvent::Result(r) => r.describe(),
+        }
+    }
+}
+
+/// Why watching could not start.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StartError {
+    NoFolder(PathBuf),
+    /// Another File Sorter (window or `--headless`) is already watching.
+    AlreadyRunning,
+    Other(String),
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartError::NoFolder(p) => write!(f, "Watch folder does not exist: {}", p.display()),
+            StartError::AlreadyRunning => {
+                write!(f, "File Sorter is already running and watching (another window or --headless)")
+            }
+            StartError::Other(e) => write!(f, "{e}"),
         }
     }
 }
@@ -110,6 +138,9 @@ struct Inner {
 pub struct FolderWatcher {
     inner: Arc<Inner>,
     watcher: Option<RecommendedWatcher>,
+    /// Lock file that keeps a second File Sorter from watching at the same time.
+    lock_path: Option<PathBuf>,
+    lock: Option<fs::File>,
 }
 
 impl FolderWatcher {
@@ -132,7 +163,15 @@ impl FolderWatcher {
                 move_lock: Mutex::new(()),
             }),
             watcher: None,
+            lock_path: None,
+            lock: None,
         }
+    }
+
+    /// Only one watcher per lock file may run at a time (across processes).
+    pub fn with_lock(mut self, lock_path: PathBuf) -> Self {
+        self.lock_path = Some(lock_path);
+        self
     }
 
     pub fn running(&self) -> bool {
@@ -144,16 +183,32 @@ impl FolderWatcher {
         *self.inner.config.write().unwrap() = config;
     }
 
-    pub fn start(&mut self) -> Result<(), String> {
+    pub fn start(&mut self) -> Result<(), StartError> {
         if self.running() {
             return Ok(());
         }
         let config = self.inner.config.read().unwrap().clone();
         let folder = config.watch_path();
         if !folder.is_dir() {
-            return Err(format!("Watch folder does not exist: {}", folder.display()));
+            return Err(StartError::NoFolder(folder));
         }
-        let folder = folder.canonicalize().map_err(|e| e.to_string())?;
+        let folder = folder.canonicalize().map_err(|e| StartError::Other(e.to_string()))?;
+        if let Some(lock_path) = &self.lock_path {
+            if let Some(dir) = lock_path.parent() {
+                let _ = fs::create_dir_all(dir);
+            }
+            let file = fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(lock_path)
+                .map_err(|e| StartError::Other(e.to_string()))?;
+            match file.try_lock() {
+                Ok(()) => self.lock = Some(file),
+                Err(fs::TryLockError::WouldBlock) => return Err(StartError::AlreadyRunning),
+                Err(fs::TryLockError::Error(e)) => return Err(StartError::Other(e.to_string())),
+            }
+        }
         *self.inner.folder.write().unwrap() = Some(folder.clone());
         if !config.sort_existing_on_start {
             let snapshot = candidates(&folder, &config).into_iter().map(|p| (file_name(&p), signature(&p))).collect();
@@ -168,8 +223,8 @@ impl FolderWatcher {
                 }
             }
         })
-        .map_err(|e| e.to_string())?;
-        watcher.watch(&folder, RecursiveMode::NonRecursive).map_err(|e| e.to_string())?;
+        .map_err(|e| StartError::Other(e.to_string()))?;
+        watcher.watch(&folder, RecursiveMode::NonRecursive).map_err(|e| StartError::Other(e.to_string()))?;
         self.watcher = Some(watcher);
         self.inner.running.store(true, Ordering::SeqCst);
 
@@ -178,7 +233,7 @@ impl FolderWatcher {
         thread::Builder::new()
             .name("file-sorter-rescan".into())
             .spawn(move || rescan_loop(inner, generation))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| StartError::Other(e.to_string()))?;
         if config.sort_existing_on_start {
             self.sort_existing_async();
         }
@@ -188,6 +243,7 @@ impl FolderWatcher {
     pub fn stop(&mut self) {
         self.inner.running.store(false, Ordering::SeqCst);
         self.watcher = None; // dropping the notify watcher stops the events
+        self.lock = None; // closing the file releases the lock
     }
 
     /// Sort the files already in the watch folder on a background thread.
@@ -297,10 +353,14 @@ fn handle(inner: &Arc<Inner>, path: &Path) {
     // Firefox briefly creates randomly named files that are renamed right away;
     // only announce files that are still around a moment later.
     thread::sleep(DETECT_DELAY.min(inner.stable_for));
-    if path.exists() || has_temp_sibling(path) {
-        message(inner, format!("Detected {name} – waiting for the download to finish…"));
+    let announced = path.exists() || has_temp_sibling(path);
+    if announced {
+        emit(inner, WatchEvent::Detected(name.clone()));
     }
     if !wait_until_complete(path, inner.stable_for, MAX_WAIT) || !inner.running.load(Ordering::SeqCst) {
+        if announced && !path.exists() {
+            emit(inner, WatchEvent::Vanished(name));
+        }
         return;
     }
     let result = {
@@ -310,23 +370,30 @@ fn handle(inner: &Arc<Inner>, path: &Path) {
     };
     {
         let mut ignore = inner.ignore.lock().unwrap();
-        if result.moved {
-            ignore.remove(&name);
-        } else {
-            ignore.insert(name, signature(path));
+        match &result.outcome {
+            Outcome::Moved { .. } | Outcome::DuplicateRemoved { .. } => {
+                ignore.remove(&name);
+            }
+            // Still open in another program: leave it out of the ignore list, so the
+            // next rescan tries again.
+            Outcome::Left(LeftReason::InUse { .. }) => {
+                ignore.remove(&name);
+            }
+            Outcome::Left(_) => {
+                ignore.insert(name, signature(path));
+            }
         }
     }
     report(inner, result);
 }
 
 fn report(inner: &Inner, result: SortResult) {
-    log::info!("{}", result.describe());
-    (inner.sink)(WatchEvent::Result(result));
+    emit(inner, WatchEvent::Result(result));
 }
 
-fn message(inner: &Inner, text: String) {
-    log::info!("{text}");
-    (inner.sink)(WatchEvent::Message(text));
+fn emit(inner: &Inner, event: WatchEvent) {
+    log::info!("{}", event.text());
+    (inner.sink)(event);
 }
 
 #[cfg(test)]
@@ -526,6 +593,48 @@ mod tests {
         h.watcher.update_config(cfg);
         make_pdf(&h.downloads().join("hausaufgabe3.pdf"), "x");
         assert!(wait_for(|| h.uni().join("Statistics").join("hausaufgabe3.pdf").exists()));
+    }
+
+    #[test]
+    fn only_one_watcher_per_lock() {
+        let mut first = Harness::new(|_| {});
+        let lock = first._tmp.path().join("cfg").join("watch.lock");
+        first.watcher = FolderWatcher::new(first.cfg.clone(), Arc::new(|_| {})).with_lock(lock.clone());
+        first.watcher.start().unwrap();
+
+        let mut second = FolderWatcher::new(first.cfg.clone(), Arc::new(|_| {})).with_lock(lock.clone());
+        assert_eq!(second.start().unwrap_err(), StartError::AlreadyRunning);
+
+        first.watcher.stop();
+        second.start().expect("the lock is free again after stopping");
+    }
+
+    #[test]
+    fn duplicate_download_is_removed_while_watching() {
+        let mut h = Harness::new(|_| {});
+        let folder = h.uni().join("Programming Course");
+        fs::create_dir_all(&folder).unwrap();
+        make_pdf(&folder.join("python_vl1.pdf"), "same");
+        h.watcher.start().unwrap();
+        make_pdf(&h.downloads().join("python_vl1.pdf"), "same");
+        assert!(wait_for(|| fs::read_dir(h.downloads()).unwrap().count() == 0));
+        let names: Vec<_> = fs::read_dir(&folder).unwrap().flatten().map(|e| file_name(&e.path())).collect();
+        assert_eq!(names, vec!["python_vl1.pdf"]);
+    }
+
+    #[test]
+    fn vanished_download_is_reported() {
+        let mut h = Harness::new(|_| {});
+        h.watcher.start().unwrap();
+        // A Firefox download in progress (placeholder + .part) that the user cancels.
+        let f = h.downloads().join("python_gone.pdf");
+        let part = h.downloads().join("python_gone.pdf.part");
+        fs::write(&f, "").unwrap();
+        fs::write(&part, "partial").unwrap();
+        assert!(wait_for(|| h.messages().iter().any(|m| m.starts_with("Detected python_gone.pdf"))));
+        fs::remove_file(&part).unwrap();
+        fs::remove_file(&f).unwrap();
+        assert!(wait_for(|| h.messages().iter().any(|m| m.contains("python_gone.pdf disappeared"))));
     }
 
     #[test]

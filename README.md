@@ -46,7 +46,9 @@ cargo build --release      # → target/release/file-sorter(.exe)
 
 ## Use it
 
-Double-click `FileSorter.exe` (or run `cargo run --release`). A window opens:
+Double-click `FileSorter.exe` (or run `cargo run --release`). A window opens – in German if Windows runs in German, otherwise in English; switch any time with **DE | EN** at the top right.
+
+At the top you see the status (a pulsing radar dot while watching) and four counters: files sorted today, downloads in progress, files that matched no module, and the number of modules.
 
 1. **Watch (Downloads)** – the folder to watch. Defaults to your Downloads folder; pick any folder with *Browse…*.
 2. **Study folder** – your `Studium` folder, containing one folder per study program with the module folders inside.
@@ -61,7 +63,7 @@ Double-click `FileSorter.exe` (or run `cargo run --release`). A window opens:
    The module name itself always counts as a keyword.
 
    Or let the program find them: select a module and click **Suggest keywords from files**. It reads the files already in that module's folder (names and the first pages) and adds terms that show up in several of them but hardly ever in your other modules, such as the module code (`inf 101`), the lecturer's name or recurring topics. Generic words like "Vorlesung" or "Übung" are skipped, and so are terms another module also uses, since those would make files ambiguous. Delete any line you don't want.
-5. Click **▶ Start watching**. The *Activity* box shows `Detected … – waiting for the download to finish…` as soon as a download starts, and `Moved … → Informatik › Programmierung 1` when it's sorted.
+5. Click **▶ Start watching**. Every download gets a card in *Activity*: it spins while the download is still running and turns green ("Moved to Informatik › Programmierung 1", with the matching keywords) once the file is sorted. At the same time a little file card flies into the module, which lights up and counts the file.
 
 *Add / Edit* let you create a module by hand (pick the study program, type the module name; the folder is created on the first file). Modules without a study program go directly into the study folder.
 
@@ -75,7 +77,9 @@ Settings are saved automatically when you start watching or close the window.
 2. **File name first:** the module name and each keyword are looked for as whole words (`ai` doesn't match `maintain`; `algorithm` matches `algorithms`; case, accents, `_`, `-` and `.` don't matter, and `INF101`, `INF-101` and `INF 101` are all the same).
 3. **Then the content:** if the file name doesn't point to exactly one module, the text of the first pages of PDFs, the first slides of PowerPoints, or the start of Word documents is read and scored the same way.
 4. The module with the most hits wins. With no hits, or a tie between two modules, the file is left where it is.
-5. If a file with the same name already exists in the module folder, the new one is saved as `name (1).pdf` – nothing is overwritten.
+5. Files are **moved**, never copied: after sorting, a file exists only in its module folder. If another program still has it open (the browser, a PDF preview, the virus scanner), the sorter waits for it and tries again a little later instead of leaving it in two places.
+6. If the **very same file** is already in the module folder (downloaded twice), the download is simply removed. If a *different* file with the same name is there (e.g. updated slides), the new one is saved as `name (1).pdf` – nothing is overwritten.
+7. Only one File Sorter watches at a time; starting a second one (another window or `--headless`) shows a message instead of both sorting the same files.
 
 **Tips for good keywords:** module codes (`INF-101`, `MA1`), short names used in file names (`prog1`, `linalg`), and the exact module title as it appears on the slides work best. Avoid generic words like `lecture` or `exercise` that appear in every module.
 
@@ -147,7 +151,9 @@ cargo clippy --all-targets
 | File | What it does |
 |------|--------------|
 | `src/main.rs` | command line (`--headless`, `--sort-now`, `--config`), starts the window |
-| `src/gui.rs` | the egui window |
+| `src/gui.rs` | the egui window (activity cards, flying files, statistics) |
+| `src/fx.rs` | theme, icons, easing and the animated drawings |
+| `src/i18n.rs` | all window texts in English and German |
 | `src/watcher.rs` | watches the folder, waits for downloads to finish, rescans every 10 s |
 | `src/matcher.rs` | keyword scoring |
 | `src/keywords.rs` | keyword suggestions from a module's files |

@@ -85,6 +85,9 @@ pub struct Config {
     pub read_file_contents: bool,
     pub sort_existing_on_start: bool,
     pub courses: Vec<Course>,
+    /// "de" or "en"; empty means: follow the system language.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 impl Default for Config {
@@ -96,6 +99,7 @@ impl Default for Config {
             read_file_contents: true,
             sort_existing_on_start: false,
             courses: Vec::new(),
+            language: None,
         }
     }
 }

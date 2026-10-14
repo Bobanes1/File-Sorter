@@ -102,7 +102,8 @@ def test_rescan_finds_files_without_events(config):
     """Files present at start are left alone; new ones are found even without an event."""
     w = config.watch_path()
     make_pdf(w / "old_python.pdf", "x")
-    watcher = FolderWatcher(config, stable_for=0.2, rescan_interval=3600)
+    results = []
+    watcher = FolderWatcher(config, on_result=results.append, stable_for=0.2, rescan_interval=3600)
     watcher.start()
     watcher._observer.stop()  # simulate lost events: only the rescan is left
     try:
@@ -113,12 +114,13 @@ def test_rescan_finds_files_without_events(config):
         assert _wait_for(lambda: (uni / "new_python.pdf").exists())
         assert (w / "old_python.pdf").exists()
 
-        results = []
-        watcher.on_result = results.append
-        assert _wait_for(lambda: "unrelated.pdf" in watcher._ignore)
+        def reports():
+            return sum(r.source.name == "unrelated.pdf" for r in results)
+
+        assert _wait_for(lambda: reports() == 1)
         watcher.rescan()
         time.sleep(0.8)
-        assert not any(r.source.name == "unrelated.pdf" for r in results), "unmatched file re-reported"
+        assert reports() == 1, "unmatched file re-reported"
     finally:
         watcher.stop()
 

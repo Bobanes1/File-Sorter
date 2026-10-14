@@ -58,7 +58,6 @@ impl SortResult {
         file_name(&self.source)
     }
 
-    #[cfg(test)]
     /// True when the file is gone from the watched folder (moved, or removed as a duplicate).
     pub fn moved(&self) -> bool {
         !matches!(self.outcome, Outcome::Left(_))
@@ -247,11 +246,41 @@ pub fn sort_file(path: &Path, config: &Config) -> SortResult {
 }
 
 pub fn sort_file_with_patience(path: &Path, config: &Config, patience: Duration) -> SortResult {
+    if !is_candidate(path, config) && path.is_file() {
+        return SortResult::left(path, LeftReason::NotDocument);
+    }
+    sort_any_file(path, config, patience)
+}
+
+/// Sort files and folders the user picked explicitly (right-click → "Sort with File Sorter").
+///
+/// A file is sorted whatever its type, since the user chose it; a folder stands for
+/// the document files directly inside it.
+pub fn sort_chosen(paths: &[PathBuf], config: &Config) -> Vec<SortResult> {
+    let mut results = Vec::new();
+    for path in paths {
+        if path.is_dir() {
+            let Ok(entries) = fs::read_dir(path) else { continue };
+            let mut files: Vec<PathBuf> =
+                entries.flatten().map(|e| e.path()).filter(|p| p.is_file() && is_candidate(p, config)).collect();
+            files.sort();
+            results.extend(files.iter().map(|f| sort_file(f, config)));
+        } else {
+            let name = file_name(path);
+            let temporary = TEMP_SUFFIXES.contains(&suffix(path).as_str()) || name.starts_with("~$");
+            results.push(if temporary {
+                SortResult::left(path, LeftReason::NotDocument)
+            } else {
+                sort_any_file(path, config, IN_USE_RETRY)
+            });
+        }
+    }
+    results
+}
+
+fn sort_any_file(path: &Path, config: &Config, patience: Duration) -> SortResult {
     if !path.is_file() {
         return SortResult::left(path, LeftReason::Gone);
-    }
-    if !is_candidate(path, config) {
-        return SortResult::left(path, LeftReason::NotDocument);
     }
     let Some(m) = match_file(path, &config.courses, config.read_file_contents, extract_text) else {
         return SortResult::left(path, LeftReason::NoMatch);
@@ -569,6 +598,34 @@ pub(crate) mod tests {
         assert!(src.exists());
         let folder = tmp.path().join("University").join("Programming Course");
         assert_eq!(fs::read_dir(&folder).map(|d| d.count()).unwrap_or(0), 0, "no copy left behind");
+    }
+
+    #[test]
+    fn chosen_files_of_any_type_and_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(tmp.path());
+        let elsewhere = tmp.path().join("Desktop");
+        fs::create_dir_all(&elsewhere).unwrap();
+        // A picture the user right-clicked: not a document type, but sorted anyway.
+        let picture = elsewhere.join("prog1_diagram.png");
+        fs::write(&picture, b"png").unwrap();
+        // A folder: its document files are sorted, not the folder itself.
+        let folder = tmp.path().join("Stuff");
+        fs::create_dir_all(&folder).unwrap();
+        make_pdf(&folder.join("stats_sheet.pdf"), "x");
+        fs::write(folder.join("notes.exe"), b"x").unwrap();
+        // A browser's unfinished download is never touched.
+        let partial = elsewhere.join("python.pdf.crdownload");
+        fs::write(&partial, b"x").unwrap();
+
+        let results = sort_chosen(&[picture.clone(), folder.clone(), partial.clone()], &cfg);
+        let uni = tmp.path().join("University");
+        assert!(uni.join("Programming Course/prog1_diagram.png").exists());
+        assert!(uni.join("Statistics/stats_sheet.pdf").exists());
+        assert!(folder.join("notes.exe").exists(), "only documents from a folder");
+        assert!(partial.exists());
+        assert_eq!(results.len(), 3);
+        assert!(!picture.exists());
     }
 
     #[test]

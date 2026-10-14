@@ -33,6 +33,22 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target\release\file-sorter.exe dist\FileSorter.exe
 
+      - name: Check the exe carries its icon and version info
+        shell: pwsh
+        run: |
+          # Without an icon inside the exe, a pinned taskbar shortcut shows a blank icon.
+          $exe = (Resolve-Path dist\FileSorter.exe).Path
+          $info = (Get-Item $exe).VersionInfo
+          Write-Host "FileDescription: $($info.FileDescription) / ProductName: $($info.ProductName) / Version: $($info.FileVersion)"
+          if ($info.FileDescription -ne "File Sorter") { throw "version info is missing from the exe" }
+          Add-Type -AssemblyName System.Drawing
+          $px = [System.Drawing.Icon]::ExtractAssociatedIcon($exe).ToBitmap().GetPixel(8, 8)
+          Write-Host "icon pixel (8,8): R=$($px.R) G=$($px.G) B=$($px.B) A=$($px.A)"
+          if (-not ($px.A -gt 200 -and $px.R -lt 90 -and $px.G -gt 140 -and $px.B -gt 150)) {
+            throw "the exe shows the generic Windows icon instead of the File Sorter icon"
+          }
+          Write-Host "exe has the File Sorter icon"
+
       - name: Smoke-test the exe (sort once)
         shell: pwsh
         run: |
@@ -77,6 +93,94 @@ jobs:
           Remove-Item $lnk, $other
           Write-Host "web mark removed from exe and own shortcut only"
 
+      - name: Smoke-test the right-click menu
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path dist\FileSorter.exe).Path
+          $root = Join-Path $env:RUNNER_TEMP "menu"
+          New-Item -ItemType Directory -Force "$root\Desktop\Folder" | Out-Null
+          Copy-Item tests\fixtures\programming.pptx "$root\Desktop\week2.pptx"
+          Copy-Item tests\fixtures\programming.pptx "$root\Desktop\week3.pptx"
+          Copy-Item tests\fixtures\analysis_chromium.pdf "$root\Desktop\Folder\vorlesung5.pdf"
+          Set-Content "$root\Desktop\shopping.txt" "milk, bread"
+          # The menu command has no --config, so it uses the normal per-user settings file.
+          $configDir = Join-Path $env:APPDATA "FileSorter"
+          New-Item -ItemType Directory -Force $configDir | Out-Null
+          @{
+            watch_folder = "$root\Downloads"
+            destination_root = "$root\Studium"
+            language = "de"
+            courses = @(
+              @{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("programming") },
+              @{ name = "Analysis I"; subject = "Mathematik"; keywords = @("analysis i") }
+            )
+          } | ConvertTo-Json -Depth 5 | Set-Content "$configDir\config.json"
+
+          $p = Start-Process $exe -ArgumentList "--register-menu" -NoNewWindow -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "--register-menu exited with $($p.ExitCode)" }
+          $commands = @{}
+          foreach ($kind in @("*", "Directory")) {
+            $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Software\Classes\$kind\shell\FileSorter")
+            if (-not $key) { throw "no menu entry for $kind" }
+            $label = $key.GetValue(""); $icon = $key.GetValue("Icon")
+            $commands[$kind] = $key.OpenSubKey("command").GetValue("")
+            Write-Host "$kind : '$label' icon=$icon command=$($commands[$kind])"
+            if ($label -ne "Mit File Sorter sortieren") { throw "unexpected label '$label'" }
+            if ($icon -ne "`"$exe`",0") { throw "unexpected icon '$icon'" }
+            if ($commands[$kind] -ne "`"$exe`" --sort `"%1`"") { throw "unexpected command" }
+          }
+
+          # Run the commands the way Explorer does: one process per selected item, all at once.
+          # Keep the mouse away so it doesn't pause the results window's countdown.
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          try { [System.Windows.Forms.Cursor]::Position = [System.Drawing.Point]::new($bounds.Width - 1, $bounds.Height - 1) } catch {}
+          $items = @(
+            @("*", "$root\Desktop\week2.pptx"), @("*", "$root\Desktop\week3.pptx"),
+            @("*", "$root\Desktop\shopping.txt"), @("Directory", "$root\Desktop\Folder")
+          )
+          $procs = foreach ($item in $items) {
+            $arguments = $commands[$item[0]].Substring($exe.Length + 3).Replace("%1", $item[1])
+            Start-Process $exe -ArgumentList $arguments -PassThru
+          }
+          $mostWindows = 0
+          $deadline = (Get-Date).AddSeconds(90)
+          while (($procs | Where-Object { -not $_.HasExited }) -and (Get-Date) -lt $deadline) {
+            $windows = 0
+            foreach ($proc in $procs) {
+              # A process can exit between the checks; reading its window then throws.
+              try { $proc.Refresh(); if (-not $proc.HasExited -and $proc.MainWindowHandle -ne 0) { $windows++ } } catch {}
+            }
+            if ($windows -gt $mostWindows) { $mostWindows = $windows }
+            if ($windows -ge 1 -and -not (Test-Path "$env:RUNNER_TEMP\results.png")) {
+              Start-Sleep -Seconds 2
+              $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+              [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+              $bmp.Save("$env:RUNNER_TEMP\results.png")
+            }
+            Start-Sleep -Milliseconds 250
+          }
+          Get-Content "$configDir\file-sorter.log" -ErrorAction SilentlyContinue
+          if ($procs | Where-Object { -not $_.HasExited }) { $procs | Stop-Process -ErrorAction SilentlyContinue; throw "the results window did not close by itself" }
+          foreach ($proc in $procs) { if ($proc.ExitCode -ne 0) { throw "a sort process exited with $($proc.ExitCode)" } }
+          Write-Host "windows open at the same time: $mostWindows"
+          if ($mostWindows -ne 1) { throw "expected exactly one results window for the whole selection, saw $mostWindows" }
+          foreach ($f in @("Informatik\Programmierung 1\week2.pptx", "Informatik\Programmierung 1\week3.pptx", "Mathematik\Analysis I\vorlesung5.pdf")) {
+            if (-not (Test-Path "$root\Studium\$f")) { throw "$f was not sorted" }
+          }
+          foreach ($f in @("week2.pptx", "week3.pptx", "Folder\vorlesung5.pdf")) {
+            if (Test-Path "$root\Desktop\$f") { throw "$f is still on the Desktop (copied instead of moved)" }
+          }
+          if (-not (Test-Path "$root\Desktop\shopping.txt")) { throw "the unmatched file was moved" }
+
+          $p = Start-Process $exe -ArgumentList "--unregister-menu" -NoNewWindow -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "--unregister-menu exited with $($p.ExitCode)" }
+          foreach ($kind in @("*", "Directory")) {
+            if ([Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Software\Classes\$kind\shell\FileSorter")) { throw "menu entry for $kind is still there" }
+          }
+          Remove-Item -Recurse $configDir
+          Write-Host "right-click sorting works for files and folders, with one results window"
+
       - name: Smoke-test the window (wgpu)
         shell: pwsh
         run: |
@@ -101,7 +205,9 @@ jobs:
         if: always()
         with:
           name: window-screenshot
-          path: ${{ runner.temp }}/window.png
+          path: |
+            ${{ runner.temp }}/window.png
+            ${{ runner.temp }}/results.png
           if-no-files-found: ignore
 
       - uses: actions/setup-python@v5

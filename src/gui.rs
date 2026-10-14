@@ -32,6 +32,7 @@ pub fn run(config_path: PathBuf) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("File Sorter")
+            .with_icon(Arc::new(app_icon()))
             .with_inner_size([940.0, 900.0])
             .with_min_inner_size([720.0, 640.0]),
         ..Default::default()
@@ -39,9 +40,14 @@ pub fn run(config_path: PathBuf) -> eframe::Result<()> {
     eframe::run_native("File Sorter", options, Box::new(move |cc| Ok(Box::new(App::new(cc, config_path)))))
 }
 
+/// The window and taskbar icon (the exe itself gets the same icon from build.rs).
+pub fn app_icon() -> egui::IconData {
+    egui::IconData { rgba: include_bytes!("../assets/icon-64.rgba").to_vec(), width: 64, height: 64 }
+}
+
 /// Things worth telling the user that aren't about a single file.
 #[derive(Debug, Clone)]
-enum Note {
+pub(crate) enum Note {
     Started(String),
     Stopped,
     Saved,
@@ -55,24 +61,39 @@ enum Note {
 }
 
 #[derive(Debug, Clone)]
-enum FileState {
+pub(crate) enum FileState {
     Waiting,
     Done(Outcome),
     Vanished,
 }
 
 #[derive(Debug, Clone)]
-enum CardKind {
+pub(crate) enum CardKind {
     File { name: String, state: FileState },
     Note(Note),
 }
 
 /// One entry in the activity feed. File cards change state in place (waiting → moved).
-struct Card {
-    kind: CardKind,
+pub(crate) struct Card {
+    pub(crate) kind: CardKind,
     born: f64,
     changed: f64,
     clock: String,
+}
+
+impl Card {
+    pub(crate) fn new(kind: CardKind, now: f64) -> Card {
+        Card { kind, born: now, changed: now, clock: chrono::Local::now().format("%H:%M").to_string() }
+    }
+
+    /// Where the file of this card ended up, if it was sorted.
+    pub(crate) fn destination(&self) -> Option<&std::path::Path> {
+        match &self.kind {
+            CardKind::File { state: FileState::Done(Outcome::Moved { destination, .. }), .. } => Some(destination),
+            CardKind::File { state: FileState::Done(Outcome::DuplicateRemoved { existing, .. }), .. } => Some(existing),
+            _ => None,
+        }
+    }
 }
 
 /// A file card flying from the Downloads field to its module's row.
@@ -181,6 +202,7 @@ impl App {
             app.note(Note::ConfigUnreadable { path, error });
         }
         app.sort_courses();
+        app.apply_context_menu();
         app
     }
 
@@ -201,8 +223,7 @@ impl App {
 
     fn push_card(&mut self, kind: CardKind) {
         let now = self.now();
-        let clock = chrono::Local::now().format("%H:%M").to_string();
-        self.cards.push(Card { kind, born: now, changed: now, clock });
+        self.cards.push(Card::new(kind, now));
         if self.cards.len() > MAX_CARDS {
             self.cards.remove(0);
         }
@@ -325,8 +346,14 @@ impl App {
         if self.lang != lang {
             self.lang = lang;
             self.config.language = Some(lang.code().to_string());
+            self.apply_context_menu();
             self.save_quietly();
         }
+    }
+
+    /// Add, refresh (exe moved, language changed) or remove the right-click menu entry.
+    fn apply_context_menu(&self) {
+        crate::desktop::apply_menu_setting(self.config.context_menu, self.lang.context_menu_label());
     }
 
     fn import_modules(&mut self, quiet: bool) {
@@ -603,6 +630,13 @@ impl App {
             ui.add_space(16.0);
             ui.checkbox(&mut self.config.sort_existing_on_start, lang.sort_existing_on_start());
         });
+        if cfg!(windows) {
+            let label = format!("{} {}", icon::CURSOR_CLICK, lang.context_menu_setting());
+            if ui.checkbox(&mut self.config.context_menu, label).on_hover_text(lang.context_menu_tooltip()).changed() {
+                self.apply_context_menu();
+                self.save_quietly();
+            }
+        }
     }
 
     // ---------- modules ----------
@@ -827,7 +861,11 @@ impl App {
             }
             let now = self.now();
             for card in self.cards.iter().rev() {
-                card_ui(ui, lang, card, now);
+                if card_ui(ui, lang, card, now).clicked()
+                    && let Some(path) = card.destination()
+                {
+                    crate::desktop::reveal(path);
+                }
             }
         });
     }
@@ -1124,7 +1162,8 @@ fn card_look(ui: &egui::Ui, lang: Lang, card: &Card) -> CardLook {
 }
 
 /// One card in the activity feed: slides in, flashes when its state changes.
-fn card_ui(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64) {
+/// Returns the card's response: clicking a sorted file's card shows it in its folder.
+pub(crate) fn card_ui(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64) -> egui::Response {
     let (glyph, color, title, line, detail) = card_look(ui, lang, card);
     let weak = ui.visuals().weak_text_color();
     let appear = fx::ease_out_cubic(((now - card.born) / CARD_APPEAR_SECS) as f32);
@@ -1133,54 +1172,66 @@ fn card_ui(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64) {
     } else {
         0.0
     };
-    ui.scope(|ui| {
-        ui.set_opacity(appear);
-        ui.horizontal(|ui| {
-            ui.add_space((1.0 - appear) * 36.0);
-            let base = ui.visuals().faint_bg_color;
-            let response = egui::Frame::new()
-                .fill(fx::lerp_color(base, color.gamma_multiply(0.30), flash))
-                .stroke(Stroke::new(1.0, color.gamma_multiply(0.30 + 0.6 * flash)))
-                .corner_radius(CornerRadius::same(10))
-                .inner_margin(Margin { left: 14, right: 10, top: 7, bottom: 7 })
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        if glyph.is_empty() {
-                            ui.add(egui::Spinner::new().size(22.0).color(color));
-                        } else {
-                            ui.label(RichText::new(glyph).size(22.0).color(color));
-                        }
-                        ui.vertical(|ui| {
-                            // Time on the right; the title takes the rest and is shortened if needed.
-                            ui.allocate_ui_with_layout(
-                                vec2(ui.available_width(), 20.0),
-                                Layout::right_to_left(Align::Center),
-                                |ui| {
-                                    ui.label(RichText::new(&card.clock).small().weak());
-                                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                        ui.add(egui::Label::new(RichText::new(&title).strong()).truncate())
-                                            .on_hover_text(&title);
-                                    });
-                                },
-                            );
-                            if let Some(line) = &line {
-                                let line_color = if color == weak { weak } else { color };
-                                ui.add(egui::Label::new(RichText::new(line).color(line_color)).wrap());
+    let response = ui
+        .scope(|ui| {
+            ui.set_opacity(appear);
+            ui.horizontal(|ui| {
+                ui.add_space((1.0 - appear) * 36.0);
+                let base = ui.visuals().faint_bg_color;
+                let response = egui::Frame::new()
+                    .fill(fx::lerp_color(base, color.gamma_multiply(0.30), flash))
+                    .stroke(Stroke::new(1.0, color.gamma_multiply(0.30 + 0.6 * flash)))
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(Margin { left: 14, right: 10, top: 7, bottom: 7 })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            if glyph.is_empty() {
+                                ui.add(egui::Spinner::new().size(22.0).color(color));
+                            } else {
+                                ui.label(RichText::new(glyph).size(22.0).color(color));
                             }
-                            if let Some(detail) = &detail {
-                                ui.add(egui::Label::new(RichText::new(detail).small().weak()).wrap());
-                            }
+                            ui.vertical(|ui| {
+                                // Time on the right; the title takes the rest and is shortened if needed.
+                                ui.allocate_ui_with_layout(
+                                    vec2(ui.available_width(), 20.0),
+                                    Layout::right_to_left(Align::Center),
+                                    |ui| {
+                                        ui.label(RichText::new(&card.clock).small().weak());
+                                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                            ui.add(egui::Label::new(RichText::new(&title).strong()).truncate())
+                                                .on_hover_text(&title);
+                                        });
+                                    },
+                                );
+                                if let Some(line) = &line {
+                                    let line_color = if color == weak { weak } else { color };
+                                    ui.add(egui::Label::new(RichText::new(line).color(line_color)).wrap());
+                                }
+                                if let Some(detail) = &detail {
+                                    ui.add(egui::Label::new(RichText::new(detail).small().weak()).wrap());
+                                }
+                            });
                         });
-                    });
-                })
-                .response;
-            // Coloured bar on the left edge.
-            let bar = Rect::from_min_size(response.rect.min, vec2(4.0, response.rect.height()));
-            ui.painter().rect_filled(bar, CornerRadius { nw: 10, sw: 10, ne: 0, se: 0 }, color);
-        });
-    });
+                    })
+                    .response;
+                // Coloured bar on the left edge.
+                let bar = Rect::from_min_size(response.rect.min, vec2(4.0, response.rect.height()));
+                ui.painter().rect_filled(bar, CornerRadius { nw: 10, sw: 10, ne: 0, se: 0 }, color);
+                response
+            })
+            .inner
+        })
+        .inner;
     ui.add_space(4.0);
+    if card.destination().is_some() {
+        let id = Id::new(("card", card.born.to_bits(), &card.clock));
+        ui.interact(response.rect, id, Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(lang.open_folder_hint())
+    } else {
+        response
+    }
 }
 
 impl eframe::App for App {

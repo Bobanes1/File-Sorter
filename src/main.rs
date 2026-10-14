@@ -6,6 +6,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod config;
+mod desktop;
 mod extract;
 mod fx;
 mod gui;
@@ -13,6 +14,7 @@ mod i18n;
 mod keywords;
 mod logger;
 mod matcher;
+mod quicksort;
 mod sorter;
 mod watcher;
 mod winfix;
@@ -24,29 +26,51 @@ use std::sync::Arc;
 use config::{default_config_path, load_config};
 
 const USAGE: &str = "\
-Usage: file-sorter [--config PATH] [--headless | --sort-now]
+Usage: file-sorter [--config PATH] [--headless | --sort-now | [--sort] FILE... [--quiet]]
 
-  (no options)   open the window
-  --headless     run without a window, only watching the folder
-  --sort-now     sort files already in the watch folder once, then exit
-  --config PATH  settings file (default: per-user config.json)";
+  (no options)      open the window
+  --headless        run without a window, only watching the folder
+  --sort-now        sort files already in the watch folder once, then exit
+  [--sort] FILE...  sort these files (or the documents in these folders) and show
+                    the result; this is what the right-click menu runs
+  --quiet           with --sort: no results window, only the log file
+  --register-menu   add \"Sort with File Sorter\" to the right-click menu (Windows)
+  --unregister-menu remove it again
+  --config PATH     settings file (default: per-user config.json)";
 
 struct Args {
     config: PathBuf,
     headless: bool,
     sort_now: bool,
+    /// Files to sort right away (right-click menu, or dropped onto the exe).
+    files: Vec<PathBuf>,
+    quiet: bool,
+    register_menu: Option<bool>,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args { config: default_config_path(), headless: false, sort_now: false };
+    let mut args = Args {
+        config: default_config_path(),
+        headless: false,
+        sort_now: false,
+        files: Vec::new(),
+        quiet: false,
+        register_menu: None,
+    };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--headless" => args.headless = true,
             "--sort-now" => args.sort_now = true,
+            "--sort" => {}
+            "--quiet" => args.quiet = true,
+            "--register-menu" => args.register_menu = Some(true),
+            "--unregister-menu" => args.register_menu = Some(false),
             "--config" => args.config = it.next().ok_or("--config needs a path")?.into(),
             "-h" | "--help" => return Err(String::new()),
-            other => return Err(format!("unknown option: {other}")),
+            other if other.starts_with("--") => return Err(format!("unknown option: {other}")),
+            // Anything else is a file or folder to sort (drag & drop onto the exe works too).
+            path => args.files.push(PathBuf::from(path)),
         }
     }
     Ok(args)
@@ -71,6 +95,24 @@ fn main() -> ExitCode {
     let log_file = args.config.parent().map(|p| p.join("file-sorter.log")).unwrap_or("file-sorter.log".into());
     logger::init(&log_file);
     winfix::unblock_self();
+
+    if let Some(enable) = args.register_menu {
+        let lang = load_config(&args.config)
+            .map(|c| i18n::Lang::from_setting(c.language.as_deref()))
+            .unwrap_or_else(|_| i18n::Lang::system());
+        let result =
+            if enable { desktop::register_menu(lang.context_menu_label()) } else { desktop::unregister_menu() };
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                log::error!("Could not change the right-click menu: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if !args.files.is_empty() {
+        return quicksort::run(&args.config, args.files, args.quiet);
+    }
 
     if !(args.headless || args.sort_now) {
         return match gui::run(args.config) {

@@ -28,6 +28,8 @@ Nothing to install.
 
 > **"Eine Anwendungssteuerungsrichtlinie hat diese Datei blockiert" when starting from the taskbar:** Windows marks downloaded files as "from the web", and Smart App Control blocks shortcuts made from such files. File Sorter removes that mark from itself and its own shortcuts every time it starts, so start `FileSorter.exe` once directly (double-click) and the taskbar shortcut works again. If it still doesn't: unpin it, right-click `FileSorter.exe` → *Properties* → tick **Unblock** → *OK*, and pin it again.
 
+> **Blank icon on the taskbar:** since v0.6 the icon is built into `FileSorter.exe`. If a shortcut you pinned with an older version still shows a blank icon, Windows is showing its cached copy: unpin it and pin it again once.
+
 To start it automatically at login: press `Win+R`, type `shell:startup`, and put a shortcut to `FileSorter.exe` there. Add `--headless` to the shortcut's *Target* to run it silently in the background with your saved settings (set up your modules in the window first).
 
 The window is drawn with the graphics card (DirectX 12 or Vulkan). On PCs without one, Windows' built-in software renderer takes over automatically.
@@ -71,6 +73,20 @@ At the top you see the status (a pulsing radar dot while watching) and four coun
 
 Settings are saved automatically when you start watching or close the window.
 
+Click a green activity card to open the module folder with that file selected.
+
+## Right-click: sort any file right away
+
+Like *Extract all…* for a zip: right-click a file and choose **Mit File Sorter sortieren** / **Sort with File Sorter**. A small window shows where it went (click a card to open the folder) and closes by itself after a few seconds (move the mouse over it to keep it open).
+
+- On **Windows 11** the entry is in the classic menu: right-click → **Weitere Optionen anzeigen** / **Show more options** (or hold `Shift` while right-clicking). Only signed apps can add entries to the short new menu.
+- Select **several files** (up to 15, a Windows limit for this kind of menu entry) and they are all sorted, with a single results window.
+- On a **folder** it sorts the documents inside (not its subfolders) – handy for a folder of slides you just unpacked from a zip.
+- Any file type works here, not only the document types the watcher looks at. Files that match no module stay where they are.
+- **Dragging** files onto `FileSorter.exe` (or a shortcut to it) does the same.
+
+The entry is added when you open File Sorter, and it follows the exe if you move it (open it once from the new place). Untick *Show «Sort with File Sorter» when right-clicking files and folders* in the window to remove it again. Nothing is installed system-wide: it lives in your own user's registry (`HKEY_CURRENT_USER\Software\Classes`).
+
 ## How it decides where a file goes
 
 1. Only document types are considered (`.pdf .pptx .ppt .docx .doc .key .odp .odt .txt .md .zip .ipynb .xlsx`). Unfinished downloads (`.crdownload`, `.part`, …) are ignored until the browser finishes them.
@@ -90,6 +106,8 @@ You can turn off reading file contents in the window if you only want name-based
 ```bash
 FileSorter.exe --headless   # watch in the background using saved settings
 FileSorter.exe --sort-now   # sort what's already in the folder once and exit
+FileSorter.exe --sort FILE_OR_FOLDER...  # what the right-click entry runs; add --quiet for no window
+FileSorter.exe --register-menu           # add the right-click entry (Windows), --unregister-menu removes it
 ```
 
 Set up your modules in the window once; the headless mode uses the same settings.
@@ -150,15 +168,19 @@ cargo clippy --all-targets
 
 | File | What it does |
 |------|--------------|
-| `src/main.rs` | command line (`--headless`, `--sort-now`, `--config`), starts the window |
+| `src/main.rs` | command line (`--headless`, `--sort-now`, `--sort`, `--config`, …), starts the window |
 | `src/gui.rs` | the egui window (activity cards, flying files, statistics) |
+| `src/quicksort.rs` | right-click sorting: collects all selected files into one run and shows the results window |
+| `src/desktop.rs` | the right-click menu entry (Windows registry), "show in folder" |
+| `src/winfix.rs` | removes Windows' "downloaded from the web" mark from the exe and its shortcuts |
+| `build.rs`, `assets/` | puts the icon and version info into the Windows exe (`assets/make_icon.py` draws the icon) |
 | `src/fx.rs` | theme, icons, easing and the animated drawings |
 | `src/i18n.rs` | all window texts in English and German |
 | `src/watcher.rs` | watches the folder, waits for downloads to finish, rescans every 10 s |
 | `src/matcher.rs` | keyword scoring |
 | `src/keywords.rs` | keyword suggestions from a module's files |
 | `src/extract.rs` | text from PDF / PPTX / DOCX |
-| `src/sorter.rs` | moving files (also across drives) |
+| `src/sorter.rs` | moving files (also across drives), duplicate handling |
 | `src/config.rs` | settings, module-folder import |
 
 `tests/e2e_firefox.py` downloads files with a real (headless) Firefox and checks they are sorted; it runs in CI on Windows (`pip install selenium`, then `python tests/e2e_firefox.py --exe dist/FileSorter.exe`).

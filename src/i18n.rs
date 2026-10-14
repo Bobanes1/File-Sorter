@@ -260,6 +260,44 @@ impl Lang {
         )
     }
 
+    // ---------- right-click menu and quick sorting ----------
+    pub fn context_menu_label(self) -> &'static str {
+        self.pick("Sort with File Sorter", "Mit File Sorter sortieren")
+    }
+    pub fn context_menu_setting(self) -> &'static str {
+        self.pick(
+            "Show «Sort with File Sorter» when right-clicking files and folders",
+            "«Mit File Sorter sortieren» im Rechtsklick-Menü von Dateien und Ordnern anzeigen",
+        )
+    }
+    pub fn context_menu_tooltip(self) -> &'static str {
+        self.pick(
+            "Right-click any file (or several) and choose «Sort with File Sorter» to sort it right away. On a \
+             folder it sorts the documents inside. On Windows 11 the entry is under «Show more options».",
+            "Rechtsklick auf eine oder mehrere Dateien → «Mit File Sorter sortieren» sortiert sie sofort ein. Bei \
+             einem Ordner werden die Dokumente darin sortiert. Unter Windows 11 steht der Eintrag unter «Weitere \
+             Optionen anzeigen».",
+        )
+    }
+    pub fn open_folder_hint(self) -> &'static str {
+        self.pick("Click to show the file in its folder", "Klicken, um die Datei in ihrem Ordner zu zeigen")
+    }
+    pub fn quick_sorting(self) -> &'static str {
+        self.pick("Sorting…", "Wird sortiert…")
+    }
+    pub fn quick_done(self, sorted: usize, total: usize) -> String {
+        self.fmt(format!("Done – {sorted} of {total} sorted"), format!("Fertig – {sorted} von {total} einsortiert"))
+    }
+    pub fn closes_in(self, seconds: u32) -> String {
+        self.fmt(format!("Closes in {seconds} s"), format!("Schliesst in {seconds} s"))
+    }
+    pub fn close(self) -> &'static str {
+        self.pick("Close", "Schliessen")
+    }
+    pub fn keep_open(self) -> &'static str {
+        self.pick("Keep open", "Offen lassen")
+    }
+
     // ---------- dialogs ----------
     pub fn add_module(self) -> &'static str {
         self.pick("Add module", "Modul hinzufügen")

@@ -37,8 +37,19 @@ pub fn extract_text(path: &Path) -> String {
     }
 }
 
+/// Load a PDF, tolerating extra bytes after its last `%%EOF` (lopdf only looks
+/// for the trailer near the very end of the file).
+fn load_pdf(path: &Path) -> Option<lopdf::Document> {
+    let data = fs::read(path).ok()?;
+    if let Ok(doc) = lopdf::Document::load_mem(&data) {
+        return Some(doc);
+    }
+    let end = data.windows(5).rposition(|w| w == b"%%EOF")? + 5;
+    lopdf::Document::load_mem(&data[..end]).ok()
+}
+
 fn pdf_text(path: &Path) -> Option<String> {
-    let mut doc = lopdf::Document::load(path).ok()?;
+    let mut doc = load_pdf(path)?;
     if doc.is_encrypted() && doc.decrypt("").is_err() {
         return None;
     }
@@ -209,6 +220,18 @@ mod tests {
         assert!(text.contains("Stats Sheet"), "{text}");
         assert!(text.contains("Statistics exercise sheet"), "{text}");
         assert!(text.contains("Probability and distributions"), "{text}");
+    }
+
+    #[test]
+    fn pdf_with_junk_after_end_marker() {
+        // Some PDFs carry extra bytes after %%EOF; the trailer must still be found.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("padded.pdf");
+        let mut data = fs::read(fixture("linear_algebra.pdf")).unwrap();
+        data.extend_from_slice(b"\n%");
+        data.extend(std::iter::repeat_n(b'x', 400_000));
+        fs::write(&path, data).unwrap();
+        assert!(extract_text(&path).contains("Linear Algebra"));
     }
 
     #[test]

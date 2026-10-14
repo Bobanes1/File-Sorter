@@ -99,7 +99,8 @@ def load_config(path: Path | None = None) -> Config:
     path = path or default_config_path()
     if not path.exists():
         return Config()
-    with open(path, encoding="utf-8") as fh:
+    # utf-8-sig: Notepad and PowerShell may add a byte-order mark when editing by hand.
+    with open(path, encoding="utf-8-sig") as fh:
         return Config.from_dict(json.load(fh))
 
 

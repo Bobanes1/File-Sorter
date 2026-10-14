@@ -8,7 +8,19 @@ Everything that doesn't belong to a course stays in Downloads, untouched.
 
 Works on Windows, macOS and Linux.
 
-## Install
+## Windows: just use the .exe
+
+No Python needed.
+
+1. On GitHub open the **Actions** tab → **Build Windows exe** → the latest green run → download **FileSorter-windows** under *Artifacts* (it's a zip containing `FileSorter.exe`). For tagged versions it's also attached to the **Releases** page.
+2. Put `FileSorter.exe` anywhere you like (e.g. `Documents\FileSorter\`) and double-click it.
+3. Windows SmartScreen may warn because the exe isn't code-signed: click **More info → Run anyway**.
+
+To start it automatically at login: press `Win+R`, type `shell:startup`, and put a shortcut to `FileSorter.exe` there. Add `--headless` to the shortcut's *Target* to run it silently in the background with your saved settings (set up your courses in the window first).
+
+To build the exe yourself on a Windows PC with Python installed, double-click `build_exe.bat`; the result is `dist\FileSorter.exe`.
+
+## Install from source (any OS)
 
 You need **Python 3.10 or newer** ([python.org](https://www.python.org/downloads/)). On Windows, tick "Add Python to PATH" in the installer.
 

@@ -20,6 +20,7 @@ STABLE_SECONDS = 2.0
 POLL_INTERVAL = 0.5
 MAX_WAIT_SECONDS = 600
 RESCAN_SECONDS = 10.0
+DETECT_DELAY = 1.0
 
 
 def has_temp_sibling(path: Path) -> bool:
@@ -182,12 +183,16 @@ class FolderWatcher:
             if name in self._pending:
                 return
             self._pending.add(name)
-        self._message(f"Detected {name} – waiting for the download to finish…")
         threading.Thread(target=self._handle, args=(self._folder / name,),
                          name="file-sorter-file", daemon=True).start()
 
     def _handle(self, path: Path) -> None:
         try:
+            # Firefox briefly creates randomly named files that are renamed right away;
+            # only announce files that are still around a moment later.
+            time.sleep(min(DETECT_DELAY, self.stable_for))
+            if path.exists() or has_temp_sibling(path):
+                self._message(f"Detected {path.name} – waiting for the download to finish…")
             if wait_until_complete(path, stable_for=self.stable_for) and self.running:
                 with self._move_lock:
                     result = sort_file(path, self.config)

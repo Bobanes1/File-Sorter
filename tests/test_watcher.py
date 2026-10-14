@@ -81,6 +81,16 @@ def test_firefox_download_matched_by_content(config, watcher, tmp_path):
     assert _wait_for(lambda: (Path(config.destination_root) / "Statistics" / "lecture7.pptx").exists())
 
 
+def test_short_lived_file_not_announced(config, watcher):
+    watcher.start()
+    tmp = config.watch_path() / "Qd_ZJYyR.pdf"
+    tmp.write_bytes(b"")
+    time.sleep(0.05)
+    tmp.unlink()
+    time.sleep(1.0)
+    assert not any("Qd_ZJYyR" in m for m in watcher.messages)
+
+
 def test_chrome_style_rename_and_unmatched_file(config, watcher):
     watcher.start()
     w = config.watch_path()

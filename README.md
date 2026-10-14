@@ -12,7 +12,7 @@ Works on Windows, macOS and Linux.
 
 No Python needed.
 
-1. On GitHub open the **Actions** tab → **Build Windows exe** → the latest green run → download **FileSorter-windows** under *Artifacts* (it's a zip containing `FileSorter.exe`). For tagged versions it's also attached to the **Releases** page.
+1. On GitHub open the **Actions** tab → **Build Windows exe** → the latest green run → download **FileSorter-windows** under *Artifacts* (it's a zip containing `FileSorter.exe`). Released versions are on the **Releases** page (easiest).
 2. Put `FileSorter.exe` anywhere you like (e.g. `Documents\FileSorter\`) and double-click it.
 3. Windows SmartScreen may warn because the exe isn't code-signed: click **More info → Run anyway**.
 
@@ -124,3 +124,7 @@ It's plain JSON, so you can also edit it by hand. Use `--config path/to/config.j
 pip install -r requirements-dev.txt
 python -m pytest
 ```
+
+### Making a release
+
+Push a tag like `v0.2`, or run the **Build Windows exe** workflow manually (Actions tab → *Run workflow*) and fill in *release_tag*. Either way the exe is built, tested and attached to a GitHub release.

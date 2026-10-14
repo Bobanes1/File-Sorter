@@ -66,7 +66,10 @@ jobs:
           Set-Content $lnk "fake shortcut"; Set-Content $other "other shortcut"
           foreach ($f in @("dist\FileSorter.exe", $lnk, $other)) { Set-Content -Path $f -Stream Zone.Identifier -Value $mark }
           $root = Join-Path $env:RUNNER_TEMP "smoke"
-          $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--config", "`"$root\config.json`"" -Wait -PassThru
+          # -NoNewWindow starts the exe directly. Through Explorer, Windows would first show its
+          # "downloaded from the internet" warning, which nobody can click here.
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--config", "`"$root\config.json`"" -NoNewWindow -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
           if (Get-Item dist\FileSorter.exe -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw "exe is still marked" }
           if (Get-Item $lnk -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw "taskbar shortcut is still marked" }
           if (-not (Get-Item $other -Stream Zone.Identifier -ErrorAction SilentlyContinue)) { throw "another program's shortcut was touched" }

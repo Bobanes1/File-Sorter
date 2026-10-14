@@ -123,9 +123,8 @@ def main() -> int:
         "watch_folder": str(downloads),
         "destination_root": str(work / "Studium"),
         "courses": [
-            {"name": "Programmierung 1", "subject": "Informatik", "keywords": ["prog1", "programmierung"],
-             "folder": str(prog)},
-            {"name": "Analysis I", "subject": "Mathematik", "keywords": ["analysis"], "folder": str(ana)},
+            {"name": "Programmierung 1", "subject": "Informatik", "keywords": ["prog1", "programmierung"]},
+            {"name": "Analysis I", "subject": "Mathematik", "keywords": ["analysis"]},
         ],
     }
     cfg = work / "config.json"

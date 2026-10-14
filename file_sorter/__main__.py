@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import signal
+import sys
 import threading
 from pathlib import Path
 
@@ -21,8 +23,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="sort files already in the watch folder once, then exit")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     config_path = args.config or default_config_path()
+    _setup_logging(config_path.parent / "file-sorter.log")
 
     if args.sort_now or args.headless:
         config = load_config(config_path)
@@ -33,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.sort_now:
             from .sorter import sort_existing
             for result in sort_existing(config):
-                print(result.describe())
+                logging.info(result.describe())
             return 0
         return _run_headless(config)
 
@@ -42,10 +44,32 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _setup_logging(log_file: Path) -> None:
+    """Log to the console when there is one, and always to a file next to the settings.
+
+    The Windows exe has no console, so the file is the only trace of what happened.
+    """
+    fmt = logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if sys.stderr is not None:
+        console = logging.StreamHandler()
+        console.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+        root.addHandler(console)
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=1,
+                                                       encoding="utf-8")
+        handler.setFormatter(fmt)
+        root.addHandler(handler)
+    except OSError:
+        pass
+
+
 def _run_headless(config) -> int:
     from .watcher import FolderWatcher
 
-    watcher = FolderWatcher(config, on_result=lambda r: logging.info(r.describe()))
+    watcher = FolderWatcher(config)  # results are logged by the watcher itself
     try:
         watcher.start()
     except FileNotFoundError as exc:

@@ -64,11 +64,11 @@ def sort_file(path: Path, config: Config) -> SortResult:
 
     folder = config.course_folder(match.course)
     if folder.resolve() == path.parent.resolve():
-        return SortResult(path, False, course=match.course.name, reason="already in course folder")
+        return SortResult(path, False, course=match.course.label, reason="already in course folder")
     folder.mkdir(parents=True, exist_ok=True)
     target = unique_destination(folder, path.name)
     shutil.move(str(path), str(target))
-    return SortResult(path, True, destination=target, course=match.course.name, reason=match.reason)
+    return SortResult(path, True, destination=target, course=match.course.label, reason=match.reason)
 
 
 def sort_existing(config: Config) -> list[SortResult]:

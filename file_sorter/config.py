@@ -37,8 +37,14 @@ def default_destination() -> str:
 class Course:
     name: str
     keywords: list[str] = field(default_factory=list)
-    # Optional custom folder; when empty the course goes to destination_root/name.
+    # Optional custom folder; when empty the course goes to destination_root/[subject/]name.
     folder: str = ""
+    # Study program the module belongs to (a folder directly under destination_root).
+    subject: str = ""
+
+    @property
+    def label(self) -> str:
+        return f"{self.subject} › {self.name}" if self.subject else self.name
 
 
 @dataclass
@@ -56,7 +62,10 @@ class Config:
     def course_folder(self, course: Course) -> Path:
         if course.folder:
             return Path(course.folder).expanduser()
-        return Path(self.destination_root).expanduser() / _safe_folder_name(course.name)
+        root = Path(self.destination_root).expanduser()
+        if course.subject:
+            root = root / _safe_folder_name(course.subject)
+        return root / _safe_folder_name(course.name)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -69,6 +78,7 @@ class Config:
                 name=str(c.get("name", "")).strip(),
                 keywords=[str(k).strip() for k in c.get("keywords", []) if str(k).strip()],
                 folder=str(c.get("folder", "") or ""),
+                subject=str(c.get("subject", "") or "").strip(),
             )
             for c in data.get("courses", [])
             if str(c.get("name", "")).strip()
@@ -112,3 +122,77 @@ def save_config(config: Config, path: Path | None = None) -> Path:
         json.dump(config.to_dict(), fh, indent=2, ensure_ascii=False)
     os.replace(tmp, path)
     return path
+
+
+# Words that say nothing about which module a file belongs to.
+STOPWORDS = {
+    "und", "oder", "der", "die", "das", "den", "dem", "des", "ein", "eine", "fur", "mit", "von",
+    "zur", "zum", "einfuhrung", "grundlagen", "vorlesung", "ubung", "ubungen", "seminar", "modul",
+    "kurs", "praktikum", "teil", "and", "the", "for", "with", "from", "introduction", "intro",
+    "basics", "fundamentals", "lecture", "course", "module", "seminar", "part",
+}
+
+
+# Short filler words dropped when building a module's core name ("Einführung in die Analysis I" → "analysis i").
+FILLER_WORDS = {"in", "im", "zu", "an", "am", "auf", "of", "to", "on", "a"}
+
+
+def _core_name(name: str) -> str:
+    from .matcher import normalise
+
+    return " ".join(w for w in normalise(name).split() if w not in STOPWORDS and w not in FILLER_WORDS)
+
+
+def _name_words(name: str) -> list[str]:
+    from .matcher import normalise
+
+    return [w for w in normalise(name).split() if len(w) > 3 and w not in STOPWORDS and not w.isdigit()]
+
+
+def scan_study_folder(root: Path) -> list[Course]:
+    """Find module folders laid out as root/<subject>/<module>.
+
+    Each module gets the significant words of its name as starter keywords; words
+    shared by several modules (e.g. "Analysis" in "Analysis I" and "Analysis II")
+    are left out because they can't tell the modules apart. The full module name
+    is matched anyway, which separates those, and so is its core name without
+    filler words ("Einführung in die Analysis I" → "analysis i").
+    """
+    from .matcher import normalise
+
+    root = Path(root).expanduser()
+    if not root.is_dir():
+        return []
+    found: list[Course] = []
+    for subject_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
+        for module_dir in sorted(p for p in subject_dir.iterdir() if p.is_dir() and not p.name.startswith(".")):
+            found.append(Course(name=module_dir.name, subject=subject_dir.name))
+
+    counts: dict[str, int] = {}
+    cores: dict[str, int] = {}
+    for course in found:
+        for word in set(_name_words(course.name)):
+            counts[word] = counts.get(word, 0) + 1
+        core = _core_name(course.name)
+        cores[core] = cores.get(core, 0) + 1
+    for course in found:
+        keywords = [w for w in dict.fromkeys(_name_words(course.name)) if counts[w] == 1]
+        # The name without filler words, if that differs from the full name and is unique.
+        core = _core_name(course.name)
+        if core and core not in keywords and cores[core] == 1 and core != normalise(course.name):
+            keywords.insert(0, core)
+        course.keywords = keywords
+    return found
+
+
+def merge_courses(existing: list[Course], found: list[Course]) -> int:
+    """Add modules from `found` that aren't in `existing` yet. Returns how many were added."""
+    known = {(c.subject.casefold(), c.name.casefold()) for c in existing}
+    added = 0
+    for course in found:
+        key = (course.subject.casefold(), course.name.casefold())
+        if key not in known:
+            existing.append(course)
+            known.add(key)
+            added += 1
+    return added

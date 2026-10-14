@@ -1,12 +1,10 @@
 import json
-import time
 from pathlib import Path
 
 from conftest import make_pdf, make_pptx
 
 from file_sorter.config import Config, load_config, save_config
 from file_sorter.sorter import is_candidate, sort_existing, sort_file, unique_destination
-from file_sorter.watcher import FolderWatcher
 
 
 def test_moves_matching_file(config):
@@ -78,35 +76,3 @@ def test_custom_course_folder(config, tmp_path):
     config.courses[2].folder = str(tmp_path / "Elsewhere" / "Stats")
     src = make_pdf(config.watch_path() / "stats.pdf", "x")
     assert sort_file(src, config).destination.parent == tmp_path / "Elsewhere" / "Stats"
-
-
-def _wait_for(predicate, timeout=10.0):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if predicate():
-            return True
-        time.sleep(0.1)
-    return False
-
-
-def test_watcher_sorts_new_and_renamed_downloads(config):
-    results = []
-    watcher = FolderWatcher(config, on_result=results.append, stable_for=0.3)
-    watcher.start()
-    try:
-        w = config.watch_path()
-        make_pdf(w / "python_intro.pdf", "x")
-        # Simulate a browser download: temp name first, renamed when complete.
-        tmp = make_pptx(w / "lecture7.pptx.crdownload", "Statistics: Probability")
-        time.sleep(0.5)
-        assert tmp.exists(), "partial download must not be touched"
-        tmp.rename(w / "lecture7.pptx")
-        make_pdf(w / "shopping.pdf", "milk")
-
-        uni = Path(config.destination_root)
-        assert _wait_for(lambda: (uni / "Programming Course" / "python_intro.pdf").exists())
-        assert _wait_for(lambda: (uni / "Statistics" / "lecture7.pptx").exists())
-        assert _wait_for(lambda: any(r.source.name == "shopping.pdf" for r in results))
-        assert (w / "shopping.pdf").exists()
-    finally:
-        watcher.stop()

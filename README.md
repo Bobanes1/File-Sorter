@@ -1,10 +1,20 @@
 # File Sorter
 
-Automatically moves the lecture slides, PDFs and other course files you download into the right course folder.
+Automatically moves the lecture slides, PDFs and other course files you download into the right module folder.
 
-Download `Prog1_Lecture03.pdf` → it lands in `University/Programming Course/`.
-Download `lecture5.pptx` whose title slide says "Linear Algebra" → it lands in `University/Linear Algebra/`.
-Everything that doesn't belong to a course stays in Downloads, untouched.
+```
+Studium\                      ← study folder
+├── Informatik\               ← study program
+│   ├── Programmierung 1\     ← module
+│   └── Datenbanken\
+└── Mathematik\
+    ├── Analysis II\
+    └── Lineare Algebra\
+```
+
+Download `Prog1_VL03.pdf` → it lands in `Studium\Informatik\Programmierung 1\`.
+Download `vorlesung5.pdf` whose title page says "Lineare Algebra" → it lands in `Studium\Mathematik\Lineare Algebra\`.
+Everything that doesn't belong to a module stays in Downloads, untouched.
 
 Works on Windows, macOS and Linux.
 
@@ -16,7 +26,7 @@ No Python needed.
 2. Put `FileSorter.exe` anywhere you like (e.g. `Documents\FileSorter\`) and double-click it.
 3. Windows SmartScreen may warn because the exe isn't code-signed: click **More info → Run anyway**.
 
-To start it automatically at login: press `Win+R`, type `shell:startup`, and put a shortcut to `FileSorter.exe` there. Add `--headless` to the shortcut's *Target* to run it silently in the background with your saved settings (set up your courses in the window first).
+To start it automatically at login: press `Win+R`, type `shell:startup`, and put a shortcut to `FileSorter.exe` there. Add `--headless` to the shortcut's *Target* to run it silently in the background with your saved settings (set up your modules in the window first).
 
 To build the exe yourself on a Windows PC with Python installed, double-click `build_exe.bat`; the result is `dist\FileSorter.exe`.
 
@@ -41,17 +51,19 @@ python -m file_sorter
 A window opens:
 
 1. **Watch (Downloads)** – the folder to watch. Defaults to your Downloads folder; pick any folder with *Browse…*.
-2. **Course folders in** – where the course folders are created (default `~/University`).
-3. **Add** a course for each class, e.g. `Programming Course`. The name becomes the folder name.
-4. Type **keywords** for the selected course, one per line: anything that appears in the file name or on the first slides/pages, such as
+2. **Study folder** – your `Studium` folder, containing one folder per study program with the module folders inside.
+3. Click **Import module folders** (happens automatically the first time you pick the study folder). Every `Study program \ Module` folder becomes an entry like `Informatik › Programmierung 1`, with starter keywords taken from the folder name. Run it again after creating new module folders; existing entries and keywords are kept.
+4. Select a module and add **keywords**, one per line: anything that appears in the file names or on the first slides/pages, such as
    ```
-   programming
    prog1
-   python
-   CS101
-   Prof. Smith
+   java
+   INF-101
+   Prof. Müller
    ```
-5. Click **▶ Start watching**. New downloads are sorted as soon as they finish downloading. The *Activity* box shows what was moved and why.
+   The module name itself always counts as a keyword.
+5. Click **▶ Start watching**. The *Activity* box shows `Detected … – waiting for the download to finish…` as soon as a download starts, and `Moved … → Informatik › Programmierung 1` when it's sorted.
+
+*Add / Edit* let you create a module by hand (pick the study program, type the module name; the folder is created on the first file). Modules without a study program go directly into the study folder.
 
 *Sort existing files now* cleans up files that are already sitting in the folder.
 
@@ -60,12 +72,12 @@ Settings are saved automatically when you start watching or close the window.
 ## How it decides where a file goes
 
 1. Only document types are considered (`.pdf .pptx .ppt .docx .doc .key .odp .odt .txt .md .zip .ipynb .xlsx`). Unfinished downloads (`.crdownload`, `.part`, …) are ignored until the browser finishes them.
-2. **File name first:** the course name and each keyword are looked for as whole words (`ai` doesn't match `maintain`; `algorithm` matches `algorithms`; case, accents, `_`, `-` and `.` don't matter).
-3. **Then the content:** if the file name doesn't point to exactly one course, the text of the first pages of PDFs, the first slides of PowerPoints, or the start of Word documents is read and scored the same way.
-4. The course with the most hits wins. With no hits, or a tie between two courses, the file is left where it is.
-5. If a file with the same name already exists in the course folder, the new one is saved as `name (1).pdf` – nothing is overwritten.
+2. **File name first:** the module name and each keyword are looked for as whole words (`ai` doesn't match `maintain`; `algorithm` matches `algorithms`; case, accents, `_`, `-` and `.` don't matter).
+3. **Then the content:** if the file name doesn't point to exactly one module, the text of the first pages of PDFs, the first slides of PowerPoints, or the start of Word documents is read and scored the same way.
+4. The module with the most hits wins. With no hits, or a tie between two modules, the file is left where it is.
+5. If a file with the same name already exists in the module folder, the new one is saved as `name (1).pdf` – nothing is overwritten.
 
-**Tips for good keywords:** course codes (`CS101`, `MA1`), short names used in file names (`prog1`, `linalg`), and the exact course title as it appears on the slides work best. Avoid generic words like `lecture` or `exercise` that appear in every course.
+**Tips for good keywords:** module codes (`INF-101`, `MA1`), short names used in file names (`prog1`, `linalg`), and the exact module title as it appears on the slides work best. Avoid generic words like `lecture` or `exercise` that appear in every module.
 
 You can turn off reading file contents in the window if you only want name-based sorting.
 
@@ -76,7 +88,7 @@ python -m file_sorter --headless   # watch in the background using saved setting
 python -m file_sorter --sort-now   # sort what's already in the folder once and exit
 ```
 
-Set up your courses in the window once; the headless mode uses the same settings.
+Set up your modules in the window once; the headless mode uses the same settings.
 
 **Windows:** press `Win+R`, type `shell:startup`, and create a shortcut there with target
 `pythonw -m file_sorter --headless` and "Start in" set to the `file-sorter` folder.
@@ -116,7 +128,15 @@ X-GNOME-Autostart-enabled=true
 | macOS   | `~/Library/Application Support/FileSorter/config.json` |
 | Linux   | `~/.config/file-sorter/config.json` |
 
-It's plain JSON, so you can also edit it by hand. Use `--config path/to/config.json` to use a different file. A course can have an optional `"folder"` entry to send its files somewhere other than the course-folders root.
+It's plain JSON, so you can also edit it by hand. Use `--config path/to/config.json` to use a different file. A module can have an optional `"folder"` entry to send its files somewhere else entirely.
+
+A log of everything the sorter did is written to `file-sorter.log` in the same folder. If something doesn't get sorted, that's the place to look.
+
+## Firefox, Chrome and Edge
+
+All three are supported: the sorter waits until the browser has finished the download (Firefox's empty placeholder file and `.part` file, Chrome/Edge's `.crdownload` file) before moving anything.
+
+If PDFs open in Firefox's built-in viewer instead of being downloaded, they never reach your Downloads folder. To change that: Firefox *Settings → General → Applications → Portable Document Format (PDF) → Save File*.
 
 ## Development
 

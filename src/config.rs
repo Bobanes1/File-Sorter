@@ -166,7 +166,7 @@ pub fn save_config(config: &Config, path: &Path) -> io::Result<()> {
 }
 
 /// Words that say nothing about which module a file belongs to.
-const STOPWORDS: &[&str] = &[
+pub(crate) const STOPWORDS: &[&str] = &[
     "und",
     "oder",
     "der",
@@ -208,7 +208,7 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// Short filler words dropped when building a module's core name ("Einführung in die Analysis I" → "analysis i").
-const FILLER_WORDS: &[&str] = &["in", "im", "zu", "an", "am", "auf", "of", "to", "on", "a"];
+pub(crate) const FILLER_WORDS: &[&str] = &["in", "im", "zu", "an", "am", "auf", "of", "to", "on", "a"];
 
 fn core_name(name: &str) -> String {
     normalise(name)

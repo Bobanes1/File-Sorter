@@ -8,6 +8,7 @@
 mod config;
 mod extract;
 mod gui;
+mod keywords;
 mod logger;
 mod matcher;
 mod sorter;

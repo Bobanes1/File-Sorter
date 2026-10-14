@@ -20,33 +20,47 @@ pub struct Match {
 }
 
 /// Lowercase, strip accents and turn separators like `_ - .` into spaces.
+///
+/// Letters and digits are split apart ("INF101" → "inf 101"), so a module code
+/// matches however it is written: "INF101", "INF-101" or "INF 101".
 pub fn normalise(text: &str) -> String {
     let lowered: String = text.nfkd().filter(|c| !is_combining_mark(*c)).collect::<String>().to_lowercase();
-    let spaced: String = lowered.chars().map(|c| if "_-.()[]{},;:/\\".contains(c) { ' ' } else { c }).collect();
+    let mut spaced = String::with_capacity(lowered.len());
+    let mut prev: Option<char> = None;
+    for c in lowered.chars() {
+        let c = if "_-.()[]{},;:/\\".contains(c) { ' ' } else { c };
+        if let Some(p) = prev
+            && ((p.is_alphabetic() && c.is_ascii_digit()) || (p.is_ascii_digit() && c.is_alphabetic()))
+        {
+            spaced.push(' ');
+        }
+        spaced.push(c);
+        prev = Some(c);
+    }
     spaced.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Count whole-word occurrences of an already normalised keyword in normalised text.
 ///
-/// Word boundaries so "ai" doesn't match "maintain". A plural "s" is allowed
-/// ("algorithm" matches "algorithms") and digits may follow directly, so the
-/// keyword "prog" still matches "prog1".
-fn count_hits(text: &str, keyword: &str) -> usize {
+/// Word boundaries so "ai" doesn't match "maintain" and "inf 101" doesn't match
+/// "inf 1011". A plural "s" is allowed ("algorithm" matches "algorithms"). The
+/// keyword "prog" still matches "prog1", because normalising splits it into "prog 1".
+pub(crate) fn count_hits(text: &str, keyword: &str) -> usize {
     if keyword.is_empty() {
         return 0;
     }
     let bytes = text.as_bytes();
-    let is_letter = |i: usize| bytes.get(i).is_some_and(u8::is_ascii_lowercase);
+    let is_word_char = |i: usize| bytes.get(i).is_some_and(u8::is_ascii_alphanumeric);
     let mut hits = 0;
     let mut start = 0;
     while let Some(pos) = text[start..].find(keyword) {
         let begin = start + pos;
         let mut end = begin + keyword.len();
         let boundary_before = begin == 0 || !bytes[begin - 1].is_ascii_alphanumeric();
-        if bytes.get(end) == Some(&b's') && !is_letter(end + 1) {
+        if bytes.get(end) == Some(&b's') && !is_word_char(end + 1) {
             end += 1;
         }
-        if boundary_before && !is_letter(end) {
+        if boundary_before && !is_word_char(end) {
             hits += 1;
             start = end;
         } else {
@@ -178,6 +192,8 @@ mod tests {
     #[test]
     fn normalise_strips_separators_and_accents() {
         assert_eq!(normalise("Analysis_Übung-03.Final"), "analysis ubung 03 final");
+        assert_eq!(normalise("INF101_Blatt5"), "inf 101 blatt 5");
+        assert_eq!(normalise("WS2026/27"), "ws 2026 27");
         assert_eq!(normalise("  Einführung   in (C++) "), "einfuhrung in c++");
     }
 
@@ -206,6 +222,17 @@ mod tests {
         assert_eq!(score_text("aisle", &ai, None).0, 0);
         let prog = Course::new("P", &["prog"]);
         assert_eq!(score_text("prog1 progress", &prog, None).0, 1);
+    }
+
+    #[test]
+    fn module_codes_match_however_written() {
+        let c = Course::new("P", &["INF-101"]);
+        for name in ["INF101_Blatt5", "inf 101 folien", "Uebung_INF-101", "INF_101"] {
+            assert_eq!(score_text(name, &c, None).0, 1, "{name}");
+        }
+        assert_eq!(score_text("INF1011", &c, None).0, 0);
+        let prog = Course::new("P", &["prog1"]);
+        assert_eq!(score_text("Prog 1 Woche 3", &prog, None).0, 1);
     }
 
     #[test]

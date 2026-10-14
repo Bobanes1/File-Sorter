@@ -57,6 +57,8 @@ Double-click `FileSorter.exe` (or run `cargo run --release`). A window opens:
    Prof. Müller
    ```
    The module name itself always counts as a keyword.
+
+   Or let the program find them: select a module and click **Suggest keywords from files**. It reads the files already in that module's folder (names and the first pages) and adds terms that show up in several of them but hardly ever in your other modules, such as the module code (`inf 101`), the lecturer's name or recurring topics. Generic words like "Vorlesung" or "Übung" are skipped, and so are terms another module also uses, since those would make files ambiguous. Delete any line you don't want.
 5. Click **▶ Start watching**. The *Activity* box shows `Detected … – waiting for the download to finish…` as soon as a download starts, and `Moved … → Informatik › Programmierung 1` when it's sorted.
 
 *Add / Edit* let you create a module by hand (pick the study program, type the module name; the folder is created on the first file). Modules without a study program go directly into the study folder.
@@ -68,7 +70,7 @@ Settings are saved automatically when you start watching or close the window.
 ## How it decides where a file goes
 
 1. Only document types are considered (`.pdf .pptx .ppt .docx .doc .key .odp .odt .txt .md .zip .ipynb .xlsx`). Unfinished downloads (`.crdownload`, `.part`, …) are ignored until the browser finishes them.
-2. **File name first:** the module name and each keyword are looked for as whole words (`ai` doesn't match `maintain`; `algorithm` matches `algorithms`; case, accents, `_`, `-` and `.` don't matter).
+2. **File name first:** the module name and each keyword are looked for as whole words (`ai` doesn't match `maintain`; `algorithm` matches `algorithms`; case, accents, `_`, `-` and `.` don't matter, and `INF101`, `INF-101` and `INF 101` are all the same).
 3. **Then the content:** if the file name doesn't point to exactly one module, the text of the first pages of PDFs, the first slides of PowerPoints, or the start of Word documents is read and scored the same way.
 4. The module with the most hits wins. With no hits, or a tie between two modules, the file is left where it is.
 5. If a file with the same name already exists in the module folder, the new one is saved as `name (1).pdf` – nothing is overwritten.
@@ -146,6 +148,7 @@ cargo clippy --all-targets
 | `src/gui.rs` | the egui window |
 | `src/watcher.rs` | watches the folder, waits for downloads to finish, rescans every 10 s |
 | `src/matcher.rs` | keyword scoring |
+| `src/keywords.rs` | keyword suggestions from a module's files |
 | `src/extract.rs` | text from PDF / PPTX / DOCX |
 | `src/sorter.rs` | moving files (also across drives) |
 | `src/config.rs` | settings, module-folder import |

@@ -2,11 +2,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use eframe::egui;
 
 use crate::config::{Config, Course, expand_user, load_config, merge_courses, save_config, scan_study_folder};
+use crate::keywords::{Suggestion, suggest_keywords};
+use crate::matcher::normalise;
 use crate::watcher::{FolderWatcher, Sink, WatchEvent};
 
 pub fn run(config_path: PathBuf) -> eframe::Result<()> {
@@ -45,6 +47,8 @@ struct App {
     dialog: Option<CourseDialog>,
     confirm_delete: Option<usize>,
     error: Option<(String, String)>,
+    /// A running keyword scan: the module it is for, and where its result arrives.
+    keyword_scan: Option<(Course, Receiver<Suggestion>)>,
 }
 
 impl App {
@@ -69,6 +73,7 @@ impl App {
             dialog: None,
             confirm_delete: None,
             error: None,
+            keyword_scan: None,
         };
         app.sort_courses();
         app
@@ -339,6 +344,15 @@ impl App {
                         .map(str::to_string)
                         .collect();
                 }
+                let scanning = self.keyword_scan.is_some();
+                let label = if scanning { "Scanning files…" } else { "Suggest keywords from files" };
+                if ui
+                    .add_enabled(enabled && !scanning, egui::Button::new(label))
+                    .on_hover_text("Looks through the files already in this module's folder and adds terms that are typical for this module (module code, lecturer, topics) but rare in your other modules.")
+                    .clicked()
+                {
+                    self.start_keyword_scan();
+                }
                 if let Some(i) = self.selected {
                     let folder = self.config.course_folder(&self.config.courses[i]);
                     ui.add(
@@ -348,6 +362,51 @@ impl App {
                 }
             });
         });
+    }
+
+    fn start_keyword_scan(&mut self) {
+        let Some(i) = self.selected else { return };
+        let (tx, rx) = channel();
+        let config = self.config.clone();
+        let ctx = self.ctx.clone();
+        // Reading PDFs can take a few seconds; keep the window responsive.
+        std::thread::spawn(move || {
+            let _ = tx.send(suggest_keywords(&config, i));
+            ctx.request_repaint();
+        });
+        self.keyword_scan = Some((self.config.courses[i].clone(), rx));
+    }
+
+    /// Add the scan result to the module it was started for (which may have moved in the list meanwhile).
+    fn finish_keyword_scan(&mut self, course: Course, suggestion: Suggestion) {
+        let Some(i) = self.config.courses.iter().position(|c| c.subject == course.subject && c.name == course.name)
+        else {
+            return;
+        };
+        let label = self.config.courses[i].label();
+        if suggestion.files_scanned == 0 {
+            self.push_log(format!(
+                "No files to scan for {label}: {} is empty or doesn't exist yet.",
+                suggestion.folder.display()
+            ));
+            return;
+        }
+        let keywords = &mut self.config.courses[i].keywords;
+        let known: Vec<String> = keywords.iter().map(|k| normalise(k)).collect();
+        let new: Vec<String> = suggestion.keywords.into_iter().filter(|k| !known.contains(k)).collect();
+        if new.is_empty() {
+            self.push_log(format!("No new keywords found for {label} in {} file(s).", suggestion.files_scanned));
+            return;
+        }
+        keywords.extend(new.iter().cloned());
+        if self.selected == Some(i) {
+            self.keywords_text = self.config.courses[i].keywords.join("\n");
+        }
+        self.push_log(format!("Added {} keyword(s) to {label}: {}", new.len(), new.join(", ")));
+        // Keep the new keywords even if the program is closed abruptly.
+        if let Err(e) = save_config(&self.config, &self.config_path) {
+            self.error = Some(("Could not save settings".into(), e.to_string()));
+        }
     }
 
     fn open_edit(&mut self, i: usize) {
@@ -514,6 +573,20 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         while let Ok(event) = self.events_rx.try_recv() {
             self.log.push(event.text());
+        }
+        if let Some((course, rx)) = &self.keyword_scan {
+            match rx.try_recv() {
+                Ok(suggestion) => {
+                    let course = course.clone();
+                    self.keyword_scan = None;
+                    self.finish_keyword_scan(course, suggestion);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.keyword_scan = None;
+                    self.push_log("Keyword scan failed.");
+                }
+                Err(TryRecvError::Empty) => {}
+            }
         }
 
         egui::Panel::bottom("activity").resizable(true).default_size(200.0).min_size(110.0).show(ui, |ui| {

@@ -13,6 +13,7 @@ mod logger;
 mod matcher;
 mod sorter;
 mod watcher;
+mod winfix;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -62,6 +63,7 @@ fn main() -> ExitCode {
     };
     let log_file = args.config.parent().map(|p| p.join("file-sorter.log")).unwrap_or("file-sorter.log".into());
     logger::init(&log_file);
+    winfix::unblock_self();
 
     if !(args.headless || args.sort_now) {
         return match gui::run(args.config) {

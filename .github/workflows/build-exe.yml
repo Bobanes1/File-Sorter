@@ -55,6 +55,25 @@ jobs:
           if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\vorlesung4.pdf")) { throw "PDF was not sorted" }
           Write-Host "exe sorted both files correctly"
 
+      - name: Smoke-test removing the "downloaded from the web" mark
+        shell: pwsh
+        run: |
+          $mark = "[ZoneTransfer]`r`nZoneId=3`r`n"
+          $pinned = Join-Path $env:APPDATA "Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
+          New-Item -ItemType Directory -Force $pinned | Out-Null
+          $lnk = Join-Path $pinned "FileSorter.lnk"
+          $other = Join-Path $pinned "SomethingElse.lnk"
+          Set-Content $lnk "fake shortcut"; Set-Content $other "other shortcut"
+          foreach ($f in @("dist\FileSorter.exe", $lnk, $other)) { Set-Content -Path $f -Stream Zone.Identifier -Value $mark }
+          $root = Join-Path $env:RUNNER_TEMP "smoke"
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--config", "`"$root\config.json`"" -Wait -PassThru
+          if (Get-Item dist\FileSorter.exe -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw "exe is still marked" }
+          if (Get-Item $lnk -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw "taskbar shortcut is still marked" }
+          if (-not (Get-Item $other -Stream Zone.Identifier -ErrorAction SilentlyContinue)) { throw "another program's shortcut was touched" }
+          if ((Get-Content $lnk) -ne "fake shortcut") { throw "shortcut content changed" }
+          Remove-Item $lnk, $other
+          Write-Host "web mark removed from exe and own shortcut only"
+
       - name: Smoke-test the window (wgpu)
         shell: pwsh
         run: |

@@ -26,6 +26,8 @@ Nothing to install.
 2. Put `FileSorter.exe` anywhere you like (e.g. `Documents\FileSorter\`) and double-click it.
 3. Windows SmartScreen may warn because the exe isn't code-signed: click **More info → Run anyway**.
 
+> **"Eine Anwendungssteuerungsrichtlinie hat diese Datei blockiert" when starting from the taskbar:** Windows marks downloaded files as "from the web", and Smart App Control blocks shortcuts made from such files. File Sorter removes that mark from itself and its own shortcuts every time it starts, so start `FileSorter.exe` once directly (double-click) and the taskbar shortcut works again. If it still doesn't: unpin it, right-click `FileSorter.exe` → *Properties* → tick **Unblock** → *OK*, and pin it again.
+
 To start it automatically at login: press `Win+R`, type `shell:startup`, and put a shortcut to `FileSorter.exe` there. Add `--headless` to the shortcut's *Target* to run it silently in the background with your saved settings (set up your modules in the window first).
 
 The window is drawn with the graphics card (DirectX 12 or Vulkan). On PCs without one, Windows' built-in software renderer takes over automatically.

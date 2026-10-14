@@ -328,13 +328,22 @@ impl App {
             ui.vertical(|ui| {
                 ui.label("Keywords (one per line, e.g. module code, short name, professor):");
                 let enabled = self.selected.is_some();
-                let edit = egui::TextEdit::multiline(&mut self.keywords_text)
-                    .desired_rows(9)
-                    .desired_width(f32::INFINITY)
-                    .hint_text(if enabled { "prog1\nINF-101\nProf. Müller" } else { "Select a module" });
-                if ui.add_enabled(enabled, edit).changed()
-                    && let Some(i) = self.selected
-                {
+                const VISIBLE_ROWS: usize = 9;
+                // Fixed height: long keyword lists scroll instead of pushing everything below out of view.
+                let row_height = ui.text_style_height(&egui::TextStyle::Body);
+                let changed = egui::ScrollArea::vertical()
+                    .id_salt("keywords")
+                    .max_height(row_height * VISIBLE_ROWS as f32 + 8.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        let edit = egui::TextEdit::multiline(&mut self.keywords_text)
+                            .desired_rows(VISIBLE_ROWS)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(if enabled { "prog1\nINF-101\nProf. Müller" } else { "Select a module" });
+                        ui.add_enabled(enabled, edit).changed()
+                    })
+                    .inner;
+                if changed && let Some(i) = self.selected {
                     self.config.courses[i].keywords = self
                         .keywords_text
                         .lines()
@@ -593,14 +602,20 @@ impl eframe::App for App {
             ui.add_space(6.0);
             self.activity_ui(ui);
         });
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            ui.strong("Folders");
-            egui::Frame::group(ui.style()).show(ui, |ui| self.folders_ui(ui));
-            ui.add_space(8.0);
-            ui.strong("Modules");
-            egui::Frame::group(ui.style()).show(ui, |ui| self.modules_ui(ui));
-            ui.add_space(8.0);
+        // Directly above the activity log, so the buttons are always visible.
+        egui::Panel::bottom("controls").show(ui, |ui| {
+            ui.add_space(6.0);
             self.controls_ui(ui);
+            ui.add_space(2.0);
+        });
+        egui::CentralPanel::default_margins().show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("main").auto_shrink([false, false]).show(ui, |ui| {
+                ui.strong("Folders");
+                egui::Frame::group(ui.style()).show(ui, |ui| self.folders_ui(ui));
+                ui.add_space(8.0);
+                ui.strong("Modules");
+                egui::Frame::group(ui.style()).show(ui, |ui| self.modules_ui(ui));
+            });
         });
         let ctx = ui.ctx().clone();
         self.dialogs_ui(&ctx);

@@ -1,0 +1,5 @@
+# Test files must stay byte-for-byte identical (no CRLF conversion on Windows).
+tests/fixtures/** binary
+*.pdf binary
+*.pptx binary
+*.docx binary

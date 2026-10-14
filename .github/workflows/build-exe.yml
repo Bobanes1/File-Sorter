@@ -55,6 +55,11 @@ jobs:
           if (-not (Test-Path "$root\University\Linear Algebra\slides.pptx")) { throw "PPTX was not sorted" }
           Write-Host "exe sorted both files correctly"
 
+      - name: Real Firefox download test
+        run: |
+          pip install selenium
+          python tests/e2e_firefox.py --exe dist/FileSorter.exe
+
       - uses: actions/upload-artifact@v4
         with:
           name: FileSorter-windows

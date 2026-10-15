@@ -43,6 +43,9 @@ mod imp {
             let (entry, _) = hkcu.create_subkey(&key)?;
             entry.set_value("", &label)?;
             entry.set_value("Icon", &format!("\"{}\",0", exe.display()))?;
+            // One File Sorter per selected item (they hand their files to one window), also
+            // when several files are selected.
+            entry.set_value("MultiSelectModel", &"Document")?;
             let (command, _) = entry.create_subkey("command")?;
             command.set_value("", &menu_command(exe))?;
         }

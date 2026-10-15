@@ -30,7 +30,7 @@ Nothing to install.
 
 > **Blank icon on the taskbar:** since v0.6 the icon is built into `FileSorter.exe`. If a shortcut you pinned with an older version still shows a blank icon, Windows is showing its cached copy: unpin it and pin it again once.
 
-To start it automatically when you sign in to Windows, turn on **Settings → Start when I sign in**.
+To start it automatically when you sign in to Windows, turn on **Settings → Start when I sign in**. With **Settings → Keep running in the background**, closing the window while it watches leaves File Sorter running next to the clock; click that icon to open it again, right-click it → *Quit* to end it. Starting `FileSorter.exe` again (taskbar, Start menu) shows the running window instead of opening a second one.
 
 The window is drawn with the graphics card (DirectX 12 or Vulkan). On PCs without one, Windows' built-in software renderer takes over automatically.
 
@@ -48,11 +48,9 @@ cargo build --release      # → target/release/file-sorter(.exe)
 
 ## Use it
 
-Double-click `FileSorter.exe` (or run `cargo run --release`). A window opens – in German if Windows runs in German, otherwise in English (change it under **Settings**). It has two tabs at the top right: **Overview**, where you set up folders and modules and watch the activity, and **Settings**.
+Double-click `FileSorter.exe` (or run `cargo run --release`). A window opens – in German if Windows runs in German, otherwise in English (change it under **Settings**). It has two tabs at the top right: **Overview**, where you set up folders and modules and see the activity, and **Settings**.
 
-At the top you see the status (a pulsing radar dot while watching) and four counters: files sorted today, downloads in progress, files that matched no module, and the number of modules.
-
-1. **Watch (Downloads)** – the folder to watch. Defaults to your Downloads folder; pick any folder with *Browse…*.
+1. **Watched folder (Downloads)** – the folder to watch. Defaults to your Downloads folder; pick any folder with *Change*.
 2. **Study folder** – your `Studium` folder, containing one folder per study program with the module folders inside.
 3. Click **Import module folders** (happens automatically the first time you pick the study folder). Every `Study program \ Module` folder becomes an entry like `Informatik › Programmierung 1`, with starter keywords taken from the folder name. Run it again after creating new module folders; existing entries and keywords are kept.
 4. Select a module and add **keywords**, one per line: anything that appears in the file names or on the first slides/pages, such as
@@ -64,20 +62,24 @@ At the top you see the status (a pulsing radar dot while watching) and four coun
    ```
    The module name itself always counts as a keyword.
 
-   Or let the program find them: select a module and click **Suggest keywords from files**. It reads the files already in that module's folder (names and the first pages) and adds terms that show up in several of them but hardly ever in your other modules, such as the module code (`inf 101`), the lecturer's name or recurring topics. Generic words like "Vorlesung" or "Übung" are skipped, and so are terms another module also uses, since those would make files ambiguous. Delete any line you don't want.
-5. Click **▶ Start watching**. Every download gets a card in *Activity*: it spins while the download is still running and turns green ("Moved to Informatik › Programmierung 1", with the matching keywords) once the file is sorted. At the same time a little file card flies into the module, which lights up and counts the file.
+   Or let the program find them: select a module and click **Suggest keywords from files**. It reads the files already in that module's folder (names and the first pages) and looks for terms that are typical for *this* module: the module code (`stat 101`), the lecturer (the name after «Prof.»/«Dr.»), and topics that recur in its files but hardly ever in your other modules (`varianz`, `regression`). Everyday words («heute», «Beispiel», «Ergebnis», …), words found in every course («Vorlesung», «Übung», …) and terms another module also uses are never suggested. The suggestions appear in a list, each with what kind of term it is and in how many files it appears; untick what doesn't fit and click *Add*.
+5. Click **▶ Start watching**. Every download appears in *Activity*: it spins while the download is still running and turns green ("Moved to Informatik › Programmierung 1", with the matching keywords) once the file is sorted. At the same time a little file card flies into the module, which lights up and counts the file, and a bar at the bottom offers **Undo**.
 
 *Add / Edit* let you create a module by hand (pick the study program, type the module name; the folder is created on the first file). Modules without a study program go directly into the study folder.
 
 *Sort existing files now* cleans up files that are already sitting in the folder.
 
-Folders, modules and keywords are saved when you start watching, click *Save* or close the window.
+Everything is saved automatically.
 
-Click a green activity card to open the module folder with that file selected.
+Click a sorted file in *Activity* to open its folder with the file selected. The counters next to *Activity* show the files sorted today, downloads in progress and files that matched no module.
+
+## Undo
+
+Sorted a file by mistake? Click **Undo** next to it in *Activity* (or in the bar that appears right after sorting). The file goes back where it came from – a moved file is moved back, a copy is removed again, a duplicate that went to the Recycle Bin is restored – and **it stays there**: File Sorter won't sort that file again (unless you sort it yourself with the right-click menu). Earlier sorts are still listed after a restart, so you can undo them later too.
 
 ## Right-click: sort any file right away
 
-Like *Extract all…* for a zip: right-click a file and choose **Mit File Sorter sortieren** / **Sort with File Sorter**. A small window shows where it went (click a card to open the folder) and closes by itself after a few seconds (move the mouse over it to keep it open).
+Like *Extract all…* for a zip: right-click a file and choose **Mit File Sorter sortieren** / **Sort with File Sorter**. A small window appears at the bottom right and shows where each file went (click one to open its folder, *Undo* to put it back); it closes by itself after a few seconds (it waits while the mouse is over it).
 
 - On **Windows 11** the entry is in the classic menu: right-click → **Weitere Optionen anzeigen** / **Show more options** (or hold `Shift` while right-clicking). Only signed apps can add entries to the short new menu.
 - Select **several files** (up to 15, a Windows limit for this kind of menu entry) and they are all sorted, with a single results window.
@@ -93,9 +95,10 @@ The entry is added when you open File Sorter, and it follows the exe if you move
 2. **File name first:** the module name and each keyword are looked for as whole words (`ai` doesn't match `maintain`; `algorithm` matches `algorithms`; case, accents, `_`, `-` and `.` don't matter, and `INF101`, `INF-101` and `INF 101` are all the same).
 3. **Then the content:** if the file name doesn't point to exactly one module, the text of the first pages of PDFs, the first slides of PowerPoints, or the start of Word documents is read and scored the same way.
 4. The module with the most hits wins. With no hits, or a tie between two modules, the file is left where it is.
-5. Files are **moved** (unless you choose *Copy* in the settings): after sorting, a file exists only in its module folder. If another program still has it open (the browser, a PDF preview, the virus scanner), the sorter waits for it and tries again a little later instead of leaving it in two places.
-6. If the **very same file** is already in the module folder (downloaded twice), the download is simply removed. If a *different* file with the same name is there (e.g. updated slides), the new one is saved as `name (1).pdf` – nothing is overwritten.
-7. Only one File Sorter watches at a time; starting a second one (another window or `--headless`) shows a message instead of both sorting the same files.
+5. Files are **moved** (unless you choose *Copy* in the settings): after sorting, a file exists only in its module folder.
+6. A file that is **still open** in another program (a PDF viewer you write notes in, Word, the browser) is left alone until that program closes it, so your notes are saved into the file before it is moved. The activity list says so while it waits.
+7. **Nothing is ever overwritten.** If a *different* file with the same name is already in the module folder (e.g. updated slides, or your annotated copy), the new one is saved as `name (1).pdf`, and the activity list says so. If the **very same file** is there (downloaded twice), the download goes to the **Recycle Bin**, where you can still get it back.
+8. Only one File Sorter watches at a time; starting a second one with `--headless` shows a message instead of both sorting the same files.
 
 **Tips for good keywords:** module codes (`INF-101`, `MA1`), short names used in file names (`prog1`, `linalg`), and the exact module title as it appears on the slides work best. Avoid generic words like `lecture` or `exercise` that appear in every module.
 
@@ -109,13 +112,14 @@ Everything on the **Settings** tab is saved as soon as you change it (a green *S
 |---------|--------------|
 | **Language** | *Automatic* (like your computer), *Deutsch* or *English*. Also renames the right-click entry. |
 | **Appearance** | *Automatic* (follows Windows' light/dark mode), *Light* or *Dark*. |
-| **Animations** | Flying files, sliding cards and the pulsing status dot. Turn off for a calmer window. |
+| **Animations** | Flying files, sliding entries, ripples and the pulsing dot on the stop button. Turn off for a calmer window. |
 | **What happens to a file** | **Move** (default): the file ends up only in its module folder and Downloads stays tidy. **Copy**: a copy goes to the module folder and the original stays where it was. Each file is copied only once – File Sorter remembers what it copied (`copied.json` next to the settings), so it doesn't copy a file again when it sorts the folder later, even if you annotated or renamed the copy. A new version with the same name is copied as `name (1).pdf`. |
 | **Read file contents** | When the file name isn't enough, read the text of PDFs, slides and Word files. |
 | **Include files already there** | When watching starts, also sort the files already in the folder (otherwise only new downloads). |
 | **File types** | Which types are sorted from the watched folder: tick or untick `.pdf`, `.pptx`, … or type others under *More* (e.g. `.svg, .ods`). *Defaults* restores the standard list. The right-click menu sorts any file you pick, whatever its type. |
 | **Start when I sign in** | File Sorter opens minimised in the taskbar and starts watching right away (Windows and Linux). |
 | **Start watching right away** | Begin watching as soon as you open the window. |
+| **Keep running in the background** (Windows) | Closing the window while it watches keeps File Sorter running in the notification area (next to the clock); click the icon to open it again, right-click it → *Quit* to end it. With *Start when I sign in*, it then starts there too. |
 | **Right-click menu** (Windows) | Show or hide «Sort with File Sorter», and whether the results window appears afterwards. |
 | **About** | Version, and buttons to open the log file and the settings folder. |
 
@@ -188,19 +192,22 @@ cargo clippy --all-targets
 | File | What it does |
 |------|--------------|
 | `src/main.rs` | command line (`--headless`, `--sort-now`, `--sort`, `--config`, …), starts the window |
-| `src/gui.rs` | the egui window: overview (activity cards, flying files, statistics) and settings tab |
+| `src/gui/` | the egui window: `mod.rs` (state, background logic), `overview.rs`, `settings.rs`, `dialogs.rs`, `cards.rs` (activity entries, snackbar) |
+| `src/undo.rs`, `src/history.rs` | putting sorted files back; the history of sorted files (`history.jsonl`) |
+| `src/winwin.rs`, `src/tray.rs` | minimising, the notification-area icon and showing the running window again (Windows) |
+| `src/common_words.rs` | everyday words that are never suggested as keywords |
 | `src/quicksort.rs` | right-click sorting: collects all selected files into one run and shows the results window |
 | `src/desktop.rs` | the right-click menu entry, starting at sign-in (Windows registry / Linux autostart), "show in folder" |
 | `src/winfix.rs` | removes Windows' "downloaded from the web" mark from the exe and its shortcuts |
-| `build.rs`, `assets/` | puts the icon and version info into the Windows exe (`assets/make_icon.py` draws the icon) |
-| `src/fx.rs` | theme, icons, easing, switches and the animated drawings |
+| `build.rs`, `assets/` | puts the icon and version info into the Windows exe (`assets/make_icon.py` draws the icon); `assets/fonts/` holds Roboto (Apache-2.0, see the README there) |
+| `src/fx.rs` | Material colours for light and dark, Roboto, switches, segmented buttons, chips, ripples, easing |
 | `src/i18n.rs` | all window texts in English and German |
 | `src/watcher.rs` | watches the folder, waits for downloads to finish, rescans every 10 s |
 | `src/matcher.rs` | keyword scoring |
 | `src/keywords.rs` | keyword suggestions from a module's files |
 | `src/extract.rs` | text from PDF / PPTX / DOCX |
 | `src/sorter.rs` | moving or copying files (also across drives), duplicate handling |
-| `src/ledger.rs` | copy mode: remembers which files were already copied |
+| `src/ledger.rs` | copy mode's list of copied files, and the files to leave alone after an undo |
 | `src/config.rs` | settings, module-folder import |
 
 `tests/e2e_firefox.py` downloads files with a real (headless) Firefox and checks they are sorted; it runs in CI on Windows (`pip install selenium`, then `python tests/e2e_firefox.py --exe dist/FileSorter.exe`).

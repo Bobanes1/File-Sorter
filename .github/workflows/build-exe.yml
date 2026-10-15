@@ -173,6 +173,37 @@ jobs:
           }
           if (-not (Test-Path "$root\Desktop\shopping.txt")) { throw "the unmatched file was moved" }
 
+          # The same through the real Windows shell: three files selected, «Mit File Sorter sortieren» chosen.
+          New-Item -ItemType Directory -Force "$root\Shell" | Out-Null
+          Copy-Item tests\fixtures\programming.pptx "$root\Shell\week4.pptx"
+          Copy-Item tests\fixtures\programming.pptx "$root\Shell\week5.pptx"
+          Copy-Item tests\fixtures\analysis_chromium.pdf "$root\Shell\vorlesung6.pdf"
+          $items = (New-Object -ComObject Shell.Application).Namespace("$root\Shell").Items()
+          $items.Filter(0x40, "*.pptx;*.pdf")  # files only
+          Write-Host "selected in the shell: $($items.Count)"
+          $started = Get-Date
+          $items.InvokeVerbEx("FileSorter")
+          $mostWindows = 0; $seen = $false
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) {
+            $running = @(Get-Process FileSorter -ErrorAction SilentlyContinue)
+            if ($running.Count -gt 0) { $seen = $true }
+            $windows = 0
+            foreach ($proc in $running) { try { if ($proc.MainWindowHandle -ne 0) { $windows++ } } catch {} }
+            if ($windows -gt $mostWindows) { $mostWindows = $windows }
+            if ($seen -and $running.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 250
+          }
+          $took = [int]((Get-Date) - $started).TotalSeconds
+          Get-Content "$configDir\file-sorter.log" -Tail 6 -ErrorAction SilentlyContinue
+          Write-Host "shell selection: processes seen $seen, windows at once $mostWindows, all done after $took s"
+          if (Get-Process FileSorter -ErrorAction SilentlyContinue) { Stop-Process -Name FileSorter; throw "the results window did not close by itself" }
+          foreach ($f in @("Informatik\Programmierung 1\week4.pptx", "Informatik\Programmierung 1\week5.pptx", "Mathematik\Analysis I\vorlesung6.pdf")) {
+            if (-not (Test-Path "$root\Studium\$f")) { throw "$f was not sorted through the shell" }
+          }
+          if ($mostWindows -ne 1) { throw "expected one results window for the shell selection, saw $mostWindows" }
+          if ($took -gt 30) { throw "the results window stayed open too long ($took s)" }
+
           $p = Start-Process $exe -ArgumentList "--unregister-menu" -NoNewWindow -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "--unregister-menu exited with $($p.ExitCode)" }
           foreach ($kind in @("*", "Directory")) {
@@ -235,6 +266,56 @@ jobs:
           if (-not $p.HasExited) { Stop-Process -Id $p.Id }
           if (Get-ItemProperty $runKey -Name FileSorter -ErrorAction SilentlyContinue) { throw "sign-in entry was not removed" }
           Write-Host "sign-in start works: minimised, watching, copy mode keeps the original; entry added and removed"
+
+      - name: Smoke-test running in the background (tray) and starting again
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path dist\FileSorter.exe).Path
+          $root = Join-Path $env:RUNNER_TEMP "background"
+          New-Item -ItemType Directory -Force "$root\Downloads" | Out-Null
+          @{
+            watch_folder = "$root\Downloads"
+            destination_root = "$root\Studium"
+            watch_on_open = $true
+            background = $true
+            courses = @(@{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("programming") })
+          } | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
+          Add-Type -Namespace Win2 -Name User32 -MemberDefinition @'
+          [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+          [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+          [DllImport("user32.dll")] public static extern IntPtr GetWindowLongPtrW(IntPtr hWnd, int nIndex);
+          '@
+          function InTray($h) { (([Win2.User32]::GetWindowLongPtrW($h, -20)).ToInt64() -band 0x80) -ne 0 }
+          function State($h) { "minimised=$([Win2.User32]::IsIconic($h)) visible=$([Win2.User32]::IsWindowVisible($h)) tray=$(InTray $h)" }
+
+          $p = Start-Process $exe -ArgumentList "--config", "`"$root\config.json`"" -PassThru
+          Start-Sleep -Seconds 8
+          $p.Refresh(); $h = $p.MainWindowHandle
+          if ($h -eq 0) { throw "no window" }
+          Write-Host "open: $(State $h)"
+          [void]$p.CloseMainWindow()
+          Start-Sleep -Seconds 3
+          Write-Host "after closing: $(State $h)"
+          if ($p.HasExited) { throw "File Sorter quit instead of staying in the background" }
+          if (-not ([Win2.User32]::IsIconic($h) -and (InTray $h))) { throw "the window did not go to the notification area" }
+
+          # Still sorting in the background.
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\week7.pptx"
+          $sorted = "$root\Studium\Informatik\Programmierung 1\week7.pptx"
+          $deadline = (Get-Date).AddSeconds(30)
+          while (-not (Test-Path $sorted) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (-not (Test-Path $sorted)) { Get-Content "$root\file-sorter.log"; throw "nothing was sorted in the background" }
+
+          # Starting File Sorter again brings this window back instead of opening a second one.
+          $second = Start-Process $exe -ArgumentList "--config", "`"$root\config.json`"" -PassThru
+          if (-not $second.WaitForExit(15000)) { $second.Kill(); throw "the second start did not hand over to the running one" }
+          Start-Sleep -Seconds 2
+          Write-Host "after starting again: $(State $h)"
+          Get-Content "$root\file-sorter.log"
+          $back = (-not [Win2.User32]::IsIconic($h)) -and (-not (InTray $h)) -and [Win2.User32]::IsWindowVisible($h)
+          Stop-Process -Id $p.Id
+          if (-not $back) { throw "the window did not come back" }
+          Write-Host "background mode works: notification area, sorting, coming back"
 
       - name: Smoke-test the window (wgpu)
         shell: pwsh

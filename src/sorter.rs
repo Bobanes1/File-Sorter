@@ -221,41 +221,48 @@ pub(crate) fn ensure_not_open_elsewhere(path: &Path) -> io::Result<()> {
 }
 
 /// Put a file into the Recycle Bin (Windows), so it can be restored from there.
-/// Elsewhere it is deleted.
+/// Where that isn't possible it is deleted (only used for files that exist elsewhere too).
 pub fn discard(path: &Path) -> io::Result<()> {
     #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::UI::Shell::{
-            FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, SHFILEOPSTRUCTW, SHFileOperationW,
-        };
-        let full = std::path::absolute(path)?;
-        // A list of paths, each ending in a 0, and one more 0 at the end.
-        let from: Vec<u16> = full.as_os_str().encode_wide().chain([0, 0]).collect();
-        let mut op = SHFILEOPSTRUCTW {
-            hwnd: std::ptr::null_mut(),
-            wFunc: FO_DELETE,
-            pFrom: from.as_ptr(),
-            pTo: std::ptr::null(),
-            fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as u16,
-            fAnyOperationsAborted: 0,
-            hNameMappings: std::ptr::null_mut(),
-            lpszProgressTitle: std::ptr::null(),
-        };
-        // SAFETY: `op` and the double-0-terminated `from` live until the call returns.
-        let code = unsafe { SHFileOperationW(&mut op) };
-        if code != 0 || op.fAnyOperationsAborted != 0 {
-            return Err(io::Error::from_raw_os_error(code));
+    match recycle(path) {
+        Ok(()) => return Ok(()),
+        Err(e) if !path.exists() => {
+            log::info!("{}: {e}, but it is gone", path.display());
+            return Ok(());
         }
-        if path.exists() {
-            return Err(io::Error::other("the file could not be moved to the Recycle Bin"));
-        }
-        Ok(())
+        Err(e) => log::info!("Could not put {} into the Recycle Bin ({e}); deleting it instead", path.display()),
     }
-    #[cfg(not(windows))]
-    {
-        fs::remove_file(path)
+    fs::remove_file(path)
+}
+
+#[cfg(windows)]
+fn recycle(path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{
+        FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, SHFILEOPSTRUCTW, SHFileOperationW,
+    };
+    let full = std::path::absolute(path)?;
+    // A list of paths, each ending in a 0, and one more 0 at the end.
+    let from: Vec<u16> = full.as_os_str().encode_wide().chain([0, 0]).collect();
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: std::ptr::null_mut(),
+        wFunc: FO_DELETE,
+        pFrom: from.as_ptr(),
+        pTo: std::ptr::null(),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as u16,
+        fAnyOperationsAborted: 0,
+        hNameMappings: std::ptr::null_mut(),
+        lpszProgressTitle: std::ptr::null(),
+    };
+    // SAFETY: `op` and the double-0-terminated `from` live until the call returns.
+    let code = unsafe { SHFileOperationW(&mut op) };
+    if code != 0 || op.fAnyOperationsAborted != 0 {
+        return Err(io::Error::other(format!("Recycle Bin error {code:#x}")));
     }
+    if path.exists() {
+        return Err(io::Error::other("still there after moving it to the Recycle Bin"));
+    }
+    Ok(())
 }
 
 /// True if the error means another program still has the file open.

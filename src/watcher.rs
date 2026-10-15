@@ -626,7 +626,7 @@ mod tests {
         make_pdf(&folder.join("python_vl1.pdf"), "same");
         h.watcher.start().unwrap();
         make_pdf(&h.downloads().join("python_vl1.pdf"), "same");
-        assert!(wait_for(|| fs::read_dir(h.downloads()).unwrap().count() == 0));
+        assert!(wait_for(|| fs::read_dir(h.downloads()).unwrap().count() == 0), "{:?}", h.messages());
         let names: Vec<_> = fs::read_dir(&folder).unwrap().flatten().map(|e| file_name(&e.path())).collect();
         assert_eq!(names, vec!["python_vl1.pdf"]);
     }

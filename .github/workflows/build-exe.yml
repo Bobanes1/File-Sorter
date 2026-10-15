@@ -206,7 +206,9 @@ jobs:
           $deadline = (Get-Date).AddSeconds(30)
           while (-not (Test-Path $copy) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
           $p.Refresh()
-          $minimised = $p.MainWindowHandle -ne 0 -and [Win.User32]::IsIconic($p.MainWindowHandle)
+          $window = $p.MainWindowHandle
+          $minimised = $window -ne 0 -and [Win.User32]::IsIconic($window)
+          Write-Host "window handle: $window"
           $entry = (Get-ItemProperty $runKey -Name FileSorter -ErrorAction SilentlyContinue).FileSorter
           $exited = $p.HasExited
           if (-not $exited) { Stop-Process -Id $p.Id }

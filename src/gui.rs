@@ -184,7 +184,7 @@ struct App {
     /// A settings change not saved yet (saved a moment later), and when the last save happened.
     unsaved_since: Option<f64>,
     saved_at: f64,
-    /// Opened at sign-in: minimise on the first frame.
+    /// Opened at sign-in: minimise as soon as the window is shown.
     minimise: bool,
 }
 
@@ -1361,7 +1361,8 @@ impl App {
     /// Keep animating while something moves; otherwise only repaint when something happens.
     fn schedule_repaint(&self) {
         let now = self.now();
-        let animating = !self.flights.is_empty()
+        let animating = self.minimise
+            || !self.flights.is_empty()
             || self.glows.values().any(|t| now - t < GLOW_SECS)
             || now - self.tab_opened < 0.3
             || now - self.saved_at < 1.9
@@ -1549,7 +1550,10 @@ impl eframe::App for App {
         }
         let now = self.now();
         self.glows.retain(|_, t| now - *t < GLOW_SECS);
-        if std::mem::take(&mut self.minimise) {
+        // Opened at sign-in: minimise on the second frame. eframe only shows the window after the
+        // first one, and showing it would undo an earlier minimise.
+        if self.minimise && ui.ctx().cumulative_frame_nr() >= 1 {
+            self.minimise = false;
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
 

@@ -125,12 +125,13 @@ pub fn run(config_path: &Path, paths: Vec<PathBuf>, quiet: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if quiet {
+    if quiet || !config.results_window {
         sort_until_idle(&inbox, &config);
         return ExitCode::SUCCESS;
     }
 
     let lang = Lang::from_setting(config.language.as_deref());
+    let (theme, motion) = (config.theme, config.animations);
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = channel::<Vec<SortResult>>();
     let worker = {
@@ -165,6 +166,8 @@ pub fn run(config_path: &Path, paths: Vec<PathBuf>, quiet: bool) -> ExitCode {
         options,
         Box::new(move |cc| {
             fx::install(&cc.egui_ctx);
+            fx::apply_theme(&cc.egui_ctx, theme);
+            fx::set_motion(&cc.egui_ctx, motion);
             Ok(Box::new(ResultsWindow::new(lang, rx, window_stop)))
         }),
     );
@@ -220,7 +223,7 @@ impl eframe::App for ResultsWindow {
         let lang = self.lang;
         while let Ok(batch) = self.rx.try_recv() {
             for result in batch {
-                if result.moved() {
+                if result.sorted() {
                     self.sorted += 1;
                 }
                 let kind = CardKind::File { name: result.file_name(), state: FileState::Done(result.outcome) };

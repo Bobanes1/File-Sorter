@@ -30,7 +30,7 @@ Nothing to install.
 
 > **Blank icon on the taskbar:** since v0.6 the icon is built into `FileSorter.exe`. If a shortcut you pinned with an older version still shows a blank icon, Windows is showing its cached copy: unpin it and pin it again once.
 
-To start it automatically at login: press `Win+R`, type `shell:startup`, and put a shortcut to `FileSorter.exe` there. Add `--headless` to the shortcut's *Target* to run it silently in the background with your saved settings (set up your modules in the window first).
+To start it automatically when you sign in to Windows, turn on **Settings → Start when I sign in**.
 
 The window is drawn with the graphics card (DirectX 12 or Vulkan). On PCs without one, Windows' built-in software renderer takes over automatically.
 
@@ -48,7 +48,7 @@ cargo build --release      # → target/release/file-sorter(.exe)
 
 ## Use it
 
-Double-click `FileSorter.exe` (or run `cargo run --release`). A window opens – in German if Windows runs in German, otherwise in English; switch any time with **DE | EN** at the top right.
+Double-click `FileSorter.exe` (or run `cargo run --release`). A window opens – in German if Windows runs in German, otherwise in English (change it under **Settings**). It has two tabs at the top right: **Overview**, where you set up folders and modules and watch the activity, and **Settings**.
 
 At the top you see the status (a pulsing radar dot while watching) and four counters: files sorted today, downloads in progress, files that matched no module, and the number of modules.
 
@@ -71,7 +71,7 @@ At the top you see the status (a pulsing radar dot while watching) and four coun
 
 *Sort existing files now* cleans up files that are already sitting in the folder.
 
-Settings are saved automatically when you start watching or close the window.
+Folders, modules and keywords are saved when you start watching, click *Save* or close the window.
 
 Click a green activity card to open the module folder with that file selected.
 
@@ -85,7 +85,7 @@ Like *Extract all…* for a zip: right-click a file and choose **Mit File Sorter
 - Any file type works here, not only the document types the watcher looks at. Files that match no module stay where they are.
 - **Dragging** files onto `FileSorter.exe` (or a shortcut to it) does the same.
 
-The entry is added when you open File Sorter, and it follows the exe if you move it (open it once from the new place). Untick *Show «Sort with File Sorter» when right-clicking files and folders* in the window to remove it again. Nothing is installed system-wide: it lives in your own user's registry (`HKEY_CURRENT_USER\Software\Classes`).
+The entry is added when you open File Sorter, and it follows the exe if you move it (open it once from the new place). Turn off **Settings → Right-click menu → Show «Sort with File Sorter»** to remove it again; *Show the results window* there switches the little window off if you only want the files sorted. Nothing is installed system-wide: it lives in your own user's registry (`HKEY_CURRENT_USER\Software\Classes`).
 
 ## How it decides where a file goes
 
@@ -93,24 +93,43 @@ The entry is added when you open File Sorter, and it follows the exe if you move
 2. **File name first:** the module name and each keyword are looked for as whole words (`ai` doesn't match `maintain`; `algorithm` matches `algorithms`; case, accents, `_`, `-` and `.` don't matter, and `INF101`, `INF-101` and `INF 101` are all the same).
 3. **Then the content:** if the file name doesn't point to exactly one module, the text of the first pages of PDFs, the first slides of PowerPoints, or the start of Word documents is read and scored the same way.
 4. The module with the most hits wins. With no hits, or a tie between two modules, the file is left where it is.
-5. Files are **moved**, never copied: after sorting, a file exists only in its module folder. If another program still has it open (the browser, a PDF preview, the virus scanner), the sorter waits for it and tries again a little later instead of leaving it in two places.
+5. Files are **moved** (unless you choose *Copy* in the settings): after sorting, a file exists only in its module folder. If another program still has it open (the browser, a PDF preview, the virus scanner), the sorter waits for it and tries again a little later instead of leaving it in two places.
 6. If the **very same file** is already in the module folder (downloaded twice), the download is simply removed. If a *different* file with the same name is there (e.g. updated slides), the new one is saved as `name (1).pdf` – nothing is overwritten.
 7. Only one File Sorter watches at a time; starting a second one (another window or `--headless`) shows a message instead of both sorting the same files.
 
 **Tips for good keywords:** module codes (`INF-101`, `MA1`), short names used in file names (`prog1`, `linalg`), and the exact module title as it appears on the slides work best. Avoid generic words like `lecture` or `exercise` that appear in every module.
 
-You can turn off reading file contents in the window if you only want name-based sorting.
+You can turn off *Read file contents* in the settings if you only want name-based sorting.
+
+## Settings
+
+Everything on the **Settings** tab is saved as soon as you change it (a green *Saved* appears for a moment).
+
+| Setting | What it does |
+|---------|--------------|
+| **Language** | *Automatic* (like your computer), *Deutsch* or *English*. Also renames the right-click entry. |
+| **Appearance** | *Automatic* (follows Windows' light/dark mode), *Light* or *Dark*. |
+| **Animations** | Flying files, sliding cards and the pulsing status dot. Turn off for a calmer window. |
+| **What happens to a file** | **Move** (default): the file ends up only in its module folder and Downloads stays tidy. **Copy**: a copy goes to the module folder and the original stays where it was. Each file is copied only once – File Sorter remembers what it copied (`copied.json` next to the settings), so it doesn't copy a file again when it sorts the folder later, even if you annotated or renamed the copy. A new version with the same name is copied as `name (1).pdf`. |
+| **Read file contents** | When the file name isn't enough, read the text of PDFs, slides and Word files. |
+| **Include files already there** | When watching starts, also sort the files already in the folder (otherwise only new downloads). |
+| **File types** | Which types are sorted from the watched folder: tick or untick `.pdf`, `.pptx`, … or type others under *More* (e.g. `.svg, .ods`). *Defaults* restores the standard list. The right-click menu sorts any file you pick, whatever its type. |
+| **Start when I sign in** | File Sorter opens minimised in the taskbar and starts watching right away (Windows and Linux). |
+| **Start watching right away** | Begin watching as soon as you open the window. |
+| **Right-click menu** (Windows) | Show or hide «Sort with File Sorter», and whether the results window appears afterwards. |
+| **About** | Version, and buttons to open the log file and the settings folder. |
 
 ## Run it without a window / start automatically
 
 ```bash
-FileSorter.exe --headless   # watch in the background using saved settings
+FileSorter.exe --autostart  # open minimised and start watching (what "Start when I sign in" runs)
+FileSorter.exe --headless   # watch in the background without any window, using saved settings
 FileSorter.exe --sort-now   # sort what's already in the folder once and exit
 FileSorter.exe --sort FILE_OR_FOLDER...  # what the right-click entry runs; add --quiet for no window
 FileSorter.exe --register-menu           # add the right-click entry (Windows), --unregister-menu removes it
 ```
 
-Set up your modules in the window once; the headless mode uses the same settings.
+Set up your modules in the window once; the headless mode uses the same settings. The easiest way to start File Sorter at sign-in is **Settings → Start when I sign in**; the steps below run it completely without a window instead.
 
 **Windows:** press `Win+R`, type `shell:startup`, and create a shortcut there with target
 `"C:\path\to\FileSorter.exe" --headless`.
@@ -169,18 +188,19 @@ cargo clippy --all-targets
 | File | What it does |
 |------|--------------|
 | `src/main.rs` | command line (`--headless`, `--sort-now`, `--sort`, `--config`, …), starts the window |
-| `src/gui.rs` | the egui window (activity cards, flying files, statistics) |
+| `src/gui.rs` | the egui window: overview (activity cards, flying files, statistics) and settings tab |
 | `src/quicksort.rs` | right-click sorting: collects all selected files into one run and shows the results window |
-| `src/desktop.rs` | the right-click menu entry (Windows registry), "show in folder" |
+| `src/desktop.rs` | the right-click menu entry, starting at sign-in (Windows registry / Linux autostart), "show in folder" |
 | `src/winfix.rs` | removes Windows' "downloaded from the web" mark from the exe and its shortcuts |
 | `build.rs`, `assets/` | puts the icon and version info into the Windows exe (`assets/make_icon.py` draws the icon) |
-| `src/fx.rs` | theme, icons, easing and the animated drawings |
+| `src/fx.rs` | theme, icons, easing, switches and the animated drawings |
 | `src/i18n.rs` | all window texts in English and German |
 | `src/watcher.rs` | watches the folder, waits for downloads to finish, rescans every 10 s |
 | `src/matcher.rs` | keyword scoring |
 | `src/keywords.rs` | keyword suggestions from a module's files |
 | `src/extract.rs` | text from PDF / PPTX / DOCX |
-| `src/sorter.rs` | moving files (also across drives), duplicate handling |
+| `src/sorter.rs` | moving or copying files (also across drives), duplicate handling |
+| `src/ledger.rs` | copy mode: remembers which files were already copied |
 | `src/config.rs` | settings, module-folder import |
 
 `tests/e2e_firefox.py` downloads files with a real (headless) Firefox and checks they are sorted; it runs in CI on Windows (`pip install selenium`, then `python tests/e2e_firefox.py --exe dist/FileSorter.exe`).

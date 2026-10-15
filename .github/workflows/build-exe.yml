@@ -181,6 +181,52 @@ jobs:
           Remove-Item -Recurse $configDir
           Write-Host "right-click sorting works for files and folders, with one results window"
 
+      - name: Smoke-test starting at sign-in (minimised, watching, copy mode)
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path dist\FileSorter.exe).Path
+          $root = Join-Path $env:RUNNER_TEMP "autostart"
+          New-Item -ItemType Directory -Force "$root\Downloads" | Out-Null
+          $config = @{
+            watch_folder = "$root\Downloads"
+            destination_root = "$root\Studium"
+            action = "copy"
+            autostart = $true
+            courses = @(@{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("programming") })
+          }
+          $config | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
+          Add-Type -Namespace Win -Name User32 -MemberDefinition '[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);'
+          $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+
+          # What Windows runs at sign-in once the setting is on.
+          $p = Start-Process $exe -ArgumentList "--autostart", "--config", "`"$root\config.json`"" -PassThru
+          Start-Sleep -Seconds 8
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\week6.pptx"
+          $copy = "$root\Studium\Informatik\Programmierung 1\week6.pptx"
+          $deadline = (Get-Date).AddSeconds(30)
+          while (-not (Test-Path $copy) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          $p.Refresh()
+          $minimised = $p.MainWindowHandle -ne 0 -and [Win.User32]::IsIconic($p.MainWindowHandle)
+          $entry = (Get-ItemProperty $runKey -Name FileSorter -ErrorAction SilentlyContinue).FileSorter
+          $exited = $p.HasExited
+          if (-not $exited) { Stop-Process -Id $p.Id }
+          Get-Content "$root\file-sorter.log" -ErrorAction SilentlyContinue
+          Write-Host "minimised: $minimised / sign-in entry: $entry"
+          if ($exited) { throw "File Sorter closed by itself (exit code $($p.ExitCode))" }
+          if (-not (Test-Path $copy)) { throw "the file was not sorted while starting minimised" }
+          if (-not (Test-Path "$root\Downloads\week6.pptx")) { throw "copy mode removed the original" }
+          if (-not $minimised) { throw "the window did not start minimised" }
+          if ($entry -ne "`"$exe`" --autostart") { throw "sign-in entry missing or wrong: $entry" }
+
+          # Turning the setting off removes the entry again.
+          $config.autostart = $false
+          $config | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
+          $p = Start-Process $exe -ArgumentList "--config", "`"$root\config.json`"" -PassThru
+          Start-Sleep -Seconds 6
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id }
+          if (Get-ItemProperty $runKey -Name FileSorter -ErrorAction SilentlyContinue) { throw "sign-in entry was not removed" }
+          Write-Host "sign-in start works: minimised, watching, copy mode keeps the original; entry added and removed"
+
       - name: Smoke-test the window (wgpu)
         shell: pwsh
         run: |

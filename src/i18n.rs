@@ -93,12 +93,6 @@ impl Lang {
     pub fn import_modules(self) -> &'static str {
         self.pick("Import module folders", "Modulordner einlesen")
     }
-    pub fn read_contents(self) -> &'static str {
-        self.pick("Read text inside PDFs / slides / Word files", "Text in PDFs / Folien / Word-Dateien lesen")
-    }
-    pub fn sort_existing_on_start(self) -> &'static str {
-        self.pick("Also sort files already in the folder when starting", "Beim Start auch vorhandene Dateien sortieren")
-    }
 
     // ---------- modules ----------
     pub fn modules(self) -> &'static str {
@@ -154,7 +148,7 @@ impl Lang {
         self.pick("Sort existing files now", "Vorhandene Dateien jetzt sortieren")
     }
     pub fn save(self) -> &'static str {
-        self.pick("Save settings", "Einstellungen speichern")
+        self.pick("Save", "Speichern")
     }
 
     // ---------- activity ----------
@@ -175,6 +169,9 @@ impl Lang {
     }
     pub fn moved_to(self, course: &str) -> String {
         self.fmt(format!("Moved to {course}"), format!("Verschoben nach {course}"))
+    }
+    pub fn copied_to(self, course: &str) -> String {
+        self.fmt(format!("Copied to {course}"), format!("Kopiert nach {course}"))
     }
     pub fn duplicate_removed(self, course: &str) -> String {
         self.fmt(
@@ -202,9 +199,12 @@ impl Lang {
                 self.pick("Already in the module folder", "Liegt schon im Modulordner").into()
             }
             LeftReason::InUse { course } => self.fmt(
-                format!("Still open in another program – will move it to {course} as soon as it's free"),
-                format!("Noch in einem anderen Programm geöffnet – wird nach {course} verschoben, sobald sie frei ist"),
+                format!("Still open in another program – goes to {course} as soon as it's free"),
+                format!("Noch in einem anderen Programm geöffnet – kommt nach {course}, sobald sie frei ist"),
             ),
+            LeftReason::AlreadyCopied { course, .. } => {
+                self.fmt(format!("Already copied to {course} earlier"), format!("Wurde schon nach {course} kopiert"))
+            }
             LeftReason::Error(e) => self.fmt(format!("Error: {e}"), format!("Fehler: {e}")),
         }
     }
@@ -264,21 +264,6 @@ impl Lang {
     pub fn context_menu_label(self) -> &'static str {
         self.pick("Sort with File Sorter", "Mit File Sorter sortieren")
     }
-    pub fn context_menu_setting(self) -> &'static str {
-        self.pick(
-            "Show «Sort with File Sorter» when right-clicking files and folders",
-            "«Mit File Sorter sortieren» im Rechtsklick-Menü von Dateien und Ordnern anzeigen",
-        )
-    }
-    pub fn context_menu_tooltip(self) -> &'static str {
-        self.pick(
-            "Right-click any file (or several) and choose «Sort with File Sorter» to sort it right away. On a \
-             folder it sorts the documents inside. On Windows 11 the entry is under «Show more options».",
-            "Rechtsklick auf eine oder mehrere Dateien → «Mit File Sorter sortieren» sortiert sie sofort ein. Bei \
-             einem Ordner werden die Dokumente darin sortiert. Unter Windows 11 steht der Eintrag unter «Weitere \
-             Optionen anzeigen».",
-        )
-    }
     pub fn open_folder_hint(self) -> &'static str {
         self.pick("Click to show the file in its folder", "Klicken, um die Datei in ihrem Ordner zu zeigen")
     }
@@ -296,6 +281,172 @@ impl Lang {
     }
     pub fn keep_open(self) -> &'static str {
         self.pick("Keep open", "Offen lassen")
+    }
+
+    // ---------- tabs and settings ----------
+    pub fn tab_overview(self) -> &'static str {
+        self.pick("Overview", "Übersicht")
+    }
+    pub fn tab_settings(self) -> &'static str {
+        self.pick("Settings", "Einstellungen")
+    }
+    pub fn automatic(self) -> &'static str {
+        self.pick("Automatic", "Automatisch")
+    }
+    pub fn saved(self) -> &'static str {
+        self.pick("Saved", "Gespeichert")
+    }
+
+    pub fn general(self) -> &'static str {
+        self.pick("General", "Allgemein")
+    }
+    pub fn language_hint(self) -> &'static str {
+        self.pick("Automatic follows the language of your computer.", "Automatisch folgt der Sprache deines Computers.")
+    }
+    pub fn appearance(self) -> &'static str {
+        self.pick("Appearance", "Erscheinungsbild")
+    }
+    pub fn appearance_hint(self) -> &'static str {
+        self.pick("Light, dark, or like your computer.", "Hell, dunkel oder wie dein Computer.")
+    }
+    pub fn light(self) -> &'static str {
+        self.pick("Light", "Hell")
+    }
+    pub fn dark(self) -> &'static str {
+        self.pick("Dark", "Dunkel")
+    }
+    pub fn animations(self) -> &'static str {
+        self.pick("Animations", "Animationen")
+    }
+    pub fn animations_hint(self) -> &'static str {
+        self.pick(
+            "Flying files, sliding cards and the pulsing status dot.",
+            "Fliegende Dateien, einblendende Karten und der pulsierende Status.",
+        )
+    }
+
+    pub fn sorting(self) -> &'static str {
+        self.pick("Sorting", "Sortieren")
+    }
+    pub fn file_action(self) -> &'static str {
+        self.pick("What happens to a file", "Was mit einer Datei passiert")
+    }
+    pub fn action_move(self) -> &'static str {
+        self.pick("Move", "Verschieben")
+    }
+    pub fn action_move_hint(self) -> &'static str {
+        self.pick(
+            "The file ends up only in its module folder; Downloads stays tidy. (Recommended)",
+            "Die Datei liegt danach nur noch im Modulordner, der Download-Ordner bleibt aufgeräumt. (Empfohlen)",
+        )
+    }
+    pub fn action_copy(self) -> &'static str {
+        self.pick("Copy", "Kopieren")
+    }
+    pub fn action_copy_hint(self) -> &'static str {
+        self.pick(
+            "A copy goes to the module folder, the original stays where it was. Each file is copied only once.",
+            "Eine Kopie kommt in den Modulordner, das Original bleibt, wo es war. Jede Datei wird nur einmal kopiert.",
+        )
+    }
+    pub fn read_contents(self) -> &'static str {
+        self.pick("Read file contents", "Dateiinhalt lesen")
+    }
+    pub fn read_contents_hint(self) -> &'static str {
+        self.pick(
+            "If the file name isn't enough, read the text of PDFs, slides and Word files.",
+            "Wenn der Dateiname nicht reicht, den Text von PDFs, Folien und Word-Dateien lesen.",
+        )
+    }
+    pub fn sort_existing_on_start(self) -> &'static str {
+        self.pick("Include files already there", "Vorhandene Dateien mitsortieren")
+    }
+    pub fn sort_existing_on_start_hint(self) -> &'static str {
+        self.pick(
+            "When watching starts, also sort the files already in the folder.",
+            "Beim Start der Überwachung auch die Dateien sortieren, die schon im Ordner liegen.",
+        )
+    }
+    pub fn file_types(self) -> &'static str {
+        self.pick("File types", "Dateitypen")
+    }
+    pub fn file_types_hint(self) -> &'static str {
+        self.pick(
+            "Only these types are sorted from the watched folder. (The right-click menu sorts any file.)",
+            "Nur diese Typen werden aus dem überwachten Ordner sortiert. (Das Rechtsklick-Menü sortiert jede Datei.)",
+        )
+    }
+    pub fn more_types(self) -> &'static str {
+        self.pick("More:", "Weitere:")
+    }
+    pub fn defaults(self) -> &'static str {
+        self.pick("Defaults", "Standard")
+    }
+    pub fn no_types(self) -> &'static str {
+        self.pick(
+            "No file type selected – nothing will be sorted.",
+            "Kein Dateityp ausgewählt – es wird nichts sortiert.",
+        )
+    }
+
+    pub fn startup(self) -> &'static str {
+        self.pick("Startup", "Starten")
+    }
+    pub fn autostart(self) -> &'static str {
+        self.pick("Start when I sign in", "Beim Anmelden starten")
+    }
+    pub fn autostart_hint(self) -> &'static str {
+        self.pick(
+            "File Sorter opens minimised in the taskbar and starts watching right away.",
+            "File Sorter öffnet sich minimiert in der Taskleiste und überwacht sofort.",
+        )
+    }
+    pub fn watch_on_open(self) -> &'static str {
+        self.pick("Start watching right away", "Überwachung sofort starten")
+    }
+    pub fn watch_on_open_hint(self) -> &'static str {
+        self.pick(
+            "Begin watching as soon as the window opens.",
+            "Gleich beim Öffnen des Fensters mit dem Überwachen beginnen.",
+        )
+    }
+
+    pub fn right_click(self) -> &'static str {
+        self.pick("Right-click menu", "Rechtsklick-Menü")
+    }
+    pub fn context_menu_setting(self) -> &'static str {
+        self.pick("Show «Sort with File Sorter»", "«Mit File Sorter sortieren» anzeigen")
+    }
+    pub fn context_menu_hint(self) -> &'static str {
+        self.pick(
+            "Right-click files or a folder to sort them right away. On Windows 11 it's under «Show more options».",
+            "Rechtsklick auf Dateien oder einen Ordner sortiert sie sofort. Unter Windows 11 unter «Weitere Optionen anzeigen».",
+        )
+    }
+    pub fn results_window(self) -> &'static str {
+        self.pick("Show the results window", "Ergebnisfenster anzeigen")
+    }
+    pub fn results_window_hint(self) -> &'static str {
+        self.pick(
+            "After sorting from the right-click menu, briefly show where the files went.",
+            "Nach dem Sortieren per Rechtsklick kurz zeigen, wohin die Dateien gekommen sind.",
+        )
+    }
+
+    pub fn about(self) -> &'static str {
+        self.pick("About", "Info")
+    }
+    pub fn about_text(self) -> &'static str {
+        self.pick(
+            "Settings are saved automatically. The log file lists everything File Sorter did.",
+            "Einstellungen werden automatisch gespeichert. Die Log-Datei listet alles auf, was File Sorter gemacht hat.",
+        )
+    }
+    pub fn open_log(self) -> &'static str {
+        self.pick("Open log file", "Log-Datei öffnen")
+    }
+    pub fn open_settings_folder(self) -> &'static str {
+        self.pick("Open settings folder", "Einstellungsordner öffnen")
     }
 
     // ---------- dialogs ----------

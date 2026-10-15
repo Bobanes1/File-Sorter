@@ -374,6 +374,10 @@ fn handle(inner: &Arc<Inner>, path: &Path) {
             Outcome::Moved { .. } | Outcome::DuplicateRemoved { .. } => {
                 ignore.remove(&name);
             }
+            // Copy mode: the original stays; don't copy it again while it is unchanged.
+            Outcome::Copied { .. } => {
+                ignore.insert(name, signature(path));
+            }
             // Still open in another program: leave it out of the ignore list, so the
             // next rescan tries again.
             Outcome::Left(LeftReason::InUse { .. }) => {
@@ -620,6 +624,23 @@ mod tests {
         assert!(wait_for(|| fs::read_dir(h.downloads()).unwrap().count() == 0));
         let names: Vec<_> = fs::read_dir(&folder).unwrap().flatten().map(|e| file_name(&e.path())).collect();
         assert_eq!(names, vec!["python_vl1.pdf"]);
+    }
+
+    #[test]
+    fn copy_mode_copies_once_and_keeps_the_original() {
+        let mut h = Harness::new(|c| c.action = crate::config::FileAction::Copy);
+        h.watcher.start().unwrap();
+        let original = h.downloads().join("prog1_vl4.pdf");
+        make_pdf(&original, "Week 4");
+        let copy = h.uni().join("Programming Course").join("prog1_vl4.pdf");
+        assert!(wait_for(|| copy.exists()));
+        // Several rescans later: still exactly one copy, one report, and the original is untouched.
+        thread::sleep(Duration::from_millis(2000));
+        assert!(original.exists());
+        assert_eq!(fs::read(&original).unwrap(), fs::read(&copy).unwrap());
+        assert_eq!(fs::read_dir(copy.parent().unwrap()).unwrap().count(), 1);
+        assert_eq!(h.reports_for("prog1_vl4.pdf"), 1, "{:?}", h.messages());
+        assert!(h.messages().iter().any(|m| m.starts_with("Copied prog1_vl4.pdf → Programming Course")));
     }
 
     #[test]

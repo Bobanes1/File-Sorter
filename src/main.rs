@@ -12,6 +12,7 @@ mod fx;
 mod gui;
 mod i18n;
 mod keywords;
+mod ledger;
 mod logger;
 mod matcher;
 mod quicksort;
@@ -29,6 +30,7 @@ const USAGE: &str = "\
 Usage: file-sorter [--config PATH] [--headless | --sort-now | [--sort] FILE... [--quiet]]
 
   (no options)      open the window
+  --autostart       open the window minimised and start watching (used at sign-in)
   --headless        run without a window, only watching the folder
   --sort-now        sort files already in the watch folder once, then exit
   [--sort] FILE...  sort these files (or the documents in these folders) and show
@@ -42,6 +44,7 @@ struct Args {
     config: PathBuf,
     headless: bool,
     sort_now: bool,
+    autostart: bool,
     /// Files to sort right away (right-click menu, or dropped onto the exe).
     files: Vec<PathBuf>,
     quiet: bool,
@@ -53,6 +56,7 @@ fn parse_args() -> Result<Args, String> {
         config: default_config_path(),
         headless: false,
         sort_now: false,
+        autostart: false,
         files: Vec::new(),
         quiet: false,
         register_menu: None,
@@ -62,6 +66,7 @@ fn parse_args() -> Result<Args, String> {
         match arg.as_str() {
             "--headless" => args.headless = true,
             "--sort-now" => args.sort_now = true,
+            "--autostart" => args.autostart = true,
             "--sort" => {}
             "--quiet" => args.quiet = true,
             "--register-menu" => args.register_menu = Some(true),
@@ -115,7 +120,7 @@ fn main() -> ExitCode {
     }
 
     if !(args.headless || args.sort_now) {
-        return match gui::run(args.config) {
+        return match gui::run(args.config, args.autostart) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 log::error!("Could not open the window: {e}");

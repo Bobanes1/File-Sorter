@@ -11,6 +11,9 @@ use crate::matcher::normalise;
 
 pub const DEFAULT_EXTENSIONS: &[&str] =
     &[".pdf", ".pptx", ".ppt", ".docx", ".doc", ".key", ".odp", ".odt", ".txt", ".md", ".zip", ".ipynb", ".xlsx"];
+/// More types offered in the settings, off unless chosen.
+pub const EXTRA_EXTENSIONS: &[&str] =
+    &[".xls", ".csv", ".rtf", ".epub", ".tex", ".png", ".jpg", ".py", ".java", ".rar", ".7z", ".mp4"];
 
 /// Per-user location of config.json, following each OS's conventions.
 pub fn default_config_path() -> PathBuf {
@@ -90,6 +93,42 @@ pub struct Config {
     pub language: Option<String>,
     /// Offer "Sort with File Sorter" in Explorer's right-click menu (Windows).
     pub context_menu: bool,
+    /// Move files into the module folder (default), or copy them and leave the original.
+    pub action: FileAction,
+    pub theme: ThemeChoice,
+    /// Flying files, sliding cards and the pulsing status dot.
+    pub animations: bool,
+    /// Start watching as soon as the window opens.
+    pub watch_on_open: bool,
+    /// Start File Sorter (minimised, watching) when logging in.
+    pub autostart: bool,
+    /// Show the small results window after sorting from the right-click menu.
+    pub results_window: bool,
+    /// Where copy mode remembers which files it already copied (next to config.json).
+    /// Set at runtime, not saved.
+    #[serde(skip)]
+    pub copy_ledger: Option<PathBuf>,
+}
+
+/// What happens to a file once its module is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileAction {
+    /// The file ends up only in the module folder.
+    #[default]
+    Move,
+    /// The original stays in the watched folder, a copy goes to the module folder.
+    Copy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    /// Follow the system's light/dark setting.
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 impl Default for Config {
@@ -103,6 +142,13 @@ impl Default for Config {
             courses: Vec::new(),
             language: None,
             context_menu: true,
+            action: FileAction::Move,
+            theme: ThemeChoice::System,
+            animations: true,
+            watch_on_open: false,
+            autostart: false,
+            results_window: true,
+            copy_ledger: None,
         }
     }
 }
@@ -142,7 +188,7 @@ impl Config {
     }
 }
 
-fn normalise_ext(ext: &str) -> String {
+pub(crate) fn normalise_ext(ext: &str) -> String {
     let ext = ext.trim().to_lowercase();
     if ext.starts_with('.') { ext } else { format!(".{ext}") }
 }
@@ -155,11 +201,19 @@ pub fn safe_folder_name(name: &str) -> String {
 }
 
 pub fn load_config(path: &Path) -> io::Result<Config> {
-    if !path.exists() {
-        return Ok(Config::default());
-    }
-    let text = fs::read_to_string(path)?;
-    Config::from_json(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    let mut config = if path.exists() {
+        let text = fs::read_to_string(path)?;
+        Config::from_json(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+    } else {
+        Config::default()
+    };
+    config.copy_ledger = Some(copy_ledger_path(path));
+    Ok(config)
+}
+
+/// Copy mode's list of copied files, kept next to the settings file.
+pub fn copy_ledger_path(config_path: &Path) -> PathBuf {
+    config_path.parent().unwrap_or(Path::new(".")).join("copied.json")
 }
 
 pub fn save_config(config: &Config, path: &Path) -> io::Result<()> {
@@ -382,11 +436,19 @@ mod tests {
         let path = tmp.path().join("cfg").join("config.json");
         let cfg = Config {
             courses: vec![Course::new("Statistik", &["stats"]).with_subject("Mathematik")],
+            action: FileAction::Copy,
+            theme: ThemeChoice::Dark,
+            autostart: true,
+            copy_ledger: Some(tmp.path().join("cfg").join("copied.json")),
             ..Config::default()
         };
         save_config(&cfg, &path).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("\"action\": \"copy\"") && !saved.contains("copy_ledger"), "{saved}");
         assert_eq!(load_config(&path).unwrap(), cfg);
-        assert_eq!(load_config(&tmp.path().join("nope.json")).unwrap(), Config::default());
+        let missing = tmp.path().join("nope.json");
+        let defaults = Config { copy_ledger: Some(tmp.path().join("copied.json")), ..Config::default() };
+        assert_eq!(load_config(&missing).unwrap(), defaults);
     }
 
     #[test]

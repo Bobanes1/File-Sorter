@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::Config;
+use crate::config::{Config, FileAction};
 use crate::extract::extract_text;
+use crate::ledger::CopyLedger;
 use crate::matcher::{Reason, match_file};
 
 /// Partial downloads written by browsers before the file is complete.
@@ -22,6 +23,8 @@ const IN_USE_RETRY: Duration = Duration::from_secs(8);
 pub enum Outcome {
     /// Moved into the module folder.
     Moved { course: String, destination: PathBuf, reason: Reason },
+    /// Copied into the module folder (copy mode); the original stays where it was.
+    Copied { course: String, destination: PathBuf, reason: Reason },
     /// The very same file was already in the module folder, so the download was removed.
     DuplicateRemoved { course: String, existing: PathBuf },
     /// The file stays where it is.
@@ -39,6 +42,11 @@ pub enum LeftReason {
     /// Another program still has the file open; it will be tried again.
     InUse {
         course: String,
+    },
+    /// Copy mode: this file was copied before (or the module already has the same file).
+    AlreadyCopied {
+        course: String,
+        copy: PathBuf,
     },
     Error(String),
 }
@@ -58,16 +66,22 @@ impl SortResult {
         file_name(&self.source)
     }
 
-    /// True when the file is gone from the watched folder (moved, or removed as a duplicate).
-    pub fn moved(&self) -> bool {
+    /// True when the file is now in its module folder (moved, copied, or was there already as a duplicate).
+    pub fn sorted(&self) -> bool {
         !matches!(self.outcome, Outcome::Left(_))
     }
 
     #[cfg(test)]
     pub fn course(&self) -> Option<&str> {
         match &self.outcome {
-            Outcome::Moved { course, .. } | Outcome::DuplicateRemoved { course, .. } => Some(course),
-            Outcome::Left(LeftReason::AlreadyInFolder { course } | LeftReason::InUse { course }) => Some(course),
+            Outcome::Moved { course, .. }
+            | Outcome::Copied { course, .. }
+            | Outcome::DuplicateRemoved { course, .. } => Some(course),
+            Outcome::Left(
+                LeftReason::AlreadyInFolder { course }
+                | LeftReason::InUse { course }
+                | LeftReason::AlreadyCopied { course, .. },
+            ) => Some(course),
             Outcome::Left(_) => None,
         }
     }
@@ -75,7 +89,7 @@ impl SortResult {
     #[cfg(test)]
     pub fn destination(&self) -> Option<&Path> {
         match &self.outcome {
-            Outcome::Moved { destination, .. } => Some(destination),
+            Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } => Some(destination),
             Outcome::DuplicateRemoved { existing, .. } => Some(existing),
             Outcome::Left(_) => None,
         }
@@ -86,6 +100,7 @@ impl SortResult {
         let name = self.file_name();
         match &self.outcome {
             Outcome::Moved { course, reason, .. } => format!("Moved {name} → {course} ({})", reason.describe()),
+            Outcome::Copied { course, reason, .. } => format!("Copied {name} → {course} ({})", reason.describe()),
             Outcome::DuplicateRemoved { course, .. } => {
                 format!("Removed {name}: the same file is already in {course}")
             }
@@ -98,6 +113,7 @@ impl SortResult {
                     LeftReason::InUse { course } => {
                         format!("still open in another program, will retry (belongs to {course})")
                     }
+                    LeftReason::AlreadyCopied { course, .. } => format!("already copied to {course}"),
                     LeftReason::Error(e) => format!("error: {e}"),
                 };
                 format!("Left {name} in place – {why}")
@@ -211,6 +227,21 @@ pub fn move_file(from: &Path, to: &Path) -> Result<(), MoveError> {
     move_file_with_patience(from, to, IN_USE_RETRY)
 }
 
+/// Copy a file (copy mode), waiting up to `patience` while another program has it open.
+/// A copy that didn't arrive complete is removed again.
+pub fn copy_file_with_patience(from: &Path, to: &Path, patience: Duration) -> Result<(), MoveError> {
+    let size = fs::metadata(from).map_err(MoveError::Failed)?.len();
+    if let Err(e) = retry_while_in_use(patience, || fs::copy(from, to)) {
+        let _ = fs::remove_file(to);
+        return Err(if in_use(&e) { MoveError::InUse(e) } else { MoveError::Failed(e) });
+    }
+    if !fs::metadata(to).map(|m| m.len() == size).unwrap_or(false) {
+        let _ = fs::remove_file(to);
+        return Err(MoveError::Failed(io::Error::other("the file could not be copied completely")));
+    }
+    Ok(())
+}
+
 /// True if both files have exactly the same content.
 pub fn same_content(a: &Path, b: &Path) -> bool {
     let (Ok(ma), Ok(mb)) = (fs::metadata(a), fs::metadata(b)) else { return false };
@@ -282,6 +313,14 @@ fn sort_any_file(path: &Path, config: &Config, patience: Duration) -> SortResult
     if !path.is_file() {
         return SortResult::left(path, LeftReason::Gone);
     }
+    let copying = config.action == FileAction::Copy;
+    let mut ledger = match (&config.copy_ledger, copying) {
+        (Some(file), true) => Some((CopyLedger::load(file), file)),
+        _ => None,
+    };
+    if let Some(earlier) = ledger.as_ref().and_then(|(l, _)| l.earlier_copy(path)) {
+        return SortResult::left(path, LeftReason::AlreadyCopied { course: earlier.course, copy: earlier.copy });
+    }
     let Some(m) = match_file(path, &config.courses, config.read_file_contents, extract_text) else {
         return SortResult::left(path, LeftReason::NoMatch);
     };
@@ -301,6 +340,10 @@ fn sort_any_file(path: &Path, config: &Config, patience: Duration) -> SortResult
     // remove the download instead of keeping a second copy as "name (1)".
     let existing = folder.join(file_name(path));
     if existing.is_file() && same_content(path, &existing) {
+        if copying {
+            remember_copy(&mut ledger, path, &label, &existing);
+            return SortResult::left(path, LeftReason::AlreadyCopied { course: label, copy: existing });
+        }
         return match retry_while_in_use(patience, || fs::remove_file(path)) {
             Ok(()) => SortResult {
                 source: path.to_path_buf(),
@@ -312,13 +355,34 @@ fn sort_any_file(path: &Path, config: &Config, patience: Duration) -> SortResult
     }
 
     let target = unique_destination(&folder, &file_name(path));
-    match move_file_with_patience(path, &target, patience) {
+    let done = if copying {
+        copy_file_with_patience(path, &target, patience)
+    } else {
+        move_file_with_patience(path, &target, patience)
+    };
+    match done {
+        Ok(()) if copying => {
+            remember_copy(&mut ledger, path, &label, &target);
+            SortResult {
+                source: path.to_path_buf(),
+                outcome: Outcome::Copied { course: label, destination: target, reason: m.reason },
+            }
+        }
         Ok(()) => SortResult {
             source: path.to_path_buf(),
             outcome: Outcome::Moved { course: label, destination: target, reason: m.reason },
         },
         Err(MoveError::InUse(_)) => SortResult::left(path, LeftReason::InUse { course: label }),
         Err(MoveError::Failed(e)) => SortResult::left(path, LeftReason::Error(e.to_string())),
+    }
+}
+
+fn remember_copy(ledger: &mut Option<(CopyLedger, &PathBuf)>, original: &Path, course: &str, copy: &Path) {
+    if let Some((ledger, file)) = ledger {
+        ledger.record(original, course, copy);
+        if let Err(e) = ledger.save(file) {
+            log::info!("Could not update the list of copied files: {e}");
+        }
     }
 }
 
@@ -389,7 +453,7 @@ pub(crate) mod tests {
         let src = cfg.watch_path().join("prog1_slides.pdf");
         make_pdf(&src, "Week 1");
         let result = sort_file(&src, &cfg);
-        assert!(result.moved(), "{}", result.describe());
+        assert!(result.sorted(), "{}", result.describe());
         let dest = tmp.path().join("University").join("Programming Course").join("prog1_slides.pdf");
         assert_eq!(result.destination(), Some(dest.as_path()));
         assert!(dest.exists() && !src.exists());
@@ -411,13 +475,56 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn copy_mode_keeps_the_original_and_copies_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            action: FileAction::Copy,
+            copy_ledger: Some(tmp.path().join("copied.json")),
+            ..test_config(tmp.path())
+        };
+        let src = cfg.watch_path().join("prog1_slides.pdf");
+        make_pdf(&src, "Week 1");
+        let folder = tmp.path().join("University").join("Programming Course");
+        let copy = folder.join("prog1_slides.pdf");
+
+        let result = sort_file(&src, &cfg);
+        assert!(matches!(result.outcome, Outcome::Copied { .. }), "{}", result.describe());
+        assert!(result.sorted() && src.exists());
+        assert_eq!(fs::read(&src).unwrap(), fs::read(&copy).unwrap());
+
+        // Sorting again does nothing, even after the copy was annotated.
+        fs::write(&copy, "annotated").unwrap();
+        let again = sort_file(&src, &cfg);
+        assert!(matches!(again.outcome, Outcome::Left(LeftReason::AlreadyCopied { .. })), "{}", again.describe());
+        assert_eq!(again.describe(), "Left prog1_slides.pdf in place – already copied to Programming Course");
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+
+        // A new version under the same name is copied next to the old one.
+        make_pdf(&src, "Week 1, corrected");
+        let newer = sort_file(&src, &cfg);
+        assert_eq!(newer.destination(), Some(folder.join("prog1_slides (1).pdf").as_path()), "{}", newer.describe());
+    }
+
+    #[test]
+    fn copy_mode_without_list_skips_identical_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = Config { action: FileAction::Copy, ..test_config(tmp.path()) };
+        let src = cfg.watch_path().join("stats_sheet.pdf");
+        make_pdf(&src, "Sheet 1");
+        assert!(matches!(sort_file(&src, &cfg).outcome, Outcome::Copied { .. }));
+        let again = sort_file(&src, &cfg);
+        assert!(matches!(again.outcome, Outcome::Left(LeftReason::AlreadyCopied { .. })), "{}", again.describe());
+        assert_eq!(fs::read_dir(tmp.path().join("University").join("Statistics")).unwrap().count(), 1);
+    }
+
+    #[test]
     fn unmatched_file_stays() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = test_config(tmp.path());
         let src = cfg.watch_path().join("holiday.pdf");
         make_pdf(&src, "Beach trip");
         let result = sort_file(&src, &cfg);
-        assert!(!result.moved() && src.exists());
+        assert!(!result.sorted() && src.exists());
         assert_eq!(result.describe(), "Left holiday.pdf in place – no matching module");
     }
 
@@ -464,7 +571,7 @@ pub(crate) mod tests {
         let results = sort_existing(&cfg);
         let get = |n: &str| results.iter().find(|r| r.file_name() == n).unwrap();
         assert_eq!(get("stats_hw.pdf").course(), Some("Statistics"));
-        assert!(!get("random.pdf").moved());
+        assert!(!get("random.pdf").sorted());
     }
 
     #[test]
@@ -527,7 +634,7 @@ pub(crate) mod tests {
         make_pdf(&src, "same");
         let result = sort_file(&src, &cfg);
         assert!(matches!(result.outcome, Outcome::DuplicateRemoved { .. }), "{}", result.describe());
-        assert!(result.moved());
+        assert!(result.sorted());
         assert!(!src.exists(), "download must be gone");
         let names: Vec<_> = fs::read_dir(&folder).unwrap().flatten().map(|e| file_name(&e.path())).collect();
         assert_eq!(names, vec!["prog1.pdf"], "no second copy");
@@ -555,7 +662,7 @@ pub(crate) mod tests {
             make_pdf(&cfg.watch_path().join(format!("python_{i}.pdf")), "x");
         }
         for r in sort_existing(&cfg) {
-            assert!(r.moved(), "{}", r.describe());
+            assert!(r.sorted(), "{}", r.describe());
             assert!(!r.source.exists(), "{} still in the watch folder", r.file_name());
             assert!(r.destination().unwrap().exists());
         }
@@ -579,7 +686,7 @@ pub(crate) mod tests {
         });
         let result = sort_file_with_patience(&src, &cfg, Duration::from_secs(10));
         release.join().unwrap();
-        assert!(result.moved(), "{}", result.describe());
+        assert!(result.sorted(), "{}", result.describe());
         assert!(!src.exists());
     }
 

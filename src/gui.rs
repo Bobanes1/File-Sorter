@@ -1,4 +1,5 @@
-//! The window: folders, modules with keywords, start/stop and an animated activity feed (egui on wgpu).
+//! The window (egui on wgpu): an overview with folders, modules, keywords, start/stop and an
+//! animated activity feed, and a settings tab.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,7 +13,10 @@ use eframe::egui::{
 };
 use egui_phosphor::regular as icon;
 
-use crate::config::{Config, Course, expand_user, load_config, merge_courses, save_config, scan_study_folder};
+use crate::config::{
+    Config, Course, DEFAULT_EXTENSIONS, EXTRA_EXTENSIONS, FileAction, ThemeChoice, expand_user, load_config,
+    merge_courses, normalise_ext, save_config, scan_study_folder,
+};
 use crate::fx;
 use crate::i18n::Lang;
 use crate::keywords::{Suggestion, suggest_keywords};
@@ -28,7 +32,8 @@ const CARD_APPEAR_SECS: f64 = 0.35;
 const CARD_FLASH_SECS: f64 = 0.9;
 const MAX_CARDS: usize = 200;
 
-pub fn run(config_path: PathBuf) -> eframe::Result<()> {
+/// Open the window. `autostart`: opened at sign-in, so start minimised and watching.
+pub fn run(config_path: PathBuf, autostart: bool) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("File Sorter")
@@ -37,7 +42,7 @@ pub fn run(config_path: PathBuf) -> eframe::Result<()> {
             .with_min_inner_size([720.0, 640.0]),
         ..Default::default()
     };
-    eframe::run_native("File Sorter", options, Box::new(move |cc| Ok(Box::new(App::new(cc, config_path)))))
+    eframe::run_native("File Sorter", options, Box::new(move |cc| Ok(Box::new(App::new(cc, config_path, autostart)))))
 }
 
 /// The window and taskbar icon (the exe itself gets the same icon from build.rs).
@@ -89,8 +94,12 @@ impl Card {
     /// Where the file of this card ended up, if it was sorted.
     pub(crate) fn destination(&self) -> Option<&std::path::Path> {
         match &self.kind {
-            CardKind::File { state: FileState::Done(Outcome::Moved { destination, .. }), .. } => Some(destination),
-            CardKind::File { state: FileState::Done(Outcome::DuplicateRemoved { existing, .. }), .. } => Some(existing),
+            CardKind::File { state: FileState::Done(outcome), .. } => match outcome {
+                Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } => Some(destination),
+                Outcome::DuplicateRemoved { existing, .. } => Some(existing),
+                Outcome::Left(LeftReason::AlreadyCopied { copy, .. }) => Some(copy),
+                Outcome::Left(_) => None,
+            },
             _ => None,
         }
     }
@@ -129,6 +138,12 @@ enum ErrorBox {
     CouldNotSave(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Overview,
+    Settings,
+}
+
 struct App {
     config_path: PathBuf,
     config: Config,
@@ -160,10 +175,26 @@ struct App {
     watch_field_rect: Option<Rect>,
     row_rects: HashMap<String, Rect>,
     list_clip: Option<Rect>,
+
+    tab: Tab,
+    /// When the current tab was opened (it fades in).
+    tab_opened: f64,
+    /// The "More:" field for file types that have no chip.
+    more_types: String,
+    /// A settings change not saved yet (saved a moment later), and when the last save happened.
+    unsaved_since: Option<f64>,
+    saved_at: f64,
+    /// Opened at sign-in: minimise on the first frame.
+    minimise: bool,
+}
+
+/// File types with a chip in the settings.
+fn known_types() -> impl Iterator<Item = &'static str> {
+    DEFAULT_EXTENSIONS.iter().chain(EXTRA_EXTENSIONS).copied()
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, config_path: PathBuf) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, config_path: PathBuf, autostart: bool) -> Self {
         fx::install(&cc.egui_ctx);
         let (events_tx, events_rx) = channel();
         let (config, unreadable) = match load_config(&config_path) {
@@ -196,13 +227,35 @@ impl App {
             watch_field_rect: None,
             row_rects: HashMap::new(),
             list_clip: None,
+            tab: Tab::Overview,
+            tab_opened: f64::NEG_INFINITY,
+            more_types: String::new(),
+            unsaved_since: None,
+            saved_at: f64::NEG_INFINITY,
+            minimise: autostart,
         };
         if let Some(error) = unreadable {
             let path = app.config_path.display().to_string();
             app.note(Note::ConfigUnreadable { path, error });
         }
+        app.more_types = app
+            .config
+            .extensions
+            .iter()
+            .filter(|e| !known_types().any(|k| k == *e))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        fx::apply_theme(&app.ctx, app.config.theme);
+        fx::set_motion(&app.ctx, app.config.animations);
         app.sort_courses();
+        // Keep the right-click entry and the sign-in entry pointing at this exe (it may have moved).
         app.apply_context_menu();
+        crate::desktop::apply_autostart_setting(app.config.autostart);
+        // Started here rather than on the first frame, which a minimised window may not get soon.
+        if autostart || app.config.watch_on_open {
+            app.toggle_watching();
+        }
         app
     }
 
@@ -262,7 +315,9 @@ impl App {
                 self.roll_day();
                 let name = result.file_name();
                 match &result.outcome {
-                    Outcome::Moved { course, .. } | Outcome::DuplicateRemoved { course, .. } => {
+                    Outcome::Moved { course, .. }
+                    | Outcome::Copied { course, .. }
+                    | Outcome::DuplicateRemoved { course, .. } => {
                         self.stats.sorted += 1;
                         self.flights.push(Flight { name: name.clone(), target: course.clone(), start: now });
                     }
@@ -342,12 +397,47 @@ impl App {
         }
     }
 
-    fn set_language(&mut self, lang: Lang) {
-        if self.lang != lang {
-            self.lang = lang;
-            self.config.language = Some(lang.code().to_string());
-            self.apply_context_menu();
-            self.save_quietly();
+    /// `None` follows the system language.
+    fn set_language(&mut self, choice: Option<Lang>) {
+        self.config.language = choice.map(|lang| lang.code().to_string());
+        self.lang = Lang::from_setting(self.config.language.as_deref());
+        self.apply_context_menu();
+    }
+
+    /// A setting changed: save it a moment later (typing in a field changes it on every key).
+    fn settings_changed(&mut self) {
+        self.unsaved_since = Some(self.now());
+    }
+
+    fn save_pending_settings(&mut self) {
+        if let Some(t) = self.unsaved_since
+            && self.now() - t > 0.4
+        {
+            self.unsaved_since = None;
+            if self.save_quietly() {
+                self.saved_at = self.now();
+            }
+        }
+    }
+
+    /// The chosen chips plus whatever is typed into the "More:" field.
+    fn apply_more_types(&mut self) {
+        let mut types: Vec<String> =
+            self.config.extensions.iter().filter(|e| known_types().any(|k| k == *e)).cloned().collect();
+        for part in self.more_types.split([',', ';', ' ']) {
+            let ext = normalise_ext(part);
+            let valid = ext.len() > 1 && !ext[1..].contains(['.', '/', '\\', '*']);
+            if valid && !types.contains(&ext) {
+                types.push(ext);
+            }
+        }
+        self.config.extensions = types;
+    }
+
+    fn switch_tab(&mut self, tab: Tab) {
+        if self.tab != tab {
+            self.tab = tab;
+            self.tab_opened = self.now();
         }
     }
 
@@ -504,6 +594,7 @@ impl App {
             } else {
                 lang.stopped().to_string()
             };
+            let motion = fx::motion(&self.ctx);
             egui::Frame::new()
                 .fill(color.gamma_multiply(0.14))
                 .corner_radius(CornerRadius::same(14))
@@ -511,23 +602,47 @@ impl App {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let (rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
-                        fx::pulse_dot(ui.painter(), rect.center(), color, running, now);
+                        fx::pulse_dot(ui.painter(), rect.center(), color, running && motion, now);
                         ui.label(RichText::new(text).color(color).strong());
                     });
                 });
 
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                for choice in [Lang::En, Lang::De] {
-                    let label = RichText::new(choice.code().to_uppercase()).strong();
-                    if ui.selectable_label(self.lang == choice, label).clicked() {
-                        self.set_language(choice);
-                    }
-                }
-                ui.label(RichText::new(icon::GLOBE).size(18.0)).on_hover_text(lang.language());
-            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.tabs_ui(ui));
         });
-        ui.add_space(8.0);
-        self.stats_ui(ui);
+        if self.tab == Tab::Overview {
+            ui.add_space(8.0);
+            self.stats_ui(ui);
+        }
+    }
+
+    /// "Overview | Settings" with an underline that slides to the open tab.
+    fn tabs_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let accent = fx::accent(ui);
+        let mut open_rect = None;
+        // Right to left: Settings is drawn first.
+        for (tab, glyph, text) in [
+            (Tab::Settings, icon::GEAR_SIX, lang.tab_settings()),
+            (Tab::Overview, icon::SQUARES_FOUR, lang.tab_overview()),
+        ] {
+            let open = self.tab == tab;
+            let color = if open { accent } else { ui.visuals().text_color() };
+            let label = RichText::new(format!("{glyph}  {text}")).size(15.0).color(color).strong();
+            let response = ui.add(egui::Button::new(label).frame_when_inactive(false).min_size(vec2(0.0, 32.0)));
+            if response.clicked() {
+                self.switch_tab(tab);
+            }
+            if open {
+                open_rect = Some(response.rect);
+            }
+        }
+        if let Some(target) = open_rect {
+            let secs = fx::anim_time(ui.ctx(), 0.25);
+            let left = ui.ctx().animate_value_with_time(Id::new("tab-left"), target.left() + 8.0, secs);
+            let width = ui.ctx().animate_value_with_time(Id::new("tab-width"), target.width() - 16.0, secs);
+            let bar = Rect::from_min_size(Pos2::new(left, target.bottom() + 1.0), vec2(width, 3.0));
+            ui.painter().rect_filled(bar, CornerRadius::same(2), accent);
+        }
     }
 
     fn stats_ui(&mut self, ui: &mut egui::Ui) {
@@ -625,18 +740,6 @@ impl App {
                 }
             });
         });
-        ui.horizontal_wrapped(|ui| {
-            ui.checkbox(&mut self.config.read_file_contents, lang.read_contents());
-            ui.add_space(16.0);
-            ui.checkbox(&mut self.config.sort_existing_on_start, lang.sort_existing_on_start());
-        });
-        if cfg!(windows) {
-            let label = format!("{} {}", icon::CURSOR_CLICK, lang.context_menu_setting());
-            if ui.checkbox(&mut self.config.context_menu, label).on_hover_text(lang.context_menu_tooltip()).changed() {
-                self.apply_context_menu();
-                self.save_quietly();
-            }
-        }
     }
 
     // ---------- modules ----------
@@ -709,11 +812,7 @@ impl App {
             let painter = ui.painter();
             let visuals = ui.visuals();
             let row = rect.shrink2(vec2(2.0, 1.0));
-            let fill = if selected {
-                accent.gamma_multiply(0.85)
-            } else {
-                visuals.widgets.hovered.weak_bg_fill.gamma_multiply(hover)
-            };
+            let fill = if selected { accent } else { visuals.widgets.hovered.weak_bg_fill.gamma_multiply(hover) };
             painter.rect_filled(row, CornerRadius::same(7), fill);
 
             // A file just arrived here: glow, and a "+1" floating up.
@@ -736,8 +835,9 @@ impl App {
                 );
             }
 
-            let text_color = if selected { Color32::WHITE } else { visuals.text_color() };
-            let dim = if selected { Color32::from_white_alpha(200) } else { visuals.weak_text_color() };
+            let on_accent = visuals.selection.stroke.color;
+            let text_color = if selected { on_accent } else { visuals.text_color() };
+            let dim = if selected { on_accent.gamma_multiply(0.75) } else { visuals.weak_text_color() };
             let mut x = rect.left() + 10.0;
             let font = FontId::proportional(14.0);
             if !course.subject.is_empty() {
@@ -755,7 +855,7 @@ impl App {
                     rect.right_center() - vec2(16.0 + size.x / 2.0, 0.0),
                     vec2(size.x + 12.0, 18.0),
                 );
-                let badge_fill = if selected { Color32::from_white_alpha(60) } else { accent.gamma_multiply(0.25) };
+                let badge_fill = if selected { on_accent.gamma_multiply(0.2) } else { accent.gamma_multiply(0.25) };
                 painter.rect_filled(badge_rect, CornerRadius::same(9), badge_fill);
                 painter.text(badge_rect.center(), Align2::CENTER_CENTER, badge, FontId::proportional(12.0), text_color);
             }
@@ -816,6 +916,190 @@ impl App {
             let text = format!("{} {}", lang.files_go_to(), folder.display());
             ui.add(egui::Label::new(RichText::new(text).weak()).wrap());
         }
+    }
+
+    // ---------- settings ----------
+
+    fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let mut changed = false;
+
+        // "Saved ✓" fades out after each automatic save.
+        let shown = (1.0 - (self.now() - self.saved_at - 1.2) / 0.6).clamp(0.0, 1.0) as f32;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(lang.tab_settings()).size(20.0).strong());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if shown > 0.0 {
+                    let text = format!("{} {}", icon::CHECK_CIRCLE, lang.saved());
+                    ui.label(RichText::new(text).color(fx::GREEN.gamma_multiply(shown)));
+                }
+            });
+        });
+        ui.add_space(4.0);
+
+        section(ui, icon::SLIDERS_HORIZONTAL, lang.general(), |ui| {
+            setting_row(ui, icon::GLOBE, lang.language(), lang.language_hint(), |ui| {
+                let mut choice = self.config.language.as_deref().map(Lang::from_locale);
+                let options = [
+                    (None, lang.automatic().to_string()),
+                    (Some(Lang::De), "Deutsch".to_string()),
+                    (Some(Lang::En), "English".to_string()),
+                ];
+                if fx::segmented(ui, "language", &mut choice, &options) {
+                    self.set_language(choice);
+                    changed = true;
+                }
+            });
+            setting_row(ui, icon::PALETTE, lang.appearance(), lang.appearance_hint(), |ui| {
+                let options = [
+                    (ThemeChoice::System, format!("{} {}", icon::CIRCLE_HALF, lang.automatic())),
+                    (ThemeChoice::Light, format!("{} {}", icon::SUN, lang.light())),
+                    (ThemeChoice::Dark, format!("{} {}", icon::MOON, lang.dark())),
+                ];
+                if fx::segmented(ui, "theme", &mut self.config.theme, &options) {
+                    fx::apply_theme(&self.ctx, self.config.theme);
+                    changed = true;
+                }
+            });
+            setting_row(ui, icon::SPARKLE, lang.animations(), lang.animations_hint(), |ui| {
+                if fx::toggle(ui, &mut self.config.animations).changed() {
+                    fx::set_motion(&self.ctx, self.config.animations);
+                    changed = true;
+                }
+            });
+        });
+        ui.add_space(10.0);
+
+        section(ui, icon::ARROWS_SPLIT, lang.sorting(), |ui| {
+            ui.label(RichText::new(lang.file_action()).strong());
+            ui.add_space(2.0);
+            let choices = [
+                (FileAction::Move, icon::ARROW_FAT_RIGHT, lang.action_move(), lang.action_move_hint()),
+                (FileAction::Copy, icon::COPY, lang.action_copy(), lang.action_copy_hint()),
+            ];
+            ui.columns(2, |cols| {
+                for (col, (action, glyph, title, hint)) in cols.iter_mut().zip(choices) {
+                    let chosen = self.config.action == action;
+                    if choice_card(col, chosen, glyph, title, hint).clicked() && !chosen {
+                        self.config.action = action;
+                        changed = true;
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            setting_row(ui, icon::FILE_MAGNIFYING_GLASS, lang.read_contents(), lang.read_contents_hint(), |ui| {
+                changed |= fx::toggle(ui, &mut self.config.read_file_contents).changed();
+            });
+            setting_row(ui, icon::BROOM, lang.sort_existing_on_start(), lang.sort_existing_on_start_hint(), |ui| {
+                changed |= fx::toggle(ui, &mut self.config.sort_existing_on_start).changed();
+            });
+            changed |= self.file_types_ui(ui);
+        });
+        ui.add_space(10.0);
+
+        section(ui, icon::ROCKET_LAUNCH, lang.startup(), |ui| {
+            if crate::desktop::autostart_supported() {
+                setting_row(ui, icon::POWER, lang.autostart(), lang.autostart_hint(), |ui| {
+                    if fx::toggle(ui, &mut self.config.autostart).changed() {
+                        crate::desktop::apply_autostart_setting(self.config.autostart);
+                        changed = true;
+                    }
+                });
+            }
+            setting_row(ui, icon::PLAY_CIRCLE, lang.watch_on_open(), lang.watch_on_open_hint(), |ui| {
+                changed |= fx::toggle(ui, &mut self.config.watch_on_open).changed();
+            });
+        });
+        ui.add_space(10.0);
+
+        if cfg!(windows) {
+            section(ui, icon::CURSOR_CLICK, lang.right_click(), |ui| {
+                setting_row(ui, icon::LIST_BULLETS, lang.context_menu_setting(), lang.context_menu_hint(), |ui| {
+                    if fx::toggle(ui, &mut self.config.context_menu).changed() {
+                        self.apply_context_menu();
+                        changed = true;
+                    }
+                });
+                setting_row(ui, icon::APP_WINDOW, lang.results_window(), lang.results_window_hint(), |ui| {
+                    changed |= fx::toggle(ui, &mut self.config.results_window).changed();
+                });
+            });
+            ui.add_space(10.0);
+        }
+
+        section(ui, icon::INFO, lang.about(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icon::GRADUATION_CAP).size(30.0).color(fx::accent(ui)));
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(format!("File Sorter {}", env!("CARGO_PKG_VERSION"))).size(16.0).strong());
+                    ui.add(egui::Label::new(RichText::new(lang.about_text()).weak()).wrap());
+                });
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let folder = self.config_path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+                if ui.button(format!("{} {}", icon::FILE_TEXT, lang.open_log())).clicked() {
+                    crate::desktop::open(&folder.join("file-sorter.log"));
+                }
+                if ui.button(format!("{} {}", icon::FOLDER_OPEN, lang.open_settings_folder())).clicked() {
+                    crate::desktop::open(&folder);
+                }
+            });
+        });
+
+        if changed {
+            self.settings_changed();
+        }
+    }
+
+    /// Chips for the common file types, a field for others, and "Defaults". Returns true if changed.
+    fn file_types_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        let lang = self.lang;
+        let mut changed = false;
+        setting_row(ui, icon::FILES, lang.file_types(), lang.file_types_hint(), |_| {});
+        ui.horizontal(|ui| {
+            ui.add_space(34.0);
+            // Wrapped lines start at the indent too.
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                for ext in known_types() {
+                    let on = self.config.extensions.iter().any(|e| e == ext);
+                    let text = format!("{} {ext}", if on { icon::CHECK } else { icon::PLUS });
+                    let chip = egui::Button::new(RichText::new(text).size(13.0))
+                        .selected(on)
+                        .corner_radius(CornerRadius::same(12));
+                    if ui.add(chip).clicked() {
+                        if on {
+                            self.config.extensions.retain(|e| e != ext);
+                        } else {
+                            self.config.extensions.push(ext.to_string());
+                        }
+                        changed = true;
+                    }
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(34.0);
+            ui.label(lang.more_types());
+            let field = egui::TextEdit::singleline(&mut self.more_types).hint_text(".svg, .ods").desired_width(200.0);
+            if ui.add(field).changed() {
+                self.apply_more_types();
+                changed = true;
+            }
+            if ui.button(format!("{} {}", icon::ARROW_COUNTER_CLOCKWISE, lang.defaults())).clicked() {
+                self.config.extensions = DEFAULT_EXTENSIONS.iter().map(|e| e.to_string()).collect();
+                self.more_types.clear();
+                changed = true;
+            }
+        });
+        if self.config.extensions.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(34.0);
+                ui.label(RichText::new(format!("{} {}", icon::WARNING_CIRCLE, lang.no_types())).color(fx::AMBER));
+            });
+        }
+        changed
     }
 
     // ---------- controls and activity ----------
@@ -884,9 +1168,10 @@ impl App {
             .map(|r| r.left_center() + vec2(90.0, 0.0))
             .unwrap_or(screen.left_top() + vec2(120.0, 60.0));
         let mut arrived = Vec::new();
+        let fly = fx::motion(ctx) && self.tab == Tab::Overview;
         for (i, flight) in self.flights.iter().enumerate() {
             let t = ((now - flight.start) / FLIGHT_SECS) as f32;
-            if t >= 1.0 {
+            if t >= 1.0 || !fly {
                 arrived.push(i);
                 continue;
             }
@@ -1078,6 +1363,8 @@ impl App {
         let now = self.now();
         let animating = !self.flights.is_empty()
             || self.glows.values().any(|t| now - t < GLOW_SECS)
+            || now - self.tab_opened < 0.3
+            || now - self.saved_at < 1.9
             || self
                 .cards
                 .iter()
@@ -1086,7 +1373,9 @@ impl App {
                 .any(|c| now - c.born < CARD_APPEAR_SECS || now - c.changed < CARD_FLASH_SECS);
         if animating {
             self.ctx.request_repaint();
-        } else if self.running() {
+        } else if self.unsaved_since.is_some() {
+            self.ctx.request_repaint_after(Duration::from_millis(150));
+        } else if self.running() && fx::motion(&self.ctx) {
             // The radar pulse; 25 frames per second are plenty for it.
             self.ctx.request_repaint_after(Duration::from_millis(40));
         }
@@ -1129,6 +1418,9 @@ fn card_look(ui: &egui::Ui, lang: Lang, card: &Card) -> CardLook {
             FileState::Done(Outcome::Moved { course, reason, .. }) => {
                 (icon::CHECK_CIRCLE, fx::GREEN, name.clone(), Some(lang.moved_to(course)), Some(lang.reason(reason)))
             }
+            FileState::Done(Outcome::Copied { course, reason, .. }) => {
+                (icon::COPY, fx::GREEN, name.clone(), Some(lang.copied_to(course)), Some(lang.reason(reason)))
+            }
             FileState::Done(Outcome::DuplicateRemoved { course, .. }) => {
                 (icon::COPY_SIMPLE, accent, name.clone(), Some(lang.duplicate_removed(course)), None)
             }
@@ -1136,6 +1428,7 @@ fn card_look(ui: &egui::Ui, lang: Lang, card: &Card) -> CardLook {
                 let (glyph, color) = match reason {
                     LeftReason::NoMatch => (icon::WARNING_CIRCLE, fx::AMBER),
                     LeftReason::InUse { .. } => (icon::HOURGLASS_MEDIUM, fx::AMBER),
+                    LeftReason::AlreadyCopied { .. } => (icon::COPY, weak),
                     LeftReason::Error(_) => (icon::X_CIRCLE, fx::RED),
                     _ => (icon::INFO, weak),
                 };
@@ -1166,8 +1459,9 @@ fn card_look(ui: &egui::Ui, lang: Lang, card: &Card) -> CardLook {
 pub(crate) fn card_ui(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64) -> egui::Response {
     let (glyph, color, title, line, detail) = card_look(ui, lang, card);
     let weak = ui.visuals().weak_text_color();
-    let appear = fx::ease_out_cubic(((now - card.born) / CARD_APPEAR_SECS) as f32);
-    let flash = if card.changed > card.born {
+    let motion = fx::motion(ui.ctx());
+    let appear = if motion { fx::ease_out_cubic(((now - card.born) / CARD_APPEAR_SECS) as f32) } else { 1.0 };
+    let flash = if motion && card.changed > card.born {
         (1.0 - (now - card.changed) / CARD_FLASH_SECS).clamp(0.0, 1.0) as f32
     } else {
         0.0
@@ -1255,29 +1549,51 @@ impl eframe::App for App {
         }
         let now = self.now();
         self.glows.retain(|_, t| now - *t < GLOW_SECS);
+        if std::mem::take(&mut self.minimise) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
 
         let header_fill = fx::lerp_color(ui.visuals().panel_fill, fx::accent(ui), 0.06);
         egui::Panel::top("header")
             .frame(egui::Frame::new().fill(header_fill).inner_margin(Margin::symmetric(14, 10)))
             .show(ui, |ui| self.header_ui(ui));
-        egui::Panel::bottom("activity").resizable(true).default_size(210.0).min_size(120.0).show(ui, |ui| {
-            ui.add_space(6.0);
-            self.activity_ui(ui);
-        });
-        // Directly above the activity feed, so the buttons are always visible.
-        egui::Panel::bottom("controls").show(ui, |ui| {
-            ui.add_space(8.0);
-            self.controls_ui(ui);
-            ui.add_space(6.0);
-        });
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            egui::ScrollArea::vertical().id_salt("main").auto_shrink([false, false]).show(ui, |ui| {
-                let lang = self.lang;
-                section(ui, icon::FOLDER_SIMPLE, lang.folders(), |ui| self.folders_ui(ui));
-                ui.add_space(10.0);
-                section(ui, icon::STACK, lang.modules(), |ui| self.modules_ui(ui));
-            });
-        });
+        // The opened tab fades in.
+        let fade = if fx::motion(ui.ctx()) { fx::ease_out_cubic(((now - self.tab_opened) / 0.25) as f32) } else { 1.0 };
+        match self.tab {
+            Tab::Overview => {
+                egui::Panel::bottom("activity").resizable(true).default_size(210.0).min_size(120.0).show(ui, |ui| {
+                    ui.set_opacity(fade);
+                    ui.add_space(6.0);
+                    self.activity_ui(ui);
+                });
+                // Directly above the activity feed, so the buttons are always visible.
+                egui::Panel::bottom("controls").show(ui, |ui| {
+                    ui.set_opacity(fade);
+                    ui.add_space(8.0);
+                    self.controls_ui(ui);
+                    ui.add_space(6.0);
+                });
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    ui.set_opacity(fade);
+                    egui::ScrollArea::vertical().id_salt("main").auto_shrink([false, false]).show(ui, |ui| {
+                        let lang = self.lang;
+                        section(ui, icon::FOLDER_SIMPLE, lang.folders(), |ui| self.folders_ui(ui));
+                        ui.add_space(10.0);
+                        section(ui, icon::STACK, lang.modules(), |ui| self.modules_ui(ui));
+                    });
+                });
+            }
+            Tab::Settings => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    ui.set_opacity(fade);
+                    egui::ScrollArea::vertical().id_salt("settings").auto_shrink([false, false]).show(ui, |ui| {
+                        self.settings_ui(ui);
+                        ui.add_space(12.0);
+                    });
+                });
+            }
+        }
+        self.save_pending_settings();
         let ctx = ui.ctx().clone();
         self.flights_ui(&ctx);
         self.dialogs_ui(&ctx);
@@ -1308,8 +1624,62 @@ fn section(ui: &mut egui::Ui, glyph: &str, title: &str, add_contents: impl FnOnc
         ui.label(RichText::new(glyph).size(18.0).color(fx::accent(ui)));
         ui.label(RichText::new(title).strong().size(16.0));
     });
-    egui::Frame::group(ui.style())
+    egui::Frame::group(ui.style()).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(12)).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            add_contents(ui);
+        },
+    );
+}
+
+/// One setting: icon, title and explanation on the left, its control on the right.
+fn setting_row(ui: &mut egui::Ui, glyph: &str, title: &str, hint: &str, control: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(vec2(26.0, 22.0), Layout::left_to_right(Align::Center), |ui| {
+            ui.label(RichText::new(glyph).size(20.0).color(fx::accent(ui)));
+        });
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            control(ui);
+            ui.add_space(16.0);
+            ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.label(RichText::new(title).strong());
+                ui.add(egui::Label::new(RichText::new(hint).weak()).wrap());
+            });
+        });
+    });
+    ui.add_space(6.0);
+}
+
+/// A large selectable card (for "Move" / "Copy"); the chosen one is outlined and tinted.
+fn choice_card(ui: &mut egui::Ui, chosen: bool, glyph: &str, title: &str, hint: &str) -> egui::Response {
+    let accent = fx::accent(ui);
+    let id = ui.id().with(("choice", title));
+    let t = ui.ctx().animate_bool_with_time(id, chosen, fx::anim_time(ui.ctx(), 0.2));
+    let border = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let response = egui::Frame::new()
+        .fill(fx::lerp_color(ui.visuals().faint_bg_color, accent, 0.14 * t))
+        .stroke(Stroke::new(1.0 + t, fx::lerp_color(border, accent, t)))
         .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::same(12))
-        .show(ui, add_contents);
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_min_height(58.0);
+            ui.horizontal_top(|ui| {
+                let glyph_color = fx::lerp_color(ui.visuals().weak_text_color(), accent, t);
+                ui.label(RichText::new(glyph).size(26.0).color(glyph_color));
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(title).size(15.0).strong());
+                        if chosen {
+                            ui.label(RichText::new(icon::CHECK_CIRCLE).size(16.0).color(accent));
+                        }
+                    });
+                    ui.add(egui::Label::new(RichText::new(hint).weak()).wrap());
+                });
+            });
+        })
+        .response;
+    ui.interact(response.rect, id.with("click"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand)
 }

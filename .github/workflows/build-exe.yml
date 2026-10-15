@@ -200,7 +200,14 @@ jobs:
 
           # What Windows runs at sign-in once the setting is on.
           $p = Start-Process $exe -ArgumentList "--autostart", "--config", "`"$root\config.json`"" -PassThru
-          Start-Sleep -Seconds 8
+          $states = @()
+          for ($i = 0; $i -lt 27; $i++) {
+            $p.Refresh()
+            $h = $p.MainWindowHandle
+            $states += if ($h -eq 0) { "-" } elseif ([Win.User32]::IsIconic($h)) { "min" } else { "norm" }
+            Start-Sleep -Milliseconds 300
+          }
+          Write-Host "window state every 0.3 s: $($states -join ' ')"
           Copy-Item tests\fixtures\programming.pptx "$root\Downloads\week6.pptx"
           $copy = "$root\Studium\Informatik\Programmierung 1\week6.pptx"
           $deadline = (Get-Date).AddSeconds(30)

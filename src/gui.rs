@@ -1554,7 +1554,12 @@ impl eframe::App for App {
         // first one, and showing it would undo an earlier minimise.
         if self.minimise && ui.ctx().cumulative_frame_nr() >= 1 {
             self.minimise = false;
+            log::info!("DEBUG sending Minimized(true) at frame {}", ui.ctx().cumulative_frame_nr());
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+        if ui.ctx().cumulative_frame_nr() < 12 {
+            let info = ui.ctx().input(|i| (i.viewport().minimized, i.viewport().focused, i.viewport().occluded));
+            log::info!("DEBUG frame {} minimized/focused/occluded {:?}", ui.ctx().cumulative_frame_nr(), info);
         }
 
         let header_fill = fx::lerp_color(ui.visuals().panel_fill, fx::accent(ui), 0.06);

@@ -552,7 +552,7 @@ impl App {
         }
         let keywords = &mut self.config.courses[i].keywords;
         let known: Vec<String> = keywords.iter().map(|k| normalise(k)).collect();
-        let new: Vec<String> = suggestion.keywords.into_iter().filter(|k| !known.contains(k)).collect();
+        let new: Vec<String> = suggestion.keywords.into_iter().map(|k| k.term).filter(|k| !known.contains(k)).collect();
         if new.is_empty() {
             self.note(Note::NoNewKeywords { module, files: suggestion.files_scanned });
             return;

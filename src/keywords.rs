@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::common_words::is_common;
 use crate::config::{Config, Course, FILLER_WORDS, STOPWORDS};
 use crate::extract::extract_text;
 use crate::matcher::{count_hits, normalise};
@@ -16,7 +17,7 @@ use crate::sorter::is_candidate;
 
 const MAX_OWN_FILES: usize = 40;
 const MAX_OTHER_FILES: usize = 15;
-const MAX_SUGGESTIONS: usize = 8;
+const MAX_SUGGESTIONS: usize = 6;
 /// A term found in more than this share of other modules' files is not distinctive.
 const MAX_OTHER_SHARE: f64 = 0.05;
 const MAX_DEPTH: usize = 4;
@@ -244,12 +245,41 @@ const GENERIC_WORDS: &[&str] = &[
     "version",
 ];
 
+/// What kind of term a suggestion is, shown next to it in the preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A module code such as "INF 101".
+    Code,
+    /// A lecturer's name (found after "Prof." or "Dr.").
+    Lecturer,
+    /// Found in file names or on title pages.
+    Title,
+    /// A recurring topic.
+    Topic,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Suggested {
+    /// Normalised form, ready to add to the module.
+    pub term: String,
+    /// In how many of the module's files it appears.
+    pub files: usize,
+    pub kind: Kind,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Suggestion {
-    /// New keywords, best first (normalised form, ready to add to the module).
-    pub keywords: Vec<String>,
+    /// New keywords, best first.
+    pub keywords: Vec<Suggested>,
     pub files_scanned: usize,
     pub folder: PathBuf,
+}
+
+impl Suggestion {
+    #[cfg(test)]
+    fn terms(&self) -> Vec<String> {
+        self.keywords.iter().map(|k| k.term.clone()).collect()
+    }
 }
 
 /// Document files in `folder` (and its subfolders), newest first.
@@ -280,14 +310,16 @@ fn is_year(token: &str) -> bool {
         && (token.starts_with("19") || token.starts_with("20"))
 }
 
-/// A token that can be a keyword on its own: a real word, not filler.
+fn is_filler(token: &str) -> bool {
+    STOPWORDS.contains(&token) || FILLER_WORDS.contains(&token) || GENERIC_WORDS.contains(&token) || is_common(token)
+}
+
+/// A token that can be a keyword on its own: a real, not too short word that isn't everyday language.
 fn is_word(token: &str) -> bool {
-    token.chars().count() >= 3
-        && token.chars().all(|c| c.is_alphanumeric())
+    token.chars().count() >= 4
+        && token.chars().all(char::is_alphanumeric)
         && token.chars().any(char::is_alphabetic)
-        && !STOPWORDS.contains(&token)
-        && !FILLER_WORDS.contains(&token)
-        && !GENERIC_WORDS.contains(&token)
+        && !is_filler(token)
 }
 
 /// A number that can complete a module code ("inf 101", "ma 1"), but not a year.
@@ -295,43 +327,133 @@ fn is_code_number(token: &str) -> bool {
     !token.is_empty() && token.len() <= 4 && token.chars().all(|c| c.is_ascii_digit()) && !is_year(token)
 }
 
-/// Candidate terms in one file: single words plus pairs of neighbouring words.
-fn file_terms(path: &Path) -> HashSet<String> {
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let text = normalise(&format!("{stem}\n{}", extract_text(path)));
-    let tokens: Vec<&str> =
-        text.split(' ').map(|t| t.trim_matches(|c: char| !c.is_alphanumeric())).filter(|t| !t.is_empty()).collect();
-    let mut terms = HashSet::new();
-    for (i, token) in tokens.iter().enumerate() {
-        if !is_word(token) {
-            continue;
-        }
-        terms.insert(token.to_string());
-        if let Some(next) = tokens.get(i + 1)
-            && (is_word(next) || is_code_number(next))
-        {
-            terms.insert(format!("{token} {next}"));
-        }
-    }
-    terms
+/// The letters of a module code ("inf", "ma", "stat", "bwl"), not a word like "vl" or "kap".
+fn is_code_letters(token: &str) -> bool {
+    const NOT_CODES: &[&str] = &[
+        "vl", "kap", "nr", "no", "teil", "folie", "seite", "woche", "week", "blatt", "sheet", "ss", "ws", "hs", "fs",
+        "v",
+    ];
+    (2..=5).contains(&token.chars().count())
+        && token.chars().all(char::is_alphabetic)
+        && !NOT_CODES.contains(&token)
+        && !STOPWORDS.contains(&token)
+        && !FILLER_WORDS.contains(&token)
+        && !GENERIC_WORDS.contains(&token)
+        && !is_common(token)
 }
 
-/// In how many of `files` each term appears.
-fn document_frequency(files: &[PathBuf]) -> HashMap<String, usize> {
-    let mut df = HashMap::new();
-    for file in files {
-        for term in file_terms(file) {
-            *df.entry(term).or_insert(0) += 1;
+/// Titles before a lecturer's name ("Prof. Dr. Huber").
+const TITLES: &[&str] =
+    &["prof", "professor", "professorin", "dr", "dozent", "dozentin", "lecturer", "pd", "med", "rer", "nat", "phil"];
+/// How many words at the start of a document count as its title page.
+const TITLE_WORDS: usize = 60;
+
+/// What one file says about its module.
+#[derive(Default)]
+struct FileTerms {
+    /// Every candidate term.
+    all: HashSet<String>,
+    /// Terms in the file name or on the title page.
+    prominent: HashSet<String>,
+    codes: HashSet<String>,
+    lecturers: HashSet<String>,
+    /// Words seen with a capital first letter, and seen in lowercase (German nouns are
+    /// capitalised, so a German word only ever written in lowercase is no topic).
+    capitalised: HashSet<String>,
+    lowercase: HashSet<String>,
+    /// How German or English the text looks.
+    german: usize,
+    english: usize,
+}
+
+impl FileTerms {
+    fn of(path: &Path) -> FileTerms {
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut terms = FileTerms::default();
+        let text = extract_text(path);
+        terms.add(&normalise(&stem), usize::MAX);
+        terms.add(&normalise(&text), TITLE_WORDS);
+        terms.note_case(&text);
+        terms
+    }
+
+    fn note_case(&mut self, text: &str) {
+        const GERMAN: &[&str] = &["und", "der", "die", "das", "ist", "nicht", "mit", "wir", "werden"];
+        const ENGLISH: &[&str] = &["the", "and", "is", "of", "to", "we", "are", "with", "this"];
+        for raw in text.split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 4 || GERMAN.contains(w)) {
+            let word = normalise(raw);
+            if GERMAN.contains(&word.as_str()) {
+                self.german += 1;
+            } else if ENGLISH.contains(&word.as_str()) {
+                self.english += 1;
+            }
+            match raw.chars().next() {
+                Some(c) if c.is_uppercase() => self.capitalised.insert(word),
+                Some(c) if c.is_lowercase() => self.lowercase.insert(word),
+                _ => false,
+            };
         }
     }
-    df
+
+    /// Add the terms of one text; the first `prominent_words` words count as prominent.
+    fn add(&mut self, text: &str, prominent_words: usize) {
+        let tokens: Vec<&str> =
+            text.split(' ').map(|t| t.trim_matches(|c: char| !c.is_alphanumeric())).filter(|t| !t.is_empty()).collect();
+        let mut insert = |terms: &mut FileTerms, term: String, i: usize| {
+            if i < prominent_words {
+                terms.prominent.insert(term.clone());
+            }
+            terms.all.insert(term);
+        };
+        for (i, token) in tokens.iter().enumerate() {
+            let next = tokens.get(i + 1).copied();
+            if is_code_letters(token)
+                && let Some(number) = next.filter(|n| is_code_number(n))
+            {
+                let code = format!("{token} {number}");
+                self.codes.insert(code.clone());
+                insert(self, code, i);
+            }
+            if TITLES.contains(token)
+                && let Some(name) = tokens[i + 1..].iter().find(|t| !TITLES.contains(t))
+                && name.chars().count() >= 3
+                && name.chars().all(char::is_alphabetic)
+                && !is_filler(name)
+            {
+                self.lecturers.insert(name.to_string());
+                insert(self, name.to_string(), i);
+            }
+            if !is_word(token) {
+                continue;
+            }
+            insert(self, token.to_string(), i);
+            if let Some(next) = next.filter(|n| is_word(n)) {
+                insert(self, format!("{token} {next}"), i);
+            }
+        }
+    }
 }
 
 fn course_terms(course: &Course) -> Vec<String> {
     std::iter::once(&course.name).chain(&course.keywords).map(|t| normalise(t)).filter(|t| !t.is_empty()).collect()
 }
 
+/// In how many files each term appears.
+fn count<'a>(sets: impl Iterator<Item = &'a HashSet<String>>) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for set in sets {
+        for term in set {
+            *counts.entry(term.clone()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
 /// Suggest new keywords for `config.courses[index]` from the files in its folder.
+///
+/// A good keyword is specific to this module: it appears in many of the module's files
+/// and hardly ever in other modules' files, and it isn't an everyday word. Module codes,
+/// the lecturer's name and terms from file names and title pages count extra.
 pub fn suggest_keywords(config: &Config, index: usize) -> Suggestion {
     let course = &config.courses[index];
     let folder = config.course_folder(course);
@@ -340,70 +462,111 @@ pub fn suggest_keywords(config: &Config, index: usize) -> Suggestion {
     if own_files.is_empty() {
         return suggestion;
     }
-    let own_df = document_frequency(&own_files);
+    let own: Vec<FileTerms> = own_files.iter().map(|f| FileTerms::of(f)).collect();
+    let own_df = count(own.iter().map(|f| &f.all));
+    let prominent_df = count(own.iter().map(|f| &f.prominent));
+    let codes = count(own.iter().map(|f| &f.codes));
+    let lecturers = count(own.iter().map(|f| &f.lecturers));
+    let german = own.iter().map(|f| f.german).sum::<usize>() > own.iter().map(|f| f.english).sum::<usize>();
+    let capitalised = count(own.iter().map(|f| &f.capitalised));
+    let lowercase = count(own.iter().map(|f| &f.lowercase));
 
     // What the other modules' files and settings look like.
-    let mut other_files = Vec::new();
     let mut other_terms = Vec::new();
+    let mut other_df: HashMap<String, usize> = HashMap::new();
+    let mut other_modules: HashMap<String, usize> = HashMap::new();
+    let mut n_other = 0;
     for (i, other) in config.courses.iter().enumerate() {
         if i == index {
             continue;
         }
         other_terms.extend(course_terms(other));
         let other_folder = config.course_folder(other);
-        if other_folder != folder {
-            other_files.extend(module_files(&other_folder, config, MAX_OTHER_FILES));
+        if other_folder == folder {
+            continue;
+        }
+        let files: Vec<FileTerms> =
+            module_files(&other_folder, config, MAX_OTHER_FILES).iter().map(|f| FileTerms::of(f)).collect();
+        n_other += files.len();
+        let df = count(files.iter().map(|f| &f.all));
+        for (term, n) in df {
+            *other_modules.entry(term.clone()).or_insert(0) += 1;
+            *other_df.entry(term).or_insert(0) += n;
         }
     }
-    let other_df = document_frequency(&other_files);
     let existing = course_terms(course);
-
-    // Existing keywords count as already chosen, with how often they occur in this module's files.
     let existing_df: Vec<(String, usize)> =
         existing.iter().map(|t| (t.clone(), *own_df.get(t).unwrap_or(&0))).collect();
 
     let n_own = own_files.len() as f64;
-    let n_other = other_files.len().max(1) as f64;
     let min_df = if own_files.len() == 1 { 1 } else { 2 };
-    let mut ranked: Vec<(f64, usize, String)> = own_df
-        .into_iter()
-        .filter(|(_, df)| *df >= min_df)
-        .filter_map(|(term, df)| {
-            let other_share = *other_df.get(&term).unwrap_or(&0) as f64 / n_other;
-            if other_share > MAX_OTHER_SHARE {
+    let mut ranked: Vec<(f64, Suggested)> = own_df
+        .iter()
+        .filter(|(_, df)| **df >= min_df)
+        .filter_map(|(term, &df)| {
+            let in_other = *other_df.get(term).unwrap_or(&0) as f64;
+            // Used by two other modules, or in more than a few of their files: not distinctive.
+            if *other_modules.get(term).unwrap_or(&0) >= 2 || in_other / (n_other.max(1) as f64) > MAX_OTHER_SHARE {
                 return None;
             }
             // Part of another module's name or keywords: would cause ties.
-            if other_terms.iter().any(|t| count_hits(t, &term) > 0 || count_hits(&term, t) > 0) {
+            if other_terms.iter().any(|t| count_hits(t, term) > 0 || count_hits(term, t) > 0) {
                 return None;
             }
             // Already covered: an existing keyword matches wherever this term does.
-            if existing.iter().any(|t| count_hits(&term, t) > 0) {
+            if existing.iter().any(|t| count_hits(term, t) > 0) {
                 return None;
             }
-            Some((df as f64 / n_own - other_share, df, term))
+            let share = df as f64 / n_own;
+            let rarity = ((n_other as f64 + 1.0) / (in_other + 1.0)).ln() + 1.0;
+            let prominence = *prominent_df.get(term).unwrap_or(&0) as f64 / df as f64;
+            let kind = if codes.contains_key(term) {
+                Kind::Code
+            } else if lecturers.contains_key(term) {
+                Kind::Lecturer
+            } else if prominence >= 0.5 {
+                Kind::Title
+            } else {
+                Kind::Topic
+            };
+            let boost = match kind {
+                Kind::Code => 3.0,
+                Kind::Lecturer => 2.5,
+                _ => 1.0 + prominence,
+            };
+            // A topic must recur: in at least a third of the module's files.
+            if kind == Kind::Topic && own_files.len() >= 3 && share < 1.0 / 3.0 {
+                return None;
+            }
+            // In German texts, a single word never written with a capital is a verb or an
+            // adjective ("behandeln", "wichtig"), not a topic.
+            let lower_only = !capitalised.contains_key(term) && lowercase.contains_key(term);
+            if german && matches!(kind, Kind::Topic | Kind::Title) && !term.contains(' ') && lower_only {
+                return None;
+            }
+            let phrase = if term.contains(' ') { 1.2 } else { 1.0 };
+            Some((share * rarity * boost * phrase, Suggested { term: term.clone(), files: df, kind }))
         })
         .collect();
-    let words = |t: &str| t.split(' ').count();
-    ranked.sort_by(|a, b| {
-        b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)).then(words(&b.2).cmp(&words(&a.2))).then(a.2.cmp(&b.2))
-    });
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.files.cmp(&a.1.files)).then(a.1.term.cmp(&b.1.term)));
 
-    let mut chosen: Vec<(String, usize)> = Vec::new();
-    for (_, df, term) in ranked {
-        let redundant = chosen.iter().chain(&existing_df).any(|(picked, picked_df)| {
+    let mut chosen: Vec<Suggested> = Vec::new();
+    for (_, candidate) in ranked {
+        let picked = chosen.iter().map(|c| (c.term.clone(), c.files)).chain(existing_df.iter().cloned());
+        let redundant = picked.into_iter().any(|(picked, picked_df)| {
             // A phrase containing a chosen word adds nothing; a word inside a chosen phrase
             // only adds something if it appears in more files than the phrase.
-            count_hits(&term, picked) > 0 || (count_hits(picked, &term) > 0 && df <= *picked_df)
+            count_hits(&candidate.term, &picked) > 0
+                || (count_hits(&picked, &candidate.term) > 0 && candidate.files <= picked_df)
         });
         if !redundant {
-            chosen.push((term, df));
+            chosen.push(candidate);
         }
         if chosen.len() == MAX_SUGGESTIONS {
             break;
         }
     }
-    suggestion.keywords = chosen.into_iter().map(|(t, _)| t).collect();
+    suggestion.keywords = chosen;
     suggestion
 }
 
@@ -449,10 +612,10 @@ mod tests {
         let s = suggest_keywords(&t.config, 0);
         assert_eq!(s.files_scanned, 3);
         for expected in ["inf 101", "rekursion", "huber"] {
-            assert!(s.keywords.contains(&expected.to_string()), "{expected} missing from {:?}", s.keywords);
+            assert!(s.terms().contains(&expected.to_string()), "{expected} missing from {:?}", s.keywords);
         }
         for unwanted in ["vorlesung", "integral", "inf", "uebungsblatt", "schleifen", "prof huber"] {
-            assert!(!s.keywords.contains(&unwanted.to_string()), "{unwanted} in {:?}", s.keywords);
+            assert!(!s.terms().contains(&unwanted.to_string()), "{unwanted} in {:?}", s.keywords);
         }
     }
 
@@ -460,8 +623,8 @@ mod tests {
     fn terms_shared_with_other_modules_are_dropped() {
         let t = tree(true);
         let s = suggest_keywords(&t.config, 0);
-        assert!(!s.keywords.contains(&"huber".to_string()), "{:?}", s.keywords);
-        assert!(s.keywords.contains(&"rekursion".to_string()));
+        assert!(!s.terms().contains(&"huber".to_string()), "{:?}", s.keywords);
+        assert!(s.terms().contains(&"rekursion".to_string()));
     }
 
     #[test]
@@ -469,7 +632,7 @@ mod tests {
         let mut t = tree(false);
         let first = suggest_keywords(&t.config, 0);
         assert!(!first.keywords.is_empty());
-        t.config.courses[0].keywords.extend(first.keywords);
+        t.config.courses[0].keywords.extend(first.terms());
         let second = suggest_keywords(&t.config, 0);
         assert!(second.keywords.is_empty(), "second run suggested {:?}", second.keywords);
     }
@@ -479,8 +642,8 @@ mod tests {
         let mut t = tree(false);
         t.config.courses[0].keywords = vec!["Rekursion".into(), "INF101".into()];
         let s = suggest_keywords(&t.config, 0);
-        assert!(!s.keywords.iter().any(|k| k == "rekursion" || k == "inf 101"), "{:?}", s.keywords);
-        assert!(s.keywords.contains(&"huber".to_string()));
+        assert!(!s.terms().iter().any(|k| k == "rekursion" || k == "inf 101"), "{:?}", s.keywords);
+        assert!(s.terms().contains(&"huber".to_string()));
     }
 
     #[test]
@@ -488,15 +651,15 @@ mod tests {
         let t = tree(false);
         // "integral" only appears in Analysis II's files; nothing containing "analysis" is suggested.
         let s = suggest_keywords(&t.config, 1);
-        assert!(s.keywords.contains(&"integral".to_string()), "{:?}", s.keywords);
-        assert!(!s.keywords.iter().any(|k| k.contains("analysis")), "{:?}", s.keywords);
+        assert!(s.terms().contains(&"integral".to_string()), "{:?}", s.keywords);
+        assert!(!s.terms().iter().any(|k| k.contains("analysis")), "{:?}", s.keywords);
     }
 
     #[test]
     fn suggestions_make_new_files_match() {
         let mut t = tree(false);
         let s = suggest_keywords(&t.config, 0);
-        t.config.courses[0].keywords.extend(s.keywords);
+        t.config.courses[0].keywords.extend(s.terms());
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("INF101_Blatt5.pdf");
         make_pdf(&file, "x");
@@ -513,6 +676,86 @@ mod tests {
         assert!(s.keywords.is_empty());
     }
 
+    /// Lecture texts in German, padded with the everyday words every course uses.
+    fn lecture(topic: &str) -> String {
+        format!(
+            "{topic}. Heute behandeln wir im Rahmen der Vorlesung die folgenden Themen. Ein Beispiel zeigt das \
+             Ergebnis, die Daten und die Methode. Wichtig ist, dass wir sehen, welche Frage hier gestellt wird. \
+             Zusammenfassung und Übersicht: die Aufgabe ist einfach, das Problem bekannt."
+        )
+    }
+
+    fn study_tree(other_modules_have_files: bool) -> Tree {
+        let tmp = tempfile::tempdir().unwrap();
+        let studium = tmp.path().join("Studium");
+        let stat = studium.join("Mecom/Statistik I");
+        let prog = studium.join("Informatik/Programmierung 1");
+        let media = studium.join("Mecom/Medienwirkung");
+        for dir in [&stat, &prog, &media] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        make_pdf(&stat.join("STAT101_VL1.pdf"), &lecture("STAT 101 Dr. Keller Varianz Standardabweichung"));
+        make_pdf(&stat.join("STAT101_VL2.pdf"), &lecture("STAT 101 Dr. Keller Varianz und Regression"));
+        make_pdf(&stat.join("STAT101_VL3.pdf"), &lecture("STAT 101 Keller lineare Regression Varianz"));
+        make_pdf(&stat.join("Uebung4.pdf"), &lecture("Statistik Varianz Regression Aufgabenblatt"));
+        if other_modules_have_files {
+            make_pdf(&prog.join("vl1.pdf"), &lecture("INF 101 Prof. Huber Rekursion Schleifen"));
+            make_pdf(&prog.join("vl2.pdf"), &lecture("INF 101 Huber Rekursion Klassen Objekte"));
+            make_pdf(&media.join("mw1.pdf"), &lecture("Agenda Setting Prof. Meier Medienwirkung"));
+            make_pdf(&media.join("mw2.pdf"), &lecture("Agenda Setting Framing Meier"));
+        }
+        let config = Config {
+            destination_root: studium.to_string_lossy().into(),
+            courses: vec![
+                Course::new("Statistik I", &[]).with_subject("Mecom"),
+                Course::new("Programmierung 1", &[]).with_subject("Informatik"),
+                Course::new("Medienwirkung", &[]).with_subject("Mecom"),
+            ],
+            ..Config::default()
+        };
+        Tree { _tmp: tmp, config }
+    }
+
+    #[test]
+    fn suggests_specific_terms_not_everyday_words() {
+        for other_modules_have_files in [true, false] {
+            let t = study_tree(other_modules_have_files);
+            let s = suggest_keywords(&t.config, 0);
+            let terms = s.terms();
+            for expected in ["stat 101", "keller", "varianz"] {
+                assert!(terms.contains(&expected.to_string()), "{expected} missing from {terms:?}");
+            }
+            for unwanted in [
+                "heute",
+                "behandeln",
+                "beispiel",
+                "ergebnis",
+                "daten",
+                "methode",
+                "wichtig",
+                "sehen",
+                "frage",
+                "rahmen",
+            ] {
+                assert!(!terms.iter().any(|t| t.split(' ').any(|w| w == unwanted)), "{unwanted} in {terms:?}");
+            }
+            let code = s.keywords.iter().find(|k| k.term == "stat 101").unwrap();
+            assert_eq!((code.kind, code.files), (Kind::Code, 3));
+            assert_eq!(s.keywords.iter().find(|k| k.term == "keller").unwrap().kind, Kind::Lecturer);
+            assert!(s.keywords.len() <= MAX_SUGGESTIONS);
+        }
+    }
+
+    #[test]
+    fn other_modules_get_their_own_terms() {
+        let t = study_tree(true);
+        let prog = suggest_keywords(&t.config, 1).terms();
+        assert!(prog.contains(&"inf 101".to_string()) && prog.contains(&"rekursion".to_string()), "{prog:?}");
+        let media = suggest_keywords(&t.config, 2).terms();
+        assert!(media.iter().any(|t| t.contains("agenda")), "{media:?}");
+        assert!(media.contains(&"meier".to_string()), "{media:?}");
+    }
+
     #[test]
     fn real_world_pdf_terms() {
         let tmp = tempfile::tempdir().unwrap();
@@ -526,7 +769,7 @@ mod tests {
         };
         let s = suggest_keywords(&config, 0);
         assert_eq!(s.files_scanned, 1);
-        assert!(s.keywords.iter().any(|k| k.contains("grenzwerte") || k.contains("folgen")), "{:?}", s.keywords);
-        assert!(!s.keywords.iter().any(|k| k == "2026"), "{:?}", s.keywords);
+        assert!(s.terms().iter().any(|k| k.contains("grenzwerte") || k.contains("folge")), "{:?}", s.keywords);
+        assert!(!s.terms().iter().any(|k| k == "2026"), "{:?}", s.keywords);
     }
 }

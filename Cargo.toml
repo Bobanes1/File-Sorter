@@ -16,6 +16,7 @@ lopdf = "0.42"
 notify = "8.2.0"
 pdf-extract = "0.12.1"
 quick-xml = "0.42.0"
+raw-window-handle = "0.6"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -27,10 +28,13 @@ zip = { version = "9.0.3", default-features = false, features = ["deflate"] }
 winreg = "0.56"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
 ] }
+tray-icon = { version = "0.26", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.27.0"

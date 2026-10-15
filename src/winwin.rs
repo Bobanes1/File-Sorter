@@ -21,8 +21,8 @@ mod imp {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         ASFW_ANY, AllowSetForegroundWindow, GWL_EXSTYLE, GetWindowLongPtrW, IsIconic, IsWindowVisible, PostMessageW,
-        SC_MINIMIZE, SPI_GETWORKAREA, SW_HIDE, SW_RESTORE, SW_SHOWMINNOACTIVE, SetForegroundWindow, SetWindowLongPtrW,
-        ShowWindow, SystemParametersInfoW, WM_SYSCOMMAND, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        SC_MINIMIZE, SPI_GETWORKAREA, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOWMINNOACTIVE, SetForegroundWindow,
+        SetWindowLongPtrW, ShowWindow, SystemParametersInfoW, WM_SYSCOMMAND, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     };
 
     impl MainWindow {
@@ -32,8 +32,13 @@ mod imp {
 
         /// Like clicking the window's minimise button.
         pub fn minimise(self) {
-            // SAFETY: posting a message to a window handle is harmless even if it is gone.
-            unsafe { PostMessageW(self.hwnd(), WM_SYSCOMMAND, SC_MINIMIZE as usize, 0) };
+            // SAFETY: plain Win32 calls on our own window.
+            unsafe {
+                ShowWindow(self.hwnd(), SW_MINIMIZE);
+                if IsIconic(self.hwnd()) == 0 {
+                    PostMessageW(self.hwnd(), WM_SYSCOMMAND, SC_MINIMIZE as usize, 0);
+                }
+            }
         }
 
         /// Into the notification area: minimised and without a taskbar button. (A minimised
@@ -69,7 +74,7 @@ mod imp {
             unsafe { GetWindowLongPtrW(self.hwnd(), GWL_EXSTYLE) & WS_EX_TOOLWINDOW as isize != 0 }
         }
 
-        #[allow(dead_code)]
+        /// Minimised, or not shown at all.
         pub fn is_minimised(self) -> bool {
             // SAFETY: reading our own window's state.
             unsafe { IsIconic(self.hwnd()) != 0 || IsWindowVisible(self.hwnd()) == 0 }
@@ -156,6 +161,9 @@ mod imp {
 
     impl MainWindow {
         pub fn minimise(self) {}
+        pub fn is_minimised(self) -> bool {
+            false
+        }
         pub fn to_tray(self) {}
         pub fn bring_back(self) {}
         pub fn in_tray(self) -> bool {

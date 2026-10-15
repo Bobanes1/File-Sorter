@@ -165,6 +165,8 @@ pub(crate) struct App {
     shared_window: Arc<Mutex<Option<MainWindow>>>,
     /// Opened at sign-in: minimise (or go to the notification area) once shown.
     start_hidden: bool,
+    /// How often that was tried (Windows may not take it on the first frames).
+    hide_attempts: u32,
     tray: Option<Tray>,
     /// Language and tooltip the tray icon was made with.
     tray_state: Option<(Lang, String)>,
@@ -233,6 +235,7 @@ impl App {
             window: None,
             shared_window: Arc::clone(&shared_window),
             start_hidden: autostart,
+            hide_attempts: 0,
             tray: None,
             tray_state: None,
             quit: Arc::new(AtomicBool::new(false)),
@@ -681,17 +684,33 @@ impl App {
         {
             self.window = Some(window);
             *self.shared_window.lock().unwrap() = Some(window);
+            if self.start_hidden {
+                log::info!("Started at sign-in: {window:?}");
+            }
         }
-        // Opened at sign-in: once eframe has shown the window (after the first frame), tuck it away.
+        // Opened at sign-in: once eframe has shown the window (after the first frame), tuck it
+        // away, and check that it worked (try again on the next frames if not).
         if self.start_hidden
             && ctx.cumulative_frame_nr() >= 1
             && let Some(window) = self.window
         {
-            self.start_hidden = false;
-            if self.background_active() {
-                window.to_tray();
+            let to_tray = self.background_active();
+            let done = window.is_minimised() && (!to_tray || window.in_tray());
+            if done || self.hide_attempts >= 30 || !cfg!(windows) {
+                self.start_hidden = false;
+                log::info!(
+                    "Started at sign-in: window {} after {} attempt(s)",
+                    if done { "tucked away" } else { "still shown" },
+                    self.hide_attempts
+                );
             } else {
-                window.minimise();
+                self.hide_attempts += 1;
+                if to_tray {
+                    window.to_tray()
+                } else {
+                    window.minimise()
+                }
+                ctx.request_repaint_after(Duration::from_millis(100));
             }
         }
 

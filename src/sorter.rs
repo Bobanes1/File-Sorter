@@ -6,9 +6,11 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::{Config, FileAction};
 use crate::extract::extract_text;
-use crate::ledger::CopyLedger;
+use crate::ledger::{COPIED_LIST, CopyLedger, KEPT_LIST, KeptFiles};
 use crate::matcher::{Reason, match_file};
 
 /// Partial downloads written by browsers before the file is complete.
@@ -16,10 +18,10 @@ pub const TEMP_SUFFIXES: &[&str] = &[".crdownload", ".part", ".partial", ".downl
 
 /// How long to keep retrying a file that another program (browser, PDF preview,
 /// virus scanner) still has open, before giving up for now.
-const IN_USE_RETRY: Duration = Duration::from_secs(8);
+pub(crate) const IN_USE_RETRY: Duration = Duration::from_secs(8);
 
 /// What happened to a file.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
     /// Moved into the module folder.
     Moved { course: String, destination: PathBuf, reason: Reason },
@@ -31,7 +33,7 @@ pub enum Outcome {
     Left(LeftReason),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LeftReason {
     Gone,
     NotDocument,
@@ -48,18 +50,41 @@ pub enum LeftReason {
         course: String,
         copy: PathBuf,
     },
+    /// Sorted from the right-click menu while another program had it open (no later retry).
+    StillOpen {
+        course: String,
+    },
+    /// The user undid sorting this file, so it stays where it is.
+    Kept,
     Error(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SortResult {
     pub source: PathBuf,
     pub outcome: Outcome,
+    /// Its entry in the history, once recorded there (needed to undo it).
+    #[serde(skip)]
+    pub id: Option<u64>,
 }
 
 impl SortResult {
+    pub fn new(source: PathBuf, outcome: Outcome) -> Self {
+        SortResult { source, outcome, id: None }
+    }
+
     fn left(source: &Path, reason: LeftReason) -> Self {
-        SortResult { source: source.to_path_buf(), outcome: Outcome::Left(reason) }
+        SortResult::new(source.to_path_buf(), Outcome::Left(reason))
+    }
+
+    /// The file's new name, when it had to be saved under another one ("x (1).pdf").
+    pub fn renamed_to(&self) -> Option<String> {
+        let destination = match &self.outcome {
+            Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } => destination,
+            _ => return None,
+        };
+        let new = file_name(destination);
+        (new != self.file_name()).then_some(new)
     }
 
     pub fn file_name(&self) -> String {
@@ -80,6 +105,7 @@ impl SortResult {
             Outcome::Left(
                 LeftReason::AlreadyInFolder { course }
                 | LeftReason::InUse { course }
+                | LeftReason::StillOpen { course }
                 | LeftReason::AlreadyCopied { course, .. },
             ) => Some(course),
             Outcome::Left(_) => None,
@@ -98,9 +124,15 @@ impl SortResult {
     /// English description, for the log file and the command line.
     pub fn describe(&self) -> String {
         let name = self.file_name();
+        let saved_as =
+            self.renamed_to().map(|n| format!(" as {n}, another version is already there")).unwrap_or_default();
         match &self.outcome {
-            Outcome::Moved { course, reason, .. } => format!("Moved {name} → {course} ({})", reason.describe()),
-            Outcome::Copied { course, reason, .. } => format!("Copied {name} → {course} ({})", reason.describe()),
+            Outcome::Moved { course, reason, .. } => {
+                format!("Moved {name} → {course}{saved_as} ({})", reason.describe())
+            }
+            Outcome::Copied { course, reason, .. } => {
+                format!("Copied {name} → {course}{saved_as} ({})", reason.describe())
+            }
             Outcome::DuplicateRemoved { course, .. } => {
                 format!("Removed {name}: the same file is already in {course}")
             }
@@ -114,6 +146,10 @@ impl SortResult {
                         format!("still open in another program, will retry (belongs to {course})")
                     }
                     LeftReason::AlreadyCopied { course, .. } => format!("already copied to {course}"),
+                    LeftReason::StillOpen { course } => {
+                        format!("still open in another program; close it and try again (belongs to {course})")
+                    }
+                    LeftReason::Kept => "sorting was undone, so it stays here".to_string(),
                     LeftReason::Error(e) => format!("error: {e}"),
                 };
                 format!("Left {name} in place – {why}")
@@ -141,23 +177,89 @@ pub fn is_candidate(path: &Path, config: &Config) -> bool {
     !TEMP_SUFFIXES.contains(&ext.as_str()) && config.extensions.contains(&ext)
 }
 
-/// folder/filename, or folder/"name (1).ext" etc. if that already exists.
-pub fn unique_destination(folder: &Path, filename: &str) -> PathBuf {
-    let target = folder.join(filename);
-    if !target.exists() {
-        return target;
-    }
+/// Claim a free name in `folder`: `filename`, or "name (1).ext", "name (2).ext", …
+///
+/// The name is taken by creating an empty placeholder file that didn't exist before, so
+/// the file moved or copied there afterwards can never replace one of the user's files
+/// (on Windows, `fs::rename` would silently overwrite an existing file).
+pub fn reserve_destination(folder: &Path, filename: &str) -> io::Result<PathBuf> {
     let path = Path::new(filename);
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    (1..)
-        .map(|n| folder.join(format!("{stem} ({n}){ext}")))
-        .find(|candidate| !candidate.exists())
-        .expect("an unused name always exists")
+    for n in 0.. {
+        let candidate = if n == 0 { folder.join(filename) } else { folder.join(format!("{stem} ({n}){ext}")) };
+        match fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(_) => return Ok(candidate),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("an unused name always exists")
+}
+
+/// Remove a placeholder from `reserve_destination` that wasn't filled after all.
+pub(crate) fn release_placeholder(path: &Path) {
+    if fs::metadata(path).is_ok_and(|m| m.len() == 0) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Fails with a sharing violation while another program has the file open (Windows).
+///
+/// PDF viewers like Edge or Acrobat may still show the file and save annotations into it
+/// later; moving or removing it now would take it away from under them.
+pub(crate) fn ensure_not_open_elsewhere(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new().read(true).share_mode(0).open(path).map(drop)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::metadata(path).map(drop)
+    }
+}
+
+/// Put a file into the Recycle Bin (Windows), so it can be restored from there.
+/// Elsewhere it is deleted.
+pub fn discard(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::{
+            FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, SHFILEOPSTRUCTW, SHFileOperationW,
+        };
+        let full = std::path::absolute(path)?;
+        // A list of paths, each ending in a 0, and one more 0 at the end.
+        let from: Vec<u16> = full.as_os_str().encode_wide().chain([0, 0]).collect();
+        let mut op = SHFILEOPSTRUCTW {
+            hwnd: std::ptr::null_mut(),
+            wFunc: FO_DELETE,
+            pFrom: from.as_ptr(),
+            pTo: std::ptr::null(),
+            fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as u16,
+            fAnyOperationsAborted: 0,
+            hNameMappings: std::ptr::null_mut(),
+            lpszProgressTitle: std::ptr::null(),
+        };
+        // SAFETY: `op` and the double-0-terminated `from` live until the call returns.
+        let code = unsafe { SHFileOperationW(&mut op) };
+        if code != 0 || op.fAnyOperationsAborted != 0 {
+            return Err(io::Error::from_raw_os_error(code));
+        }
+        if path.exists() {
+            return Err(io::Error::other("the file could not be moved to the Recycle Bin"));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        fs::remove_file(path)
+    }
 }
 
 /// True if the error means another program still has the file open.
-fn in_use(e: &io::Error) -> bool {
+pub(crate) fn in_use(e: &io::Error) -> bool {
     // Windows: ERROR_ACCESS_DENIED (5), ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33).
     e.kind() == io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(5 | 32 | 33))
 }
@@ -179,7 +281,7 @@ impl std::fmt::Display for MoveError {
 }
 
 /// Run `op` until it succeeds, fails for another reason than "in use", or `patience` runs out.
-fn retry_while_in_use<T>(patience: Duration, mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+pub(crate) fn retry_while_in_use<T>(patience: Duration, mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     let deadline = Instant::now() + patience;
     let mut pause = Duration::from_millis(100);
     loop {
@@ -280,7 +382,25 @@ pub fn sort_file_with_patience(path: &Path, config: &Config, patience: Duration)
     if !is_candidate(path, config) && path.is_file() {
         return SortResult::left(path, LeftReason::NotDocument);
     }
+    if is_kept(path, config) {
+        return SortResult::left(path, LeftReason::Kept);
+    }
     sort_any_file(path, config, patience)
+}
+
+/// True if the user undid sorting this file, so it stays where it is.
+pub fn is_kept(path: &Path, config: &Config) -> bool {
+    config.state_file(KEPT_LIST).is_some_and(|file| KeptFiles::load(&file).contains(path))
+}
+
+/// The user sorts this file explicitly, so it is no longer left alone.
+fn stop_keeping(path: &Path, config: &Config) {
+    if let Some(file) = config.state_file(KEPT_LIST) {
+        let mut kept = KeptFiles::load(&file);
+        if kept.forget(path) {
+            let _ = kept.save(&file);
+        }
+    }
 }
 
 /// Sort files and folders the user picked explicitly (right-click → "Sort with File Sorter").
@@ -302,19 +422,40 @@ pub fn sort_chosen(paths: &[PathBuf], config: &Config) -> Vec<SortResult> {
             results.push(if temporary {
                 SortResult::left(path, LeftReason::NotDocument)
             } else {
+                stop_keeping(path, config);
                 sort_any_file(path, config, IN_USE_RETRY)
             });
+        }
+    }
+    // Nothing retries these later, so say what to do instead of "will be sorted when free".
+    for result in &mut results {
+        if let Outcome::Left(LeftReason::InUse { course }) = &result.outcome {
+            result.outcome = Outcome::Left(LeftReason::StillOpen { course: course.clone() });
         }
     }
     results
 }
 
 fn sort_any_file(path: &Path, config: &Config, patience: Duration) -> SortResult {
+    let mut result = sort_any_file_unrecorded(path, config, patience);
+    if result.sorted()
+        && let Some(dir) = &config.state_dir
+    {
+        match crate::history::record(dir, &result) {
+            Ok(id) => result.id = Some(id),
+            Err(e) => log::info!("Could not add {} to the history: {e}", result.file_name()),
+        }
+    }
+    result
+}
+
+fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration) -> SortResult {
     if !path.is_file() {
         return SortResult::left(path, LeftReason::Gone);
     }
     let copying = config.action == FileAction::Copy;
-    let mut ledger = match (&config.copy_ledger, copying) {
+    let ledger_file = config.state_file(COPIED_LIST);
+    let mut ledger = match (&ledger_file, copying) {
         (Some(file), true) => Some((CopyLedger::load(file), file)),
         _ => None,
     };
@@ -336,42 +477,54 @@ fn sort_any_file(path: &Path, config: &Config, patience: Duration) -> SortResult
         return SortResult::left(path, LeftReason::Error(format!("cannot create {}: {e}", folder.display())));
     }
 
+    // Leave files alone while another program still has them open.
+    match retry_while_in_use(patience, || ensure_not_open_elsewhere(path)) {
+        Ok(()) => {}
+        Err(e) if in_use(&e) => return SortResult::left(path, LeftReason::InUse { course: label }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return SortResult::left(path, LeftReason::Gone),
+        Err(e) => return SortResult::left(path, LeftReason::Error(e.to_string())),
+    }
+
     // The very same file is already there (downloaded twice, or copied in again):
-    // remove the download instead of keeping a second copy as "name (1)".
+    // put the download into the Recycle Bin instead of keeping a second copy as "name (1)".
     let existing = folder.join(file_name(path));
     if existing.is_file() && same_content(path, &existing) {
         if copying {
             remember_copy(&mut ledger, path, &label, &existing);
             return SortResult::left(path, LeftReason::AlreadyCopied { course: label, copy: existing });
         }
-        return match retry_while_in_use(patience, || fs::remove_file(path)) {
-            Ok(()) => SortResult {
-                source: path.to_path_buf(),
-                outcome: Outcome::DuplicateRemoved { course: label, existing },
-            },
+        return match retry_while_in_use(patience, || discard(path)) {
+            Ok(()) => SortResult::new(path.to_path_buf(), Outcome::DuplicateRemoved { course: label, existing }),
             Err(e) if in_use(&e) => SortResult::left(path, LeftReason::InUse { course: label }),
             Err(e) => SortResult::left(path, LeftReason::Error(e.to_string())),
         };
     }
 
-    let target = unique_destination(&folder, &file_name(path));
+    let target = match reserve_destination(&folder, &file_name(path)) {
+        Ok(target) => target,
+        Err(e) => {
+            return SortResult::left(path, LeftReason::Error(format!("cannot write to {}: {e}", folder.display())));
+        }
+    };
     let done = if copying {
         copy_file_with_patience(path, &target, patience)
     } else {
         move_file_with_patience(path, &target, patience)
     };
+    if done.is_err() {
+        release_placeholder(&target);
+    }
     match done {
         Ok(()) if copying => {
             remember_copy(&mut ledger, path, &label, &target);
-            SortResult {
-                source: path.to_path_buf(),
-                outcome: Outcome::Copied { course: label, destination: target, reason: m.reason },
-            }
+            SortResult::new(
+                path.to_path_buf(),
+                Outcome::Copied { course: label, destination: target, reason: m.reason },
+            )
         }
-        Ok(()) => SortResult {
-            source: path.to_path_buf(),
-            outcome: Outcome::Moved { course: label, destination: target, reason: m.reason },
-        },
+        Ok(()) => {
+            SortResult::new(path.to_path_buf(), Outcome::Moved { course: label, destination: target, reason: m.reason })
+        }
         Err(MoveError::InUse(_)) => SortResult::left(path, LeftReason::InUse { course: label }),
         Err(MoveError::Failed(e)) => SortResult::left(path, LeftReason::Error(e.to_string())),
     }
@@ -477,11 +630,8 @@ pub(crate) mod tests {
     #[test]
     fn copy_mode_keeps_the_original_and_copies_once() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg = Config {
-            action: FileAction::Copy,
-            copy_ledger: Some(tmp.path().join("copied.json")),
-            ..test_config(tmp.path())
-        };
+        let cfg =
+            Config { action: FileAction::Copy, state_dir: Some(tmp.path().to_path_buf()), ..test_config(tmp.path()) };
         let src = cfg.watch_path().join("prog1_slides.pdf");
         make_pdf(&src, "Week 1");
         let folder = tmp.path().join("University").join("Programming Course");
@@ -529,12 +679,39 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn name_collision_gets_number() {
+    fn name_collision_gets_number_and_is_claimed() {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(tmp.path().join("a.pdf"), "x").unwrap();
         fs::write(tmp.path().join("a (1).pdf"), "x").unwrap();
-        assert_eq!(file_name(&unique_destination(tmp.path(), "a.pdf")), "a (2).pdf");
-        assert_eq!(file_name(&unique_destination(tmp.path(), "b.pdf")), "b.pdf");
+        let first = reserve_destination(tmp.path(), "a.pdf").unwrap();
+        assert_eq!(file_name(&first), "a (2).pdf");
+        // The name is taken now, so the next one gets the next number; nothing existing was touched.
+        assert_eq!(file_name(&reserve_destination(tmp.path(), "a.pdf").unwrap()), "a (3).pdf");
+        assert_eq!(fs::read_to_string(tmp.path().join("a.pdf")).unwrap(), "x");
+        assert_eq!(file_name(&reserve_destination(tmp.path(), "b.pdf").unwrap()), "b.pdf");
+        release_placeholder(&first);
+        assert!(!first.exists());
+    }
+
+    #[test]
+    fn annotated_copy_in_module_is_never_replaced() {
+        // The module already has an annotated version; the original arrives again.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(tmp.path());
+        let folder = tmp.path().join("University").join("Programming Course");
+        fs::create_dir_all(&folder).unwrap();
+        let src = cfg.watch_path().join("prog1_skript.pdf");
+        make_pdf(&src, "Skript");
+        let original = fs::read(&src).unwrap();
+        let mut annotated = original.clone();
+        annotated.extend_from_slice(b"\n% my notes");
+        fs::write(folder.join("prog1_skript.pdf"), &annotated).unwrap();
+
+        let result = sort_file(&src, &cfg);
+        assert_eq!(file_name(result.destination().unwrap()), "prog1_skript (1).pdf", "{}", result.describe());
+        assert_eq!(fs::read(folder.join("prog1_skript.pdf")).unwrap(), annotated, "annotated file changed");
+        assert_eq!(fs::read(folder.join("prog1_skript (1).pdf")).unwrap(), original);
+        assert!(!src.exists());
     }
 
     #[test]
@@ -705,6 +882,35 @@ pub(crate) mod tests {
         assert!(src.exists());
         let folder = tmp.path().join("University").join("Programming Course");
         assert_eq!(fs::read_dir(&folder).map(|d| d.count()).unwrap_or(0), 0, "no copy left behind");
+    }
+
+    /// A viewer that lets others rename or delete the file (all sharing allowed) still has
+    /// it open: it is left alone until it closes, so annotations saved later aren't lost.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_open_in_a_viewer_waits_until_it_is_closed() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(tmp.path());
+        let src = cfg.watch_path().join("python_viewer.pdf");
+        make_pdf(&src, "x");
+        let viewer = fs::OpenOptions::new().read(true).share_mode(7).open(&src).unwrap();
+        let result = sort_file_with_patience(&src, &cfg, Duration::from_millis(600));
+        assert!(matches!(result.outcome, Outcome::Left(LeftReason::InUse { .. })), "{}", result.describe());
+        assert!(src.exists());
+        drop(viewer);
+        assert!(sort_file(&src, &cfg).sorted());
+    }
+
+    /// Duplicates go to the Recycle Bin, not away for good.
+    #[cfg(windows)]
+    #[test]
+    fn discard_uses_the_recycle_bin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("file-sorter-recycle-test.txt");
+        fs::write(&file, "x").unwrap();
+        discard(&file).unwrap();
+        assert!(!file.exists());
     }
 
     #[test]

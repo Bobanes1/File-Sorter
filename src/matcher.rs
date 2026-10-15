@@ -12,7 +12,7 @@ const FILENAME_WEIGHT: usize = 10;
 const MAX_CONTENT_HITS_PER_KEYWORD: usize = 5;
 
 /// Why a file was matched to a module, with the keywords that matched.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Reason {
     FileName(Vec<String>),
     Content(Vec<String>),

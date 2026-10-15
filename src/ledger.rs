@@ -1,9 +1,10 @@
-//! Copy mode: remembers which originals were already copied.
+//! File Sorter's memory of individual files.
 //!
-//! In copy mode the original stays in the watched folder, so it would be found again
-//! by "Sort existing files" or the next start. As long as the original is unchanged,
-//! it is not copied a second time – even if its copy was annotated, renamed or
-//! deleted in the meantime.
+//! - Copy mode: which originals were already copied. The original stays in the watched
+//!   folder, so it would be found again by "Sort existing files" or the next start. As
+//!   long as it is unchanged, it is not copied a second time – even if its copy was
+//!   annotated, renamed or deleted in the meantime.
+//! - Files to leave alone: sorting was undone for them, so they stay where they are.
 
 use std::collections::HashMap;
 use std::fs;
@@ -12,6 +13,11 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
+
+/// Copy mode's list, in File Sorter's settings folder.
+pub const COPIED_LIST: &str = "copied.json";
+/// Files whose sorting was undone, in File Sorter's settings folder.
+pub const KEPT_LIST: &str = "kept.json";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Entry {
@@ -52,10 +58,85 @@ fn stamp(path: &Path) -> Option<(u64, u64)> {
     Some((meta.len(), modified))
 }
 
+/// Size, modification and (where the system records it) creation time of a file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Identity {
+    size: u64,
+    modified: u64,
+    #[serde(default)]
+    created: Option<u64>,
+}
+
+fn identity(path: &Path) -> Option<Identity> {
+    let meta = fs::metadata(path).ok()?;
+    let nanos = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos() as u64)
+    };
+    Some(Identity { size: meta.len(), modified: nanos(meta.modified())?, created: nanos(meta.created()) })
+}
+
+fn load_json<T: Default + for<'de> Deserialize<'de>>(file: &Path) -> T {
+    fs::read_to_string(file).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+fn save_json<T: Serialize>(value: &T, file: &Path) -> io::Result<()> {
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let tmp = file.with_extension("tmp");
+    fs::write(&tmp, serde_json::to_string_pretty(value).map_err(io::Error::other)?)?;
+    fs::rename(&tmp, file)
+}
+
+/// Files to leave where they are, because the user undid their sorting.
+///
+/// A file counts as the same while it keeps its path and either its creation time (so
+/// editing it doesn't matter) or its size and modification time. A new download that
+/// happens to get the same name is a different file and is sorted as usual.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct KeptFiles {
+    #[serde(default)]
+    kept: HashMap<String, Identity>,
+}
+
+impl KeptFiles {
+    pub fn load(file: &Path) -> KeptFiles {
+        load_json(file)
+    }
+
+    pub fn contains(&self, path: &Path) -> bool {
+        let (Some(saved), Some(now)) = (self.kept.get(&key(path)), identity(path)) else { return false };
+        (saved.created.is_some() && saved.created == now.created)
+            || (saved.size == now.size && saved.modified == now.modified)
+    }
+
+    pub fn keep(&mut self, path: &Path) {
+        if let Some(id) = identity(path) {
+            self.kept.insert(key(path), id);
+        }
+    }
+
+    /// Returns whether the file was on the list.
+    pub fn forget(&mut self, path: &Path) -> bool {
+        self.kept.remove(&key(path)).is_some()
+    }
+
+    /// Save to `file`, forgetting files that no longer exist.
+    pub fn save(&mut self, file: &Path) -> io::Result<()> {
+        self.kept.retain(|path, _| Path::new(path).exists());
+        save_json(self, file)
+    }
+}
+
 impl CopyLedger {
     /// The list saved in `file`; empty if there is none yet (or it can't be read).
     pub fn load(file: &Path) -> CopyLedger {
-        fs::read_to_string(file).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+        load_json(file)
+    }
+
+    /// Returns whether the file was on the list.
+    pub fn forget(&mut self, original: &Path) -> bool {
+        self.copied.remove(&key(original)).is_some()
     }
 
     /// Where `original` was copied to before, if it hasn't changed since.
@@ -75,12 +156,7 @@ impl CopyLedger {
     /// Save to `file`, forgetting originals that no longer exist.
     pub fn save(&mut self, file: &Path) -> io::Result<()> {
         self.copied.retain(|original, _| Path::new(original).exists());
-        if let Some(dir) = file.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = file.with_extension("tmp");
-        fs::write(&tmp, serde_json::to_string_pretty(self).map_err(io::Error::other)?)?;
-        fs::rename(&tmp, file)
+        save_json(self, file)
     }
 }
 
@@ -116,6 +192,37 @@ mod tests {
         let mut ledger = CopyLedger::load(&file);
         ledger.save(&file).unwrap();
         assert!(ledger.copied.is_empty());
+    }
+
+    #[test]
+    fn kept_files_survive_edits_but_not_a_new_download() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("kept.json");
+        let doc = tmp.path().join("notes.pdf");
+        fs::write(&doc, "v1").unwrap();
+        let mut kept = KeptFiles::load(&file);
+        kept.keep(&doc);
+        kept.save(&file).unwrap();
+        assert!(KeptFiles::load(&file).contains(&doc));
+
+        // Edited in place: still the same file.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&doc, "v1 with notes").unwrap();
+        let created_known = fs::metadata(&doc).and_then(|m| m.created()).is_ok();
+        assert_eq!(KeptFiles::load(&file).contains(&doc), created_known);
+
+        // Deleted and downloaded again later: a different file. (Windows gives a file that is
+        // re-created within 15 s the old creation time, so that case can't be checked there.)
+        fs::remove_file(&doc).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&doc, "another file").unwrap();
+        if created_known && !cfg!(windows) {
+            assert!(!KeptFiles::load(&file).contains(&doc));
+        }
+
+        let mut kept = KeptFiles::load(&file);
+        assert!(kept.forget(&doc));
+        assert!(!kept.contains(&doc));
     }
 
     #[test]

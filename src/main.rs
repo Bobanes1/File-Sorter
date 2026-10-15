@@ -10,6 +10,7 @@ mod desktop;
 mod extract;
 mod fx;
 mod gui;
+mod history;
 mod i18n;
 mod keywords;
 mod ledger;
@@ -17,6 +18,7 @@ mod logger;
 mod matcher;
 mod quicksort;
 mod sorter;
+mod undo;
 mod watcher;
 mod winfix;
 

@@ -205,6 +205,15 @@ impl Lang {
             LeftReason::AlreadyCopied { course, .. } => {
                 self.fmt(format!("Already copied to {course} earlier"), format!("Wurde schon nach {course} kopiert"))
             }
+            LeftReason::StillOpen { .. } => self
+                .pick(
+                    "Still open in another program – close it and try again",
+                    "Noch in einem anderen Programm geöffnet – schliesse es und versuch es nochmal",
+                )
+                .into(),
+            LeftReason::Kept => {
+                self.pick("Stays here (sorting was undone)", "Bleibt hier (Sortieren rückgängig gemacht)").into()
+            }
             LeftReason::Error(e) => self.fmt(format!("Error: {e}"), format!("Fehler: {e}")),
         }
     }

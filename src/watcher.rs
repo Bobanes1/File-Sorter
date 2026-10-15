@@ -353,6 +353,11 @@ fn handle(inner: &Arc<Inner>, path: &Path) {
     // Firefox briefly creates randomly named files that are renamed right away;
     // only announce files that are still around a moment later.
     thread::sleep(DETECT_DELAY.min(inner.stable_for));
+    // Put back by "undo": leave it alone without announcing it.
+    if crate::sorter::is_kept(path, &inner.config.read().unwrap()) {
+        inner.ignore.lock().unwrap().insert(name, signature(path));
+        return;
+    }
     let announced = path.exists() || has_temp_sibling(path);
     if announced {
         emit(inner, WatchEvent::Detected(name.clone()));

@@ -104,10 +104,10 @@ pub struct Config {
     pub autostart: bool,
     /// Show the small results window after sorting from the right-click menu.
     pub results_window: bool,
-    /// Where copy mode remembers which files it already copied (next to config.json).
-    /// Set at runtime, not saved.
+    /// Folder for File Sorter's own lists (copied files, files to leave alone, history):
+    /// the folder of config.json. Set at runtime, not saved.
     #[serde(skip)]
-    pub copy_ledger: Option<PathBuf>,
+    pub state_dir: Option<PathBuf>,
 }
 
 /// What happens to a file once its module is known.
@@ -148,12 +148,17 @@ impl Default for Config {
             watch_on_open: false,
             autostart: false,
             results_window: true,
-            copy_ledger: None,
+            state_dir: None,
         }
     }
 }
 
 impl Config {
+    /// One of File Sorter's own lists, if the settings were loaded from a file.
+    pub fn state_file(&self, name: &str) -> Option<PathBuf> {
+        self.state_dir.as_ref().map(|dir| dir.join(name))
+    }
+
     pub fn watch_path(&self) -> PathBuf {
         expand_user(&self.watch_folder)
     }
@@ -207,13 +212,13 @@ pub fn load_config(path: &Path) -> io::Result<Config> {
     } else {
         Config::default()
     };
-    config.copy_ledger = Some(copy_ledger_path(path));
+    config.state_dir = Some(config_path_dir(path));
     Ok(config)
 }
 
-/// Copy mode's list of copied files, kept next to the settings file.
-pub fn copy_ledger_path(config_path: &Path) -> PathBuf {
-    config_path.parent().unwrap_or(Path::new(".")).join("copied.json")
+/// The folder holding config.json, the log and File Sorter's lists.
+pub fn config_path_dir(config_path: &Path) -> PathBuf {
+    config_path.parent().unwrap_or(Path::new(".")).to_path_buf()
 }
 
 pub fn save_config(config: &Config, path: &Path) -> io::Result<()> {
@@ -439,15 +444,15 @@ mod tests {
             action: FileAction::Copy,
             theme: ThemeChoice::Dark,
             autostart: true,
-            copy_ledger: Some(tmp.path().join("cfg").join("copied.json")),
+            state_dir: Some(tmp.path().join("cfg")),
             ..Config::default()
         };
         save_config(&cfg, &path).unwrap();
         let saved = fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("\"action\": \"copy\"") && !saved.contains("copy_ledger"), "{saved}");
+        assert!(saved.contains("\"action\": \"copy\"") && !saved.contains("state_dir"), "{saved}");
         assert_eq!(load_config(&path).unwrap(), cfg);
         let missing = tmp.path().join("nope.json");
-        let defaults = Config { copy_ledger: Some(tmp.path().join("copied.json")), ..Config::default() };
+        let defaults = Config { state_dir: Some(tmp.path().to_path_buf()), ..Config::default() };
         assert_eq!(load_config(&missing).unwrap(), defaults);
     }
 

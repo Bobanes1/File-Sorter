@@ -55,12 +55,6 @@ impl Lang {
     pub fn language(self) -> &'static str {
         self.pick("Language", "Sprache")
     }
-    pub fn watching(self, folder: &str) -> String {
-        self.fmt(format!("Watching {folder}"), format!("Überwacht {folder}"))
-    }
-    pub fn stopped(self) -> &'static str {
-        self.pick("Not watching", "Überwachung aus")
-    }
     pub fn stat_sorted_today(self) -> &'static str {
         self.pick("Sorted today", "Heute sortiert")
     }
@@ -70,22 +64,10 @@ impl Lang {
     pub fn stat_unmatched(self) -> &'static str {
         self.pick("Not assigned", "Nicht zugeordnet")
     }
-    pub fn stat_modules(self) -> &'static str {
-        self.pick("Modules", "Module")
-    }
 
     // ---------- folders ----------
     pub fn folders(self) -> &'static str {
         self.pick("Folders", "Ordner")
-    }
-    pub fn watch_folder(self) -> &'static str {
-        self.pick("Watch (Downloads):", "Überwachen (Downloads):")
-    }
-    pub fn study_folder(self) -> &'static str {
-        self.pick("Study folder:", "Studienordner:")
-    }
-    pub fn browse(self) -> &'static str {
-        self.pick("Browse…", "Durchsuchen…")
     }
     pub fn layout_hint(self) -> &'static str {
         self.pick("Layout: Study folder \\ Study program \\ Module", "Aufbau: Studienordner \\ Studienfach \\ Modul")
@@ -109,12 +91,6 @@ impl Lang {
     }
     pub fn delete(self) -> &'static str {
         self.pick("Delete", "Löschen")
-    }
-    pub fn keywords_label(self) -> &'static str {
-        self.pick(
-            "Keywords (one per line, e.g. module code, short name, professor):",
-            "Stichwörter (eins pro Zeile, z. B. Modulkürzel, Kurzname, Dozent/in):",
-        )
     }
     pub fn select_module(self) -> &'static str {
         self.pick("Select a module", "Modul auswählen")
@@ -147,9 +123,6 @@ impl Lang {
     pub fn sort_now(self) -> &'static str {
         self.pick("Sort existing files now", "Vorhandene Dateien jetzt sortieren")
     }
-    pub fn save(self) -> &'static str {
-        self.pick("Save", "Speichern")
-    }
 
     // ---------- activity ----------
     pub fn activity(self) -> &'static str {
@@ -175,9 +148,63 @@ impl Lang {
     }
     pub fn duplicate_removed(self, course: &str) -> String {
         self.fmt(
-            format!("Already in {course} – duplicate removed from Downloads"),
-            format!("Schon in {course} – Duplikat aus Downloads entfernt"),
+            format!("Already in {course} – duplicate moved to the Recycle Bin"),
+            format!("Schon in {course} – Duplikat in den Papierkorb verschoben"),
         )
+    }
+    pub fn saved_as(self, name: &str) -> String {
+        self.fmt(
+            format!("saved as «{name}» – another version is already there"),
+            format!("gespeichert als «{name}» – dort lag schon eine andere Version"),
+        )
+    }
+
+    // ---------- undo ----------
+    pub fn undo(self) -> &'static str {
+        self.pick("Undo", "Rückgängig")
+    }
+    pub fn undoing(self) -> &'static str {
+        self.pick("Putting it back…", "Wird zurückgelegt…")
+    }
+    pub fn undone(self, folder: &str) -> String {
+        self.fmt(format!("Put back – stays in {folder}"), format!("Zurückgelegt – bleibt in {folder}"))
+    }
+    pub fn undo_failed(self, error: &crate::undo::UndoError) -> String {
+        use crate::undo::UndoError;
+        match error {
+            UndoError::Missing => self
+                .pick(
+                    "Can't put it back: the file isn't where File Sorter put it any more",
+                    "Zurücklegen nicht möglich: die Datei liegt nicht mehr dort, wo File Sorter sie hingelegt hat",
+                )
+                .into(),
+            UndoError::InUse => self
+                .pick(
+                    "Can't put it back while it is open in another program",
+                    "Zurücklegen nicht möglich, solange sie in einem anderen Programm geöffnet ist",
+                )
+                .into(),
+            UndoError::NotSorted => self.pick("Nothing to undo", "Nichts rückgängig zu machen").into(),
+            UndoError::Failed(e) => {
+                self.fmt(format!("Can't put it back: {e}"), format!("Zurücklegen nicht möglich: {e}"))
+            }
+        }
+    }
+    pub fn snack_sorted(self, name: &str, course: &str, copied: bool) -> String {
+        if copied {
+            self.fmt(format!("«{name}» copied to {course}"), format!("«{name}» nach {course} kopiert"))
+        } else {
+            self.fmt(format!("«{name}» moved to {course}"), format!("«{name}» nach {course} verschoben"))
+        }
+    }
+    pub fn snack_duplicate(self, name: &str) -> String {
+        self.fmt(
+            format!("«{name}» was already there – duplicate in the Recycle Bin"),
+            format!("«{name}» war schon da – Duplikat im Papierkorb"),
+        )
+    }
+    pub fn snack_undone(self, name: &str) -> String {
+        self.fmt(format!("«{name}» put back"), format!("«{name}» zurückgelegt"))
     }
     pub fn reason(self, reason: &Reason) -> String {
         let words = reason.keywords().join(", ");
@@ -192,9 +219,9 @@ impl Lang {
         match reason {
             LeftReason::Gone => self.pick("File disappeared", "Datei ist verschwunden").into(),
             LeftReason::NotDocument => self.pick("Not a document type", "Kein Dokument-Dateityp").into(),
-            LeftReason::NoMatch => self
-                .pick("No matching module – stays in Downloads", "Kein passendes Modul – bleibt in Downloads")
-                .into(),
+            LeftReason::NoMatch => {
+                self.pick("No matching module – stays where it is", "Kein passendes Modul – bleibt, wo sie ist").into()
+            }
             LeftReason::AlreadyInFolder { .. } => {
                 self.pick("Already in the module folder", "Liegt schon im Modulordner").into()
             }
@@ -225,9 +252,6 @@ impl Lang {
     }
     pub fn stopped_watching(self) -> &'static str {
         self.pick("Stopped watching.", "Überwachung gestoppt.")
-    }
-    pub fn settings_saved(self) -> &'static str {
-        self.pick("Settings saved", "Einstellungen gespeichert")
     }
     pub fn sorting_existing(self) -> &'static str {
         self.pick("Sorting files already in the folder…", "Sortiere die Dateien, die schon im Ordner liegen…")
@@ -290,6 +314,79 @@ impl Lang {
     }
     pub fn keep_open(self) -> &'static str {
         self.pick("Keep open", "Offen lassen")
+    }
+
+    // ---------- background and tray ----------
+    pub fn background(self) -> &'static str {
+        self.pick("Keep running in the background", "Im Hintergrund weiterlaufen")
+    }
+    pub fn background_hint(self) -> &'static str {
+        self.pick(
+            "Closing the window keeps sorting while watching; the icon next to the clock opens it again.",
+            "Beim Schliessen des Fensters wird weiter sortiert; das Symbol neben der Uhr öffnet es wieder.",
+        )
+    }
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn tray_open(self) -> &'static str {
+        self.pick("Open File Sorter", "File Sorter öffnen")
+    }
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn tray_quit(self) -> &'static str {
+        self.pick("Quit", "Beenden")
+    }
+    pub fn tray_tooltip(self, watching: Option<&str>) -> String {
+        match watching {
+            Some(folder) => {
+                self.fmt(format!("File Sorter – watching {folder}"), format!("File Sorter – überwacht {folder}"))
+            }
+            None => self.pick("File Sorter – not watching", "File Sorter – Überwachung aus").into(),
+        }
+    }
+
+    // ---------- keyword preview ----------
+    pub fn kw_preview_title(self, module: &str) -> String {
+        self.fmt(format!("Keywords for {module}"), format!("Stichwörter für {module}"))
+    }
+    pub fn kw_preview_text(self, files: usize) -> String {
+        self.fmt(
+            format!("Found in the {files} file(s) of this module. Untick what doesn't fit."),
+            format!("Gefunden in den {files} Datei(en) dieses Moduls. Entferne das Häkchen bei Unpassendem."),
+        )
+    }
+    pub fn kw_add(self, count: usize) -> String {
+        self.fmt(format!("Add ({count})"), format!("Hinzufügen ({count})"))
+    }
+    pub fn kw_kind(self, kind: crate::keywords::Kind) -> &'static str {
+        use crate::keywords::Kind;
+        match kind {
+            Kind::Code => self.pick("module code", "Modulkürzel"),
+            Kind::Lecturer => self.pick("lecturer", "Dozent/in"),
+            Kind::Title => self.pick("from titles", "aus Titeln"),
+            Kind::Topic => self.pick("topic", "Thema"),
+        }
+    }
+    pub fn in_files(self, n: usize, total: usize) -> String {
+        self.fmt(format!("in {n} of {total} files"), format!("in {n} von {total} Dateien"))
+    }
+
+    // ---------- overview ----------
+    pub fn field_watch(self) -> &'static str {
+        self.pick("Watched folder (Downloads)", "Überwachter Ordner (Downloads)")
+    }
+    pub fn field_study(self) -> &'static str {
+        self.pick("Study folder", "Studienordner")
+    }
+    pub fn change(self) -> &'static str {
+        self.pick("Change", "Ändern")
+    }
+    pub fn keywords_title(self) -> &'static str {
+        self.pick("Keywords", "Stichwörter")
+    }
+    pub fn keywords_hint(self) -> &'static str {
+        self.pick("One per line: module code, short name, lecturer", "Eins pro Zeile: Modulkürzel, Kurzname, Dozent/in")
+    }
+    pub fn paused(self) -> &'static str {
+        self.pick("Paused", "Pausiert")
     }
 
     // ---------- tabs and settings ----------

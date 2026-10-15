@@ -19,9 +19,11 @@ mod logger;
 mod matcher;
 mod quicksort;
 mod sorter;
+mod tray;
 mod undo;
 mod watcher;
 mod winfix;
+mod winwin;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -123,7 +125,13 @@ fn main() -> ExitCode {
     }
 
     if !(args.headless || args.sort_now) {
-        return match gui::run(args.config, args.autostart) {
+        // Already open (maybe in the notification area): show that window instead of a second one.
+        let key = std::path::absolute(&args.config).unwrap_or(args.config.clone()).display().to_string();
+        let Some(instance) = winwin::single_instance(&key, !args.autostart) else {
+            log::info!("File Sorter is already open; showing that window");
+            return ExitCode::SUCCESS;
+        };
+        return match gui::run(args.config, args.autostart, instance) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 log::error!("Could not open the window: {e}");

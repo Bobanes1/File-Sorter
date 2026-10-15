@@ -15,14 +15,14 @@ pub struct MainWindow {
 #[cfg(windows)]
 mod imp {
     use super::MainWindow;
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND};
     use windows_sys::Win32::System::Threading::{
-        CreateEventW, INFINITE, OpenEventW, EVENT_MODIFY_STATE, SetEvent, WaitForSingleObject,
+        CreateEventW, EVENT_MODIFY_STATE, INFINITE, OpenEventW, SetEvent, WaitForSingleObject,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         ASFW_ANY, AllowSetForegroundWindow, GWL_EXSTYLE, GetWindowLongPtrW, IsIconic, IsWindowVisible, PostMessageW,
-        SC_MINIMIZE, SPI_GETWORKAREA, SW_HIDE, SW_RESTORE, SW_SHOWMINNOACTIVE, SetForegroundWindow,
-        SetWindowLongPtrW, ShowWindow, SystemParametersInfoW, WM_SYSCOMMAND, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        SC_MINIMIZE, SPI_GETWORKAREA, SW_HIDE, SW_RESTORE, SW_SHOWMINNOACTIVE, SetForegroundWindow, SetWindowLongPtrW,
+        ShowWindow, SystemParametersInfoW, WM_SYSCOMMAND, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     };
 
     impl MainWindow {

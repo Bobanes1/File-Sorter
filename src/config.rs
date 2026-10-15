@@ -104,6 +104,8 @@ pub struct Config {
     pub autostart: bool,
     /// Show the small results window after sorting from the right-click menu.
     pub results_window: bool,
+    /// Keep watching in the notification area when the window is closed (Windows).
+    pub background: bool,
     /// Folder for File Sorter's own lists (copied files, files to leave alone, history):
     /// the folder of config.json. Set at runtime, not saved.
     #[serde(skip)]
@@ -148,6 +150,7 @@ impl Default for Config {
             watch_on_open: false,
             autostart: false,
             results_window: true,
+            background: false,
             state_dir: None,
         }
     }

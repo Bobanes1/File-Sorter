@@ -399,7 +399,7 @@ impl FileTerms {
     fn add(&mut self, text: &str, prominent_words: usize) {
         let tokens: Vec<&str> =
             text.split(' ').map(|t| t.trim_matches(|c: char| !c.is_alphanumeric())).filter(|t| !t.is_empty()).collect();
-        let mut insert = |terms: &mut FileTerms, term: String, i: usize| {
+        let insert = |terms: &mut FileTerms, term: String, i: usize| {
             if i < prominent_words {
                 terms.prominent.insert(term.clone());
             }

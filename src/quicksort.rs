@@ -11,18 +11,20 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Margin, ProgressBar, RichText, ViewportCommand, vec2};
+use eframe::egui::{self, Align, Layout, Margin, Rect, RichText, ViewportCommand, vec2};
 use egui_phosphor::regular as icon;
 
 use crate::config::{Config, load_config};
 use crate::fx;
-use crate::gui::{Card, CardKind, FileState, app_icon, card_ui};
+use crate::fx::ButtonStyle;
+use crate::gui::{Card, CardKind, FileState, RowAction, activity_row, app_icon};
 use crate::i18n::Lang;
 use crate::sorter::{SortResult, sort_chosen};
+use crate::undo::{UndoError, undo};
 
 /// How long a follower waits for a leader to pick up its file before taking over.
 const FOLLOWER_PATIENCE: Duration = Duration::from_secs(20);
@@ -136,6 +138,7 @@ pub fn run(config_path: &Path, paths: Vec<PathBuf>, quiet: bool) -> ExitCode {
     let (tx, rx) = channel::<Vec<SortResult>>();
     let worker = {
         let stop = Arc::clone(&stop);
+        let config = config.clone();
         thread::spawn(move || {
             while !stop.load(Ordering::SeqCst) {
                 match inbox.take_all() {
@@ -151,15 +154,20 @@ pub fn run(config_path: &Path, paths: Vec<PathBuf>, quiet: bool) -> ExitCode {
             }
         })
     };
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("File Sorter")
-            .with_icon(Arc::new(app_icon()))
-            .with_inner_size([480.0, 400.0])
-            .with_min_inner_size([360.0, 240.0])
-            .with_always_on_top(),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("File Sorter")
+        .with_icon(Arc::new(app_icon()))
+        .with_inner_size(POPUP_SIZE)
+        .with_min_inner_size([320.0, 200.0])
+        .with_always_on_top();
+    // Bottom right, above the taskbar like a notification: not under the mouse, which
+    // would pause the countdown.
+    if let Some([_, _, right, bottom]) = crate::winwin::work_area() {
+        let scale = crate::winwin::screen_scale();
+        viewport =
+            viewport.with_position([right / scale - POPUP_SIZE[0] - 24.0, bottom / scale - POPUP_SIZE[1] - 56.0]);
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     let window_stop = Arc::clone(&stop);
     let shown = eframe::run_native(
         "File Sorter",
@@ -168,7 +176,7 @@ pub fn run(config_path: &Path, paths: Vec<PathBuf>, quiet: bool) -> ExitCode {
             fx::install(&cc.egui_ctx);
             fx::apply_theme(&cc.egui_ctx, theme);
             fx::set_motion(&cc.egui_ctx, motion);
-            Ok(Box::new(ResultsWindow::new(lang, rx, window_stop)))
+            Ok(Box::new(ResultsWindow::new(lang, config, rx, window_stop)))
         }),
     );
     stop.store(true, Ordering::SeqCst);
@@ -178,6 +186,9 @@ pub fn run(config_path: &Path, paths: Vec<PathBuf>, quiet: bool) -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+/// Logical size of the results window.
+const POPUP_SIZE: [f32; 2] = [400.0, 330.0];
 
 fn log_results(results: &[SortResult]) {
     for result in results {
@@ -199,20 +210,47 @@ fn sort_until_idle(inbox: &Inbox, config: &Config) {
     }
 }
 
-/// The small window listing what happened to the chosen files.
+/// The small window listing what happened to the chosen files, with "Undo" for each.
 struct ResultsWindow {
     lang: Lang,
+    config: Config,
     rx: Receiver<Vec<SortResult>>,
     stop: Arc<AtomicBool>,
     cards: Vec<Card>,
     sorted: usize,
-    last_activity: f64,
+    /// When the countdown to closing (re)started.
+    countdown_from: f64,
     keep_open: bool,
+    undo_tx: Sender<(u64, Result<PathBuf, UndoError>)>,
+    undo_rx: Receiver<(u64, Result<PathBuf, UndoError>)>,
 }
 
 impl ResultsWindow {
-    fn new(lang: Lang, rx: Receiver<Vec<SortResult>>, stop: Arc<AtomicBool>) -> Self {
-        ResultsWindow { lang, rx, stop, cards: Vec::new(), sorted: 0, last_activity: 0.0, keep_open: false }
+    fn new(lang: Lang, config: Config, rx: Receiver<Vec<SortResult>>, stop: Arc<AtomicBool>) -> Self {
+        let (undo_tx, undo_rx) = channel();
+        ResultsWindow {
+            lang,
+            config,
+            rx,
+            stop,
+            cards: Vec::new(),
+            sorted: 0,
+            countdown_from: 0.0,
+            keep_open: false,
+            undo_tx,
+            undo_rx,
+        }
+    }
+
+    fn start_undo(&mut self, key: u64, ctx: &egui::Context, now: f64) {
+        let Some(card) = self.cards.iter_mut().find(|c| c.key == key) else { return };
+        let Some(result) = card.undoable().cloned() else { return };
+        card.set_state(FileState::Undoing(result.clone()), now);
+        let (tx, config, ctx) = (self.undo_tx.clone(), self.config.clone(), ctx.clone());
+        thread::spawn(move || {
+            let _ = tx.send((key, undo(&result, &config)));
+            ctx.request_repaint();
+        });
     }
 }
 
@@ -221,84 +259,129 @@ impl eframe::App for ResultsWindow {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
         let lang = self.lang;
+        let p = fx::pal(ui);
         while let Ok(batch) = self.rx.try_recv() {
             for result in batch {
                 if result.sorted() {
                     self.sorted += 1;
                 }
-                let kind = CardKind::File { name: result.file_name(), state: FileState::Done(result.outcome) };
+                let kind = CardKind::File { name: result.file_name(), state: FileState::Done(result) };
                 self.cards.push(Card::new(kind, now));
             }
-            self.last_activity = now;
+            self.countdown_from = now;
         }
-        // The countdown pauses while the mouse is over the window.
-        if ctx.input(|i| i.pointer.hover_pos().is_some()) {
-            self.last_activity = now;
+        while let Ok((key, outcome)) = self.undo_rx.try_recv() {
+            if let Some(card) = self.cards.iter_mut().find(|c| c.key == key)
+                && let CardKind::File { state: FileState::Undoing(result), .. } = &card.kind
+            {
+                let result = result.clone();
+                let state = match outcome {
+                    Ok(back) => {
+                        self.sorted = self.sorted.saturating_sub(1);
+                        FileState::Undone { back }
+                    }
+                    Err(error) => FileState::UndoFailed { result, error },
+                };
+                card.set_state(state, now);
+            }
+            self.countdown_from = now;
         }
-        let remaining = (CLOSE_AFTER_SECS - (now - self.last_activity)).max(0.0);
+        // The countdown waits while the mouse is over the window or a file is being put back.
+        let busy = self.cards.iter().any(|c| matches!(c.kind, CardKind::File { state: FileState::Undoing(_), .. }));
+        let hovered = ctx.input(|i| i.pointer.hover_pos().is_some());
+        if hovered || busy {
+            self.countdown_from = now;
+        }
+        let remaining = (CLOSE_AFTER_SECS - (now - self.countdown_from)).max(0.0);
         let done = !self.cards.is_empty();
         if done && !self.keep_open && remaining <= 0.0 {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
 
-        let accent = fx::accent(ui);
         egui::Panel::top("quick-header")
-            .frame(
-                egui::Frame::new()
-                    .fill(fx::lerp_color(ui.visuals().panel_fill, accent, 0.06))
-                    .inner_margin(Margin::symmetric(12, 10)),
-            )
+            .frame(egui::Frame::new().fill(p.surface).inner_margin(Margin { left: 16, right: 16, top: 12, bottom: 4 }))
+            .show_separator_line(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(icon::GRADUATION_CAP).size(24.0).color(accent));
+                    let (logo, _) = ui.allocate_exact_size(vec2(32.0, 32.0), egui::Sense::hover());
+                    fx::avatar(
+                        ui.painter(),
+                        logo.center(),
+                        16.0,
+                        icon::GRADUATION_CAP,
+                        p.primary_container,
+                        p.on_primary_container,
+                    );
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("File Sorter").size(18.0).strong());
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.label(fx::title("File Sorter", 15.0).color(p.on_surface));
                         if done {
-                            let color = if self.sorted == self.cards.len() { fx::GREEN } else { fx::AMBER };
-                            ui.label(RichText::new(lang.quick_done(self.sorted, self.cards.len())).color(color));
+                            let color = if self.sorted == self.cards.len() { p.success } else { p.warning };
+                            ui.label(
+                                RichText::new(lang.quick_done(self.sorted, self.cards.len())).small().color(color),
+                            );
                         } else {
                             ui.horizontal(|ui| {
-                                ui.add(egui::Spinner::new().color(fx::BLUE));
-                                ui.label(RichText::new(lang.quick_sorting()).color(fx::BLUE));
+                                ui.add(egui::Spinner::new().size(12.0).color(p.primary));
+                                ui.label(RichText::new(lang.quick_sorting()).small().color(p.primary));
                             });
                         }
                     });
                 });
             });
-        egui::Panel::bottom("quick-footer").show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui.button(format!("{} {}", icon::X, lang.close())).clicked() {
-                    ctx.send_viewport_cmd(ViewportCommand::Close);
-                }
-                if !self.keep_open && done {
-                    if ui.button(format!("{} {}", icon::PUSH_PIN, lang.keep_open())).clicked() {
-                        self.keep_open = true;
-                    }
+        egui::Panel::bottom("quick-footer")
+            .frame(egui::Frame::new().fill(p.surface).inner_margin(Margin { left: 12, right: 12, top: 4, bottom: 8 }))
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                if done && !self.keep_open {
+                    // A thin countdown bar, Material "linear progress" style.
+                    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), egui::Sense::hover());
+                    ui.painter().rect_filled(bar, 2, p.container_highest);
                     let fraction = (remaining / CLOSE_AFTER_SECS) as f32;
-                    ui.add(
-                        ProgressBar::new(fraction)
-                            .desired_width(ui.available_width())
-                            .fill(accent.gamma_multiply(0.6))
-                            .text(RichText::new(lang.closes_in(remaining.ceil() as u32)).color(Color32::WHITE)),
-                    );
+                    let filled = Rect::from_min_size(bar.min, vec2(bar.width() * fraction, bar.height()));
+                    ui.painter().rect_filled(filled, 2, p.primary);
                 }
-            });
-            ui.add_space(4.0);
-        });
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
-                for card in self.cards.iter().rev() {
-                    if card_ui(ui, lang, card, now).clicked()
-                        && let Some(path) = card.destination()
-                    {
-                        crate::desktop::reveal(path);
+                ui.horizontal(|ui| {
+                    if done && !self.keep_open {
+                        let text =
+                            if hovered { lang.paused().to_string() } else { lang.closes_in(remaining.ceil() as u32) };
+                        ui.label(RichText::new(text).small().color(p.on_surface_variant));
                     }
-                }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if fx::button(ui, ButtonStyle::Text, "", lang.close()).clicked() {
+                            ctx.send_viewport_cmd(ViewportCommand::Close);
+                        }
+                        if done
+                            && !self.keep_open
+                            && fx::button(ui, ButtonStyle::Text, icon::PUSH_PIN, lang.keep_open()).clicked()
+                        {
+                            self.keep_open = true;
+                        }
+                    });
+                });
             });
-        });
-        ctx.request_repaint_after(Duration::from_millis(50));
+        let mut actions = Vec::new();
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(p.surface).inner_margin(Margin::symmetric(8, 0)))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for card in self.cards.iter().rev() {
+                        match activity_row(ui, lang, card, now) {
+                            RowAction::None => {}
+                            action => actions.push((card.key, action)),
+                        }
+                    }
+                });
+            });
+        for (key, action) in actions {
+            match action {
+                RowAction::Open(path) => crate::desktop::reveal(&path),
+                RowAction::Undo => self.start_undo(key, &ctx, now),
+                RowAction::None => {}
+            }
+        }
+        ctx.request_repaint_after(Duration::from_millis(100));
     }
 
     fn on_exit(&mut self) {

@@ -3,3 +3,7 @@ tests/fixtures/** binary
 *.pdf binary
 *.pptx binary
 *.docx binary
+*.ttf binary
+*.ico binary
+*.rgba binary
+*.png binary

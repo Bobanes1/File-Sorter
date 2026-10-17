@@ -1,0 +1,398 @@
+name: Build Windows exe
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Create a GitHub release with this tag (e.g. v0.4). Leave empty to only build."
+        required: false
+        default: ""
+
+permissions:
+  contents: write  # needed to attach the exe to a release on version tags
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --release
+
+      - name: Build FileSorter.exe
+        run: |
+          cargo build --release
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\file-sorter.exe dist\FileSorter.exe
+
+      - name: Check the exe carries its icon and version info
+        shell: pwsh
+        run: |
+          # Without an icon inside the exe, a pinned taskbar shortcut shows a blank icon.
+          $exe = (Resolve-Path dist\FileSorter.exe).Path
+          $info = (Get-Item $exe).VersionInfo
+          Write-Host "FileDescription: $($info.FileDescription) / ProductName: $($info.ProductName) / Version: $($info.FileVersion)"
+          if ($info.FileDescription -ne "File Sorter") { throw "version info is missing from the exe" }
+          Add-Type -AssemblyName System.Drawing
+          $px = [System.Drawing.Icon]::ExtractAssociatedIcon($exe).ToBitmap().GetPixel(8, 8)
+          Write-Host "icon pixel (8,8): R=$($px.R) G=$($px.G) B=$($px.B) A=$($px.A)"
+          if (-not ($px.A -gt 200 -and $px.R -lt 90 -and $px.G -gt 140 -and $px.B -gt 150)) {
+            throw "the exe shows the generic Windows icon instead of the File Sorter icon"
+          }
+          Write-Host "exe has the File Sorter icon"
+
+      - name: Smoke-test the exe (sort once)
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "smoke"
+          New-Item -ItemType Directory -Force "$root\Downloads" | Out-Null
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\week1.pptx"
+          Copy-Item tests\fixtures\analysis_chromium.pdf "$root\Downloads\vorlesung4.pdf"
+          @{
+            watch_folder = "$root\Downloads"
+            destination_root = "$root\Studium"
+            courses = @(
+              @{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("programming") },
+              @{ name = "Analysis I"; subject = "Mathematik"; keywords = @("analysis i") }
+            )
+          } | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--config", "`"$root\config.json`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
+          Get-Content "$root\file-sorter.log"
+          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\week1.pptx")) { throw "PPTX was not sorted" }
+          if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\vorlesung4.pdf")) { throw "PDF was not sorted" }
+          Write-Host "exe sorted both files correctly"
+
+      - name: Smoke-test removing the "downloaded from the web" mark
+        shell: pwsh
+        run: |
+          $mark = "[ZoneTransfer]`r`nZoneId=3`r`n"
+          $pinned = Join-Path $env:APPDATA "Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
+          New-Item -ItemType Directory -Force $pinned | Out-Null
+          $lnk = Join-Path $pinned "FileSorter.lnk"
+          $other = Join-Path $pinned "SomethingElse.lnk"
+          Set-Content $lnk "fake shortcut"; Set-Content $other "other shortcut"
+          foreach ($f in @("dist\FileSorter.exe", $lnk, $other)) { Set-Content -Path $f -Stream Zone.Identifier -Value $mark }
+          $root = Join-Path $env:RUNNER_TEMP "smoke"
+          # -NoNewWindow starts the exe directly. Through Explorer, Windows would first show its
+          # "downloaded from the internet" warning, which nobody can click here.
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--config", "`"$root\config.json`"" -NoNewWindow -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
+          if (Get-Item dist\FileSorter.exe -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw "exe is still marked" }
+          if (Get-Item $lnk -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw "taskbar shortcut is still marked" }
+          if (-not (Get-Item $other -Stream Zone.Identifier -ErrorAction SilentlyContinue)) { throw "another program's shortcut was touched" }
+          if ((Get-Content $lnk) -ne "fake shortcut") { throw "shortcut content changed" }
+          Remove-Item $lnk, $other
+          Write-Host "web mark removed from exe and own shortcut only"
+
+      - name: Smoke-test the right-click menu
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path dist\FileSorter.exe).Path
+          $root = Join-Path $env:RUNNER_TEMP "menu"
+          New-Item -ItemType Directory -Force "$root\Desktop\Folder" | Out-Null
+          Copy-Item tests\fixtures\programming.pptx "$root\Desktop\week2.pptx"
+          Copy-Item tests\fixtures\programming.pptx "$root\Desktop\week3.pptx"
+          Copy-Item tests\fixtures\analysis_chromium.pdf "$root\Desktop\Folder\vorlesung5.pdf"
+          Set-Content "$root\Desktop\shopping.txt" "milk, bread"
+          # The menu command has no --config, so it uses the normal per-user settings file.
+          $configDir = Join-Path $env:APPDATA "FileSorter"
+          New-Item -ItemType Directory -Force $configDir | Out-Null
+          @{
+            watch_folder = "$root\Downloads"
+            destination_root = "$root\Studium"
+            language = "de"
+            courses = @(
+              @{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("programming") },
+              @{ name = "Analysis I"; subject = "Mathematik"; keywords = @("analysis i") }
+            )
+          } | ConvertTo-Json -Depth 5 | Set-Content "$configDir\config.json"
+
+          $p = Start-Process $exe -ArgumentList "--register-menu" -NoNewWindow -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "--register-menu exited with $($p.ExitCode)" }
+          $commands = @{}
+          foreach ($kind in @("*", "Directory")) {
+            $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Software\Classes\$kind\shell\FileSorter")
+            if (-not $key) { throw "no menu entry for $kind" }
+            $label = $key.GetValue(""); $icon = $key.GetValue("Icon")
+            $commands[$kind] = $key.OpenSubKey("command").GetValue("")
+            Write-Host "$kind : '$label' icon=$icon command=$($commands[$kind])"
+            if ($label -ne "Mit File Sorter sortieren") { throw "unexpected label '$label'" }
+            if ($icon -ne "`"$exe`",0") { throw "unexpected icon '$icon'" }
+            if ($commands[$kind] -ne "`"$exe`" --sort `"%1`"") { throw "unexpected command" }
+          }
+
+          # Run the commands the way Explorer does: one process per selected item, all at once.
+          # Keep the mouse away so it doesn't pause the results window's countdown.
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          try { [System.Windows.Forms.Cursor]::Position = [System.Drawing.Point]::new($bounds.Width - 1, $bounds.Height - 1) } catch {}
+          $items = @(
+            @("*", "$root\Desktop\week2.pptx"), @("*", "$root\Desktop\week3.pptx"),
+            @("*", "$root\Desktop\shopping.txt"), @("Directory", "$root\Desktop\Folder")
+          )
+          $procs = foreach ($item in $items) {
+            $arguments = $commands[$item[0]].Substring($exe.Length + 3).Replace("%1", $item[1])
+            Start-Process $exe -ArgumentList $arguments -PassThru
+          }
+          $mostWindows = 0
+          $deadline = (Get-Date).AddSeconds(90)
+          while (($procs | Where-Object { -not $_.HasExited }) -and (Get-Date) -lt $deadline) {
+            $windows = 0
+            foreach ($proc in $procs) {
+              # A process can exit between the checks; reading its window then throws.
+              try { $proc.Refresh(); if (-not $proc.HasExited -and $proc.MainWindowHandle -ne 0) { $windows++ } } catch {}
+            }
+            if ($windows -gt $mostWindows) { $mostWindows = $windows }
+            if ($windows -ge 1 -and -not (Test-Path "$env:RUNNER_TEMP\results.png")) {
+              Start-Sleep -Seconds 2
+              $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+              [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+              $bmp.Save("$env:RUNNER_TEMP\results.png")
+            }
+            Start-Sleep -Milliseconds 250
+          }
+          Get-Content "$configDir\file-sorter.log" -ErrorAction SilentlyContinue
+          if ($procs | Where-Object { -not $_.HasExited }) { $procs | Stop-Process -ErrorAction SilentlyContinue; throw "the results window did not close by itself" }
+          foreach ($proc in $procs) { if ($proc.ExitCode -ne 0) { throw "a sort process exited with $($proc.ExitCode)" } }
+          Write-Host "windows open at the same time: $mostWindows"
+          if ($mostWindows -ne 1) { throw "expected exactly one results window for the whole selection, saw $mostWindows" }
+          foreach ($f in @("Informatik\Programmierung 1\week2.pptx", "Informatik\Programmierung 1\week3.pptx", "Mathematik\Analysis I\vorlesung5.pdf")) {
+            if (-not (Test-Path "$root\Studium\$f")) { throw "$f was not sorted" }
+          }
+          foreach ($f in @("week2.pptx", "week3.pptx", "Folder\vorlesung5.pdf")) {
+            if (Test-Path "$root\Desktop\$f") { throw "$f is still on the Desktop (copied instead of moved)" }
+          }
+          if (-not (Test-Path "$root\Desktop\shopping.txt")) { throw "the unmatched file was moved" }
+
+          # The same through the real Windows shell: three files selected, «Mit File Sorter sortieren» chosen.
+          New-Item -ItemType Directory -Force "$root\Shell" | Out-Null
+          Copy-Item tests\fixtures\programming.pptx "$root\Shell\week4.pptx"
+          Copy-Item tests\fixtures\programming.pptx "$root\Shell\week5.pptx"
+          Copy-Item tests\fixtures\analysis_chromium.pdf "$root\Shell\vorlesung6.pdf"
+          $items = (New-Object -ComObject Shell.Application).Namespace("$root\Shell").Items()
+          $items.Filter(0x40, "*.pptx;*.pdf")  # files only
+          Write-Host "selected in the shell: $($items.Count)"
+          $started = Get-Date
+          $items.InvokeVerbEx("FileSorter")
+          $mostWindows = 0; $seen = $false
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) {
+            $running = @(Get-Process FileSorter -ErrorAction SilentlyContinue)
+            if ($running.Count -gt 0) { $seen = $true }
+            $windows = 0
+            foreach ($proc in $running) { try { if ($proc.MainWindowHandle -ne 0) { $windows++ } } catch {} }
+            if ($windows -gt $mostWindows) { $mostWindows = $windows }
+            if ($seen -and $running.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 250
+          }
+          $took = [int]((Get-Date) - $started).TotalSeconds
+          Get-Content "$configDir\file-sorter.log" -Tail 6 -ErrorAction SilentlyContinue
+          Write-Host "shell selection: processes seen $seen, windows at once $mostWindows, all done after $took s"
+          if (Get-Process FileSorter -ErrorAction SilentlyContinue) { Stop-Process -Name FileSorter; throw "the results window did not close by itself" }
+          foreach ($f in @("Informatik\Programmierung 1\week4.pptx", "Informatik\Programmierung 1\week5.pptx", "Mathematik\Analysis I\vorlesung6.pdf")) {
+            if (-not (Test-Path "$root\Studium\$f")) { throw "$f was not sorted through the shell" }
+          }
+          if ($mostWindows -ne 1) { throw "expected one results window for the shell selection, saw $mostWindows" }
+          if ($took -gt 30) { throw "the results window stayed open too long ($took s)" }
+
+          $p = Start-Process $exe -ArgumentList "--unregister-menu" -NoNewWindow -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "--unregister-menu exited with $($p.ExitCode)" }
+          foreach ($kind in @("*", "Directory")) {
+            if ([Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Software\Classes\$kind\shell\FileSorter")) { throw "menu entry for $kind is still there" }
+          }
+          Remove-Item -Recurse $configDir
+          Write-Host "right-click sorting works for files and folders, with one results window"
+
+      - name: Smoke-test starting at sign-in (minimised, watching, copy mode)
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path dist\FileSorter.exe).Path
+          $root = Join-Path $env:RUNNER_TEMP "autostart"
+          New-Item -ItemType Directory -Force "$root\Downloads" | Out-Null
+          $config = @{
+            watch_folder = "$root\Downloads"
+            destination_root = "$root\Studium"
+            action = "copy"
+            autostart = $true
+            courses = @(@{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("programming") })
+          }
+          $config | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
+          # The window titled "File Sorter" (Process.MainWindowHandle may name winit's invisible helper window).
+          Add-Type -Namespace Win -Name User32 -MemberDefinition @'
+          [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+          [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string cls, string title);
+          [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+          public static IntPtr Find(int pid) {
+            IntPtr h = IntPtr.Zero;
+            while ((h = FindWindowExW(IntPtr.Zero, h, null, "File Sorter")) != IntPtr.Zero) {
+              uint owner; GetWindowThreadProcessId(h, out owner);
+              if (owner == pid) return h;
+            }
+            return IntPtr.Zero;
+          }
+          '@
+          $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+
+          # What Windows runs at sign-in once the setting is on.
+          $p = Start-Process $exe -ArgumentList "--autostart", "--config", "`"$root\config.json`"" -PassThru
+          $states = @()
+          for ($i = 0; $i -lt 27; $i++) {
+            $h = [Win.User32]::Find($p.Id)
+            $states += if ($h -eq 0) { "-" } elseif ([Win.User32]::IsIconic($h)) { "min" } else { "norm" }
+            Start-Sleep -Milliseconds 300
+          }
+          Write-Host "window state every 0.3 s: $($states -join ' ')"
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\week6.pptx"
+          $copy = "$root\Studium\Informatik\Programmierung 1\week6.pptx"
+          $deadline = (Get-Date).AddSeconds(30)
+          while (-not (Test-Path $copy) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          $window = [Win.User32]::Find($p.Id)
+          $minimised = $window -ne 0 -and [Win.User32]::IsIconic($window)
+          Write-Host "window handle: $window"
+          $entry = (Get-ItemProperty $runKey -Name FileSorter -ErrorAction SilentlyContinue).FileSorter
+          $exited = $p.HasExited
+          if (-not $exited) { Stop-Process -Id $p.Id }
+          Get-Content "$root\file-sorter.log" -ErrorAction SilentlyContinue
+          Write-Host "minimised: $minimised / sign-in entry: $entry"
+          if ($exited) { throw "File Sorter closed by itself (exit code $($p.ExitCode))" }
+          if (-not (Test-Path $copy)) { throw "the file was not sorted while starting minimised" }
+          if (-not (Test-Path "$root\Downloads\week6.pptx")) { throw "copy mode removed the original" }
+          if (-not $minimised) { throw "the window did not start minimised" }
+          if ($entry -ne "`"$exe`" --autostart") { throw "sign-in entry missing or wrong: $entry" }
+
+          # Turning the setting off removes the entry again.
+          $config.autostart = $false
+          $config | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
+          $p = Start-Process $exe -ArgumentList "--config", "`"$root\config.json`"" -PassThru
+          Start-Sleep -Seconds 6
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id }
+          if (Get-ItemProperty $runKey -Name FileSorter -ErrorAction SilentlyContinue) { throw "sign-in entry was not removed" }
+          Write-Host "sign-in start works: minimised, watching, copy mode keeps the original; entry added and removed"
+
+      - name: Smoke-test running in the background (tray) and starting again
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path dist\FileSorter.exe).Path
+          $root = Join-Path $env:RUNNER_TEMP "background"
+          New-Item -ItemType Directory -Force "$root\Downloads" | Out-Null
+          @{
+            watch_folder = "$root\Downloads"
+            destination_root = "$root\Studium"
+            watch_on_open = $true
+            background = $true
+            courses = @(@{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("programming") })
+          } | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
+          Add-Type -Namespace Win2 -Name User32 -MemberDefinition @'
+          [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+          [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+          [DllImport("user32.dll")] public static extern IntPtr GetWindowLongPtrW(IntPtr hWnd, int nIndex);
+          [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr w, IntPtr l);
+          [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string cls, string title);
+          [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+          public static IntPtr Find(int pid) {
+            IntPtr h = IntPtr.Zero;
+            while ((h = FindWindowExW(IntPtr.Zero, h, null, "File Sorter")) != IntPtr.Zero) {
+              uint owner; GetWindowThreadProcessId(h, out owner);
+              if (owner == pid) return h;
+            }
+            return IntPtr.Zero;
+          }
+          '@
+          function InTray($h) { (([Win2.User32]::GetWindowLongPtrW($h, -20)).ToInt64() -band 0x80) -ne 0 }
+          function State($h) { "minimised=$([Win2.User32]::IsIconic($h)) visible=$([Win2.User32]::IsWindowVisible($h)) tray=$(InTray $h)" }
+
+          $p = Start-Process $exe -ArgumentList "--config", "`"$root\config.json`"" -PassThru
+          Start-Sleep -Seconds 8
+          $h = [Win2.User32]::Find($p.Id)
+          if ($h -eq 0) { throw "no window" }
+          Write-Host "open: $(State $h)"
+          # Like clicking the window's close button (WM_CLOSE).
+          [void][Win2.User32]::PostMessageW($h, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
+          Start-Sleep -Seconds 3
+          Write-Host "after closing: $(State $h)"
+          if ($p.HasExited) { throw "File Sorter quit instead of staying in the background" }
+          if (-not ([Win2.User32]::IsIconic($h) -and (InTray $h))) { throw "the window did not go to the notification area" }
+
+          # Still sorting in the background.
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\week7.pptx"
+          $sorted = "$root\Studium\Informatik\Programmierung 1\week7.pptx"
+          $deadline = (Get-Date).AddSeconds(30)
+          while (-not (Test-Path $sorted) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (-not (Test-Path $sorted)) { Get-Content "$root\file-sorter.log"; throw "nothing was sorted in the background" }
+
+          # Starting File Sorter again brings this window back instead of opening a second one.
+          $second = Start-Process $exe -ArgumentList "--config", "`"$root\config.json`"" -PassThru
+          if (-not $second.WaitForExit(15000)) { $second.Kill(); throw "the second start did not hand over to the running one" }
+          Start-Sleep -Seconds 2
+          Write-Host "after starting again: $(State $h)"
+          Get-Content "$root\file-sorter.log"
+          $back = (-not [Win2.User32]::IsIconic($h)) -and (-not (InTray $h)) -and [Win2.User32]::IsWindowVisible($h)
+          Stop-Process -Id $p.Id
+          if (-not $back) { throw "the window did not come back" }
+          Write-Host "background mode works: notification area, sorting, coming back"
+
+      - name: Smoke-test the window (wgpu)
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "gui"
+          New-Item -ItemType Directory -Force "$root\Downloads", "$root\Studium\Informatik\Programmierung 1", "$root\Studium\Mathematik\Analysis II" | Out-Null
+          @{ watch_folder = "$root\Downloads"; destination_root = "$root\Studium" } | ConvertTo-Json | Set-Content "$root\config.json"
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--config", "`"$root\config.json`"" -PassThru
+          Start-Sleep -Seconds 10
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          $bmp.Save("$env:RUNNER_TEMP\window.png")
+          if ($p.HasExited) {
+            Get-Content "$root\file-sorter.log" -ErrorAction SilentlyContinue
+            throw "the window closed by itself (exit code $($p.ExitCode))"
+          }
+          Stop-Process -Id $p.Id
+          Write-Host "window opened and stayed up"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: window-screenshot
+          path: |
+            ${{ runner.temp }}/window.png
+            ${{ runner.temp }}/results.png
+          if-no-files-found: ignore
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Real Firefox download test
+        run: |
+          pip install selenium
+          python tests/e2e_firefox.py --exe dist/FileSorter.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FileSorter-windows
+          path: dist/FileSorter.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          # On a manual run the tag is created on the commit that was just built.
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: File Sorter ${{ inputs.release_tag || github.ref_name }}
+          files: dist/FileSorter.exe
+          body: |
+            Download **FileSorter.exe** below and double-click it – nothing else to install.
+            Windows SmartScreen may warn because the exe isn't signed: click *More info → Run anyway*.
+            See the README for setup and autostart instructions.

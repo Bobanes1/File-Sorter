@@ -9,7 +9,7 @@ use crate::fx::{self, ButtonStyle};
 use crate::i18n::Lang;
 
 /// One setting: icon, title and explanation on the left, its control on the right.
-fn setting_row(ui: &mut egui::Ui, glyph: &str, title: &str, hint: &str, control: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn setting_row(ui: &mut egui::Ui, glyph: &str, title: &str, hint: &str, control: impl FnOnce(&mut egui::Ui)) {
     let p = fx::pal(ui);
     ui.horizontal(|ui| {
         ui.set_min_height(56.0);
@@ -30,7 +30,7 @@ fn setting_row(ui: &mut egui::Ui, glyph: &str, title: &str, hint: &str, control:
     });
 }
 
-fn divider(ui: &mut egui::Ui) {
+pub(super) fn divider(ui: &mut egui::Ui) {
     let p = fx::pal(ui);
     let rect = ui.available_rect_before_wrap();
     let y = ui.cursor().top() + 2.0;
@@ -39,7 +39,7 @@ fn divider(ui: &mut egui::Ui) {
 }
 
 /// A row that is itself a radio choice (for "Move" / "Copy").
-fn radio_row(ui: &mut egui::Ui, selected: bool, title: &str, hint: &str, id: &str) -> bool {
+pub(super) fn radio_row(ui: &mut egui::Ui, selected: bool, title: &str, hint: &str, id: &str) -> bool {
     let p = fx::pal(ui);
     let response = ui
         .scope(|ui| {
@@ -184,6 +184,8 @@ impl App {
                     }
                 });
                 ui.add_space(16.0);
+
+                self.cloud_settings_ui(ui);
 
                 if cfg!(windows) {
                     section_title(ui, lang.right_click());

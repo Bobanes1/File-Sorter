@@ -340,6 +340,24 @@ jobs:
           if (-not $back) { throw "the window did not come back" }
           Write-Host "background mode works: notification area, sorting, coming back"
 
+      - name: Smoke-test finding cloud folders
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path dist\FileSorter.exe).Path
+          $root = Join-Path $env:RUNNER_TEMP "clouds"
+          New-Item -ItemType Directory -Force "$root\OneDrive", "$root\Dropbox Uni", "$root\AppData\Dropbox" | Out-Null
+          # What OneDrive and Dropbox leave for other programs to find them.
+          @{ personal = @{ path = "$root\Dropbox Uni" } } | ConvertTo-Json | Set-Content "$root\AppData\Dropbox\info.json"
+          $env:OneDriveConsumer = "$root\OneDrive"
+          $env:APPDATA = "$root\AppData"
+          $p = Start-Process $exe -ArgumentList "--list-clouds", "--config", "`"$root\config.json`"" -PassThru -Wait
+          $log = Get-Content "$root\file-sorter.log" -Raw
+          Write-Host $log
+          if ($p.ExitCode -ne 0) { throw "exit code $($p.ExitCode)" }
+          if ($log -notmatch 'OneDrive at .*clouds\\OneDrive') { throw "OneDrive was not found" }
+          if ($log -notmatch 'Dropbox at .*clouds\\Dropbox Uni') { throw "Dropbox was not found" }
+          Write-Host "cloud folders found"
+
       - name: Smoke-test the window (wgpu)
         shell: pwsh
         run: |

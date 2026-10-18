@@ -77,6 +77,30 @@ Click a sorted file in *Activity* to open its folder with the file selected. The
 
 Sorted a file by mistake? Click **Undo** next to it in *Activity* (or in the bar that appears right after sorting). The file goes back where it came from – a moved file is moved back, a copy is removed again, a duplicate that went to the Recycle Bin is restored – and **it stays there**: File Sorter won't sort that file again (unless you sort it yourself with the right-click menu). Earlier sorts are still listed after a restart, so you can undo them later too.
 
+## Your study folder in OneDrive, Dropbox or Google Drive
+
+So your files are on your phone, tablet and other computers too: **Settings → Cloud → Study folder in the cloud**. File Sorter finds OneDrive (personal and work/school), Dropbox, Google Drive for desktop and iCloud Drive by itself; with **Other folder…** you can use any synced folder (Nextcloud, pCloud, a network drive, …). There are three choices:
+
+| Choice | What happens |
+|--------|--------------|
+| **Off** | The study folder is only on this computer (as before). |
+| **Move into the cloud** | The study folder is moved once into the cloud folder (e.g. `OneDrive\Studium`), and from then on files are sorted straight into it. The cloud app keeps it the same everywhere, **in both directions**: notes you write into a PDF on your tablet show up on your PC too. |
+| **Copy in the cloud** | The study folder stays where it is. File Sorter keeps a copy in the cloud folder up to date – right after each sort and every minute. **One way only**: changes made on other devices stay in the cloud copy. |
+
+Your files are safe while moving and copying:
+
+- **Nothing is overwritten.** A different file with the same name that is already in the cloud folder stays; the moved one gets a number (`name (1).pdf`). The very same file isn't kept twice (the second one goes to the Recycle Bin).
+- **Open files are left alone** – close your PDF viewer first; files that were still open stay at the old place and the card offers to move them later.
+- **Copy in the cloud never destroys a change made in the cloud**: if a file was changed in the cloud copy *and* here, this computer's version is saved next to it with the computer's name (`Skript (DESKTOP-4FJ2K).pdf`). Files deleted here stay in the cloud copy; undoing a sort removes its copy again (unless it was changed there). While the cloud folder isn't there (drive not connected, app not signed in), File Sorter waits.
+- **Undo keeps working** after the study folder has moved.
+- Files that OneDrive keeps *online only* are not downloaded just to suggest keywords.
+
+To bring the study folder back, choose **Off**: *Bring back* moves it to its old place (or `Documents`), *Leave it in OneDrive* keeps it there and File Sorter simply stops managing it.
+
+**Several computers:** turn on **Share modules with my other computers**. Modules, keywords and file types are then kept in the study folder in the cloud (`.file-sorter.json`), so every computer sorts the same way; the newest change wins, and the first time two different sets of modules meet, File Sorter asks which to keep. Folders, language and startup settings stay per computer. On the second computer, choose the same cloud folder – if its study folder is still empty, File Sorter simply uses the one in the cloud.
+
+On your phone or tablet, open the OneDrive, Dropbox or Google Drive app (or their website). `FileSorter.exe --list-clouds` writes the cloud folders File Sorter finds into the log file.
+
 ## Right-click: sort any file right away
 
 Like *Extract all…* for a zip: right-click a file and choose **Mit File Sorter sortieren** / **Sort with File Sorter**. A small window appears at the bottom right and shows where each file went (click one to open its folder, *Undo* to put it back); it closes by itself after a few seconds (it waits while the mouse is over it).
@@ -120,6 +144,7 @@ Everything on the **Settings** tab is saved as soon as you change it (a green *S
 | **Start when I sign in** | File Sorter opens minimised in the taskbar and starts watching right away (Windows and Linux). |
 | **Start watching right away** | Begin watching as soon as you open the window. |
 | **Keep running in the background** (Windows) | Closing the window while it watches keeps File Sorter running in the notification area (next to the clock); click the icon to open it again, right-click it → *Quit* to end it. With *Start when I sign in*, it then starts there too. |
+| **Cloud** | Keep the study folder in OneDrive, Dropbox, Google Drive, … (moved there, or a copy), and share modules with your other computers – see [above](#your-study-folder-in-onedrive-dropbox-or-google-drive). |
 | **Right-click menu** (Windows) | Show or hide «Sort with File Sorter», and whether the results window appears afterwards. |
 | **About** | Version, and buttons to open the log file and the settings folder. |
 
@@ -131,7 +156,10 @@ FileSorter.exe --headless   # watch in the background without any window, using 
 FileSorter.exe --sort-now   # sort what's already in the folder once and exit
 FileSorter.exe --sort FILE_OR_FOLDER...  # what the right-click entry runs; add --quiet for no window
 FileSorter.exe --register-menu           # add the right-click entry (Windows), --unregister-menu removes it
+FileSorter.exe --list-clouds             # write the cloud folders found (OneDrive, Dropbox, …) to the log
 ```
+
+`--headless` keeps the copy in the cloud up to date too.
 
 Set up your modules in the window once; the headless mode uses the same settings. The easiest way to start File Sorter at sign-in is **Settings → Start when I sign in**; the steps below run it completely without a window instead.
 
@@ -174,6 +202,8 @@ X-GNOME-Autostart-enabled=true
 
 It's plain JSON, so you can also edit it by hand. Settings from the earlier Python versions (v0.1/v0.2) keep working. Use `--config path/to/config.json` to use a different file. A module can have an optional `"folder"` entry to send its files somewhere else entirely.
 
+Next to it are File Sorter's own lists: `history.jsonl` (for undo), `kept.json`, `copied.json` and `cloud-mirror.json` (what the copy in the cloud holds).
+
 A log of everything the sorter did is written to `file-sorter.log` in the same folder. If something doesn't get sorted, that's the place to look.
 
 ## Firefox, Chrome and Edge
@@ -192,7 +222,8 @@ cargo clippy --all-targets
 | File | What it does |
 |------|--------------|
 | `src/main.rs` | command line (`--headless`, `--sort-now`, `--sort`, `--config`, …), starts the window |
-| `src/gui/` | the egui window: `mod.rs` (state, background logic), `overview.rs`, `settings.rs`, `dialogs.rs`, `cards.rs` (activity entries, snackbar) |
+| `src/gui/` | the egui window: `mod.rs` (state, background logic), `overview.rs`, `settings.rs`, `cloud.rs` (the cloud card), `dialogs.rs`, `cards.rs` (activity entries, snackbar) |
+| `src/cloud/` | the study folder in the cloud: finding OneDrive/Dropbox/Google Drive (`detect.rs`), moving the folder (`relocate.rs`), the one-way copy (`mirror.rs`), modules shared between computers (`shared.rs`), the background thread (`worker.rs`) |
 | `src/undo.rs`, `src/history.rs` | putting sorted files back; the history of sorted files (`history.jsonl`) |
 | `src/winwin.rs`, `src/tray.rs` | minimising, the notification-area icon and showing the running window again (Windows) |
 | `src/common_words.rs` | everyday words that are never suggested as keywords |

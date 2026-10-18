@@ -6,6 +6,7 @@
 //! keeps calling then; `App::ui` only draws.
 
 mod cards;
+mod cloud;
 mod dialogs;
 mod overview;
 mod settings;
@@ -172,6 +173,8 @@ pub(crate) struct App {
     tray_state: Option<(Lang, String)>,
     /// "Quit" from the tray: really close instead of going to the background.
     quit: Arc<AtomicBool>,
+    /// The study folder in the cloud: moving it, its copy, shared modules.
+    cloud: cloud::CloudState,
 }
 
 fn known_types() -> impl Iterator<Item = &'static str> {
@@ -196,6 +199,7 @@ impl App {
             }
         };
         let lang = Lang::from_setting(config.language.as_deref());
+        let cloud = cloud::CloudState::new(&cc.egui_ctx, config.state_dir.clone(), &config.cloud);
         let shared_window = Arc::new(Mutex::new(None));
         let mut app = App {
             config_path,
@@ -239,6 +243,7 @@ impl App {
             tray: None,
             tray_state: None,
             quit: Arc::new(AtomicBool::new(false)),
+            cloud,
         };
         app.saved_config = app.config.clone();
         app.load_history();
@@ -369,6 +374,7 @@ impl App {
                     Outcome::Copied { .. } => self.lang.snack_sorted(&name, course, true),
                     _ => self.lang.snack_sorted(&name, course, false),
                 });
+                self.cloud_after_sort(&result);
                 let state = FileState::Done(result);
                 let key = if let Some(card) = self.open_file_card(&name) {
                     card.set_state(state, now);
@@ -410,6 +416,7 @@ impl App {
         match outcome {
             Ok(back) => {
                 card.set_state(FileState::Undone { back }, now);
+                self.cloud_after_undo(&result);
                 if result.sorted() {
                     self.stats.sorted = self.stats.sorted.saturating_sub(1);
                 }
@@ -837,6 +844,7 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.window_logic(ctx, frame);
+        self.cloud_logic();
         while let Ok(event) = self.events_rx.try_recv() {
             self.handle_event(event);
         }
@@ -899,6 +907,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.flights_ui(&ctx);
         self.dialogs_ui(&ctx);
+        self.cloud_dialog_ui(&ctx);
         if let Some(bar) = &mut self.snackbar {
             match cards::snackbar_ui(&ctx, self.lang, bar, now) {
                 None => self.snackbar = None,
@@ -916,6 +925,7 @@ impl eframe::App for App {
         if let Some(mut w) = self.watcher.take() {
             w.stop();
         }
+        self.cloud.finish();
         if let Err(e) = save_config(&self.config, &self.config_path) {
             log::error!("Could not save settings: {e}");
         }

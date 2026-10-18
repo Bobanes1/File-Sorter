@@ -370,7 +370,9 @@ impl FileTerms {
     fn of(path: &Path) -> FileTerms {
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let mut terms = FileTerms::default();
-        let text = extract_text(path);
+        // A file that is only in the cloud (OneDrive "online only") would be downloaded just to
+        // be read here; its name has to do.
+        let text = if crate::cloud::is_placeholder(path) { String::new() } else { extract_text(path) };
         terms.add(&normalise(&stem), usize::MAX);
         terms.add(&normalise(&text), TITLE_WORDS);
         terms.note_case(&text);

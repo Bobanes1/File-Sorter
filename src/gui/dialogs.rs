@@ -9,7 +9,7 @@ use crate::fx::{self, ButtonStyle};
 use crate::watcher::StartError;
 
 /// A Material dialog: rounded, tinted surface with a soft shadow.
-fn dialog_frame(ctx: &egui::Context) -> egui::Frame {
+pub(super) fn dialog_frame(ctx: &egui::Context) -> egui::Frame {
     let p = fx::pal_ctx(ctx);
     egui::Frame::new()
         .fill(p.container_high)
@@ -19,7 +19,7 @@ fn dialog_frame(ctx: &egui::Context) -> egui::Frame {
 }
 
 /// Dialog buttons, right-aligned as in Material.
-fn actions(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn actions(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(16.0);
     ui.with_layout(Layout::right_to_left(Align::Center), add);
 }

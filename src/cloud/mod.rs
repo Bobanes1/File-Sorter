@@ -15,6 +15,7 @@ pub mod detect;
 pub mod mirror;
 pub mod relocate;
 pub mod shared;
+pub mod worker;
 
 use std::fs;
 use std::io::{self, Read};

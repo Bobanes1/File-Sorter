@@ -5,7 +5,6 @@
 // No console window behind the app in release builds on Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-#[allow(dead_code)] // wired into the window step by step
 mod cloud;
 mod common_words;
 mod config;
@@ -45,6 +44,7 @@ Usage: file-sorter [--config PATH] [--headless | --sort-now | [--sort] FILE... [
   --quiet           with --sort: no results window, only the log file
   --register-menu   add \"Sort with File Sorter\" to the right-click menu (Windows)
   --unregister-menu remove it again
+  --list-clouds     write the cloud folders found (OneDrive, Dropbox, …) to the log
   --config PATH     settings file (default: per-user config.json)";
 
 struct Args {
@@ -56,6 +56,7 @@ struct Args {
     files: Vec<PathBuf>,
     quiet: bool,
     register_menu: Option<bool>,
+    list_clouds: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -67,6 +68,7 @@ fn parse_args() -> Result<Args, String> {
         files: Vec::new(),
         quiet: false,
         register_menu: None,
+        list_clouds: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -78,6 +80,7 @@ fn parse_args() -> Result<Args, String> {
             "--quiet" => args.quiet = true,
             "--register-menu" => args.register_menu = Some(true),
             "--unregister-menu" => args.register_menu = Some(false),
+            "--list-clouds" => args.list_clouds = true,
             "--config" => args.config = it.next().ok_or("--config needs a path")?.into(),
             "-h" | "--help" => return Err(String::new()),
             other if other.starts_with("--") => return Err(format!("unknown option: {other}")),
@@ -86,6 +89,28 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     Ok(args)
+}
+
+/// Without a window, the copy in the cloud is still kept up to date (every minute).
+fn headless_cloud_copy(config: &config::Config) -> Option<cloud::worker::Worker> {
+    if config.cloud.mode != cloud::CloudMode::Mirror {
+        return None;
+    }
+    let copy = cloud::cloud_study_root(config)?;
+    let local = config::expand_user(config.destination_root.trim());
+    let worker = cloud::worker::Worker::start(
+        config.state_dir.clone(),
+        Arc::new(|event| {
+            if let cloud::worker::CloudEvent::Mirrored { report, .. } = event
+                && report.copied + report.updated > 0
+            {
+                log::info!("Cloud copy: {} new, {} changed", report.copied, report.updated);
+            }
+        }),
+    );
+    log::info!("Keeping a copy of {} in {}", local.display(), copy.display());
+    worker.send(cloud::worker::Job::SetMirror(Some((local, copy))));
+    Some(worker)
 }
 
 /// Lock file next to the settings: only one File Sorter may watch at a time.
@@ -121,6 +146,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    if args.list_clouds {
+        let roots = cloud::detect::detect();
+        for root in &roots {
+            let account = root.account.as_deref().map(|a| format!(" ({a})")).unwrap_or_default();
+            log::info!("Cloud folder: {:?}{account} at {}", root.provider, root.path.display());
+        }
+        log::info!("{} cloud folder(s) found", roots.len());
+        return ExitCode::SUCCESS;
     }
     if !args.files.is_empty() {
         return quicksort::run(&args.config, args.files, args.quiet);
@@ -165,6 +199,7 @@ fn main() -> ExitCode {
 
     // Headless: results are logged by the watcher itself.
     let watch_path = config.watch_path();
+    let _cloud = headless_cloud_copy(&config);
     let mut watcher = watcher::FolderWatcher::new(config, Arc::new(|_| {})).with_lock(watch_lock_path(&args.config));
     if let Err(e) = watcher.start() {
         log::error!("{e}");

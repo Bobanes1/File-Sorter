@@ -531,6 +531,34 @@ pub fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) -> egui
 
 // ---------- easing and drawing helpers ----------
 
+/// A Material linear progress indicator across the available width: `fraction` of the way
+/// (animated), or a segment sliding along while the amount is unknown.
+pub fn progress_bar(ui: &mut egui::Ui, id: Id, fraction: Option<f32>) {
+    let p = pal(ui);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(2), p.secondary_container);
+    let (from, to) = match fraction {
+        Some(f) => {
+            let shown = ui.ctx().animate_value_with_time(id, f.clamp(0.0, 1.0), anim_time(ui.ctx(), 0.3));
+            (0.0, shown)
+        }
+        None => {
+            let t = (ui.input(|i| i.time) % 1.6 / 1.6) as f32;
+            ui.ctx().request_repaint();
+            let head = ease_in_out_cubic(t) * 1.4 - 0.2;
+            ((head - 0.35).max(0.0), head.min(1.0))
+        }
+    };
+    if to > from {
+        let bar = Rect::from_min_max(
+            pos2(rect.left() + rect.width() * from, rect.top()),
+            pos2(rect.left() + rect.width() * to, rect.bottom()),
+        );
+        painter.rect_filled(bar, CornerRadius::same(2), p.primary);
+    }
+}
+
 pub fn ease_out_cubic(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)

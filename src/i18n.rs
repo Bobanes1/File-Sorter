@@ -3,6 +3,7 @@
 //! Every text is one method that names both languages, so a translation can't be
 //! forgotten. German uses Swiss spelling ("ss", «…»).
 
+use crate::cloud::Provider;
 use crate::matcher::Reason;
 use crate::sorter::LeftReason;
 
@@ -629,6 +630,360 @@ impl Lang {
     pub fn could_not_save(self) -> &'static str {
         self.pick("Could not save settings", "Einstellungen konnten nicht gespeichert werden")
     }
+
+    // ---------- cloud ----------
+    pub fn cloud(self) -> &'static str {
+        "Cloud"
+    }
+    pub fn cloud_title(self) -> &'static str {
+        self.pick("Study folder in the cloud", "Studienordner in der Cloud")
+    }
+    pub fn cloud_hint(self) -> &'static str {
+        self.pick(
+            "So your files are on your phone, tablet and other computers too.",
+            "Damit deine Dateien auch auf dem Handy, Tablet und anderen Computern da sind.",
+        )
+    }
+    pub fn cloud_off(self) -> &'static str {
+        self.pick("Off – only on this computer", "Aus – nur auf diesem Computer")
+    }
+    pub fn cloud_off_hint(self) -> &'static str {
+        self.pick("Nothing goes to the cloud.", "Nichts kommt in die Cloud.")
+    }
+    pub fn cloud_move(self) -> &'static str {
+        self.pick("Move into the cloud", "In die Cloud verlegen")
+    }
+    pub fn cloud_move_hint(self) -> &'static str {
+        self.pick(
+            "The study folder lives in the cloud folder and is the same everywhere. Notes you add on \
+             another device come back here too.",
+            "Der Studienordner liegt im Cloud-Ordner und ist überall gleich. Notizen, die du auf einem \
+             anderen Gerät machst, kommen auch hierher zurück.",
+        )
+    }
+    pub fn cloud_mirror(self) -> &'static str {
+        self.pick("Copy in the cloud", "Kopie in der Cloud")
+    }
+    pub fn cloud_mirror_hint(self) -> &'static str {
+        self.pick(
+            "The study folder stays here; File Sorter keeps a copy in the cloud folder up to date. One way \
+             only: changes made on other devices don't come back.",
+            "Der Studienordner bleibt hier; File Sorter hält eine Kopie im Cloud-Ordner aktuell. Nur in eine \
+             Richtung: Änderungen auf anderen Geräten kommen nicht zurück.",
+        )
+    }
+    pub fn cloud_folder(self) -> &'static str {
+        self.pick("Cloud folder", "Cloud-Ordner")
+    }
+    pub fn cloud_searching(self) -> &'static str {
+        self.pick("Looking for OneDrive, Dropbox and Google Drive…", "Suche OneDrive, Dropbox und Google Drive…")
+    }
+    pub fn cloud_none_found(self) -> &'static str {
+        self.pick(
+            "No cloud folder found. Is OneDrive, Dropbox or Google Drive installed and signed in? You can \
+             also choose a folder yourself.",
+            "Kein Cloud-Ordner gefunden. Ist OneDrive, Dropbox oder Google Drive installiert und angemeldet? \
+             Du kannst auch selbst einen Ordner wählen.",
+        )
+    }
+    pub fn other_folder(self) -> &'static str {
+        self.pick("Other folder…", "Anderer Ordner…")
+    }
+    pub fn provider(self, provider: Provider) -> &'static str {
+        match provider {
+            Provider::OneDrive => "OneDrive",
+            Provider::OneDriveBusiness => self.pick("OneDrive (work or school)", "OneDrive (Arbeit/Schule)"),
+            Provider::Dropbox => "Dropbox",
+            Provider::GoogleDrive => "Google Drive",
+            Provider::ICloud => "iCloud Drive",
+            Provider::Other => self.pick("the cloud folder", "dem Cloud-Ordner"),
+        }
+    }
+    /// The service's name with its account, for the folder choice ("OneDrive – Contoso").
+    pub fn provider_label(self, provider: Provider, account: Option<&str>, folder: &str) -> String {
+        match (provider, account) {
+            (Provider::Other, _) => folder.to_string(),
+            (Provider::OneDriveBusiness, Some(org)) => format!("OneDrive – {org}"),
+            (_, Some(account)) => format!("{} – {account}", self.provider(provider)),
+            (_, None) => self.provider(provider).to_string(),
+        }
+    }
+    /// Where the files can be seen in a browser.
+    pub fn provider_web(self, provider: Provider) -> Option<&'static str> {
+        match provider {
+            Provider::OneDrive => Some("onedrive.live.com"),
+            Provider::OneDriveBusiness => Some("office.com"),
+            Provider::Dropbox => Some("dropbox.com"),
+            Provider::GoogleDrive => Some("drive.google.com"),
+            Provider::ICloud => Some("icloud.com"),
+            Provider::Other => None,
+        }
+    }
+    pub fn cloud_target(self, path: &str) -> String {
+        self.fmt(format!("Goes to {path}"), format!("Kommt nach {path}"))
+    }
+    pub fn cloud_apply_move(self) -> &'static str {
+        self.pick("Move now", "Jetzt verlegen")
+    }
+    pub fn cloud_apply_mirror(self) -> &'static str {
+        self.pick("Set up the copy", "Kopie einrichten")
+    }
+    pub fn cloud_apply_off(self) -> &'static str {
+        self.pick("Turn off", "Ausschalten")
+    }
+    pub fn cloud_already_there(self, provider: &str) -> String {
+        self.fmt(
+            format!("Your study folder is already in {provider} – nothing needs to be moved."),
+            format!("Dein Studienordner liegt schon in {provider} – es muss nichts verschoben werden."),
+        )
+    }
+    pub fn cloud_status_moved(self, provider: &str, path: &str) -> String {
+        self.fmt(
+            format!("Your study folder is in {provider}: {path}"),
+            format!("Dein Studienordner liegt in {provider}: {path}"),
+        )
+    }
+    pub fn cloud_status_mirror(self, provider: &str, path: &str) -> String {
+        self.fmt(format!("A copy is kept in {provider}: {path}"), format!("Eine Kopie liegt in {provider}: {path}"))
+    }
+    pub fn cloud_other_devices(self, provider: Provider) -> String {
+        let name = self.provider(provider);
+        match self.provider_web(provider) {
+            Some(web) => self.fmt(
+                format!("On your other devices: in the {name} app or on {web}."),
+                format!("Auf deinen anderen Geräten: in der {name}-App oder auf {web}."),
+            ),
+            None => self.fmt(
+                "On your other devices: wherever this folder is synced to.".into(),
+                "Auf deinen anderen Geräten: überall, wohin dieser Ordner abgeglichen wird.".into(),
+            ),
+        }
+    }
+    pub fn ago(self, seconds: u64) -> String {
+        match seconds {
+            0..60 => self.pick("just now", "gerade eben").into(),
+            60..3600 => self.fmt(format!("{} min ago", seconds / 60), format!("vor {} Min.", seconds / 60)),
+            _ => self.fmt(format!("{} h ago", seconds / 3600), format!("vor {} Std.", seconds / 3600)),
+        }
+    }
+    pub fn last_sync(self, ago: &str, copied: u64, updated: u64) -> String {
+        match (copied, updated) {
+            (0, 0) => self.fmt(format!("Up to date ({ago})"), format!("Auf dem neuesten Stand ({ago})")),
+            _ => self.fmt(
+                format!("Updated {ago}: {copied} new, {updated} changed"),
+                format!("Abgeglichen {ago}: {copied} neu, {updated} geändert"),
+            ),
+        }
+    }
+    pub fn sync_now(self) -> &'static str {
+        self.pick("Update now", "Jetzt abgleichen")
+    }
+    pub fn syncing(self) -> &'static str {
+        self.pick("Updating the copy…", "Kopie wird abgeglichen…")
+    }
+    pub fn cloud_unreachable(self, provider: &str) -> String {
+        self.fmt(
+            format!("{provider} can't be reached right now; the copy is updated later."),
+            format!("{provider} ist gerade nicht erreichbar – die Kopie wird später abgeglichen."),
+        )
+    }
+    pub fn mirror_conflicts(self, count: usize) -> String {
+        self.fmt(
+            format!(
+                "{count} file(s) were changed both in the cloud and here: your version is next to it, with this \
+                 computer's name in brackets."
+            ),
+            format!(
+                "{count} Datei(en) wurden in der Cloud und hier geändert: deine Version liegt daneben, mit dem \
+                 Namen dieses Computers in Klammern."
+            ),
+        )
+    }
+    pub fn changed_in_cloud(self, count: u64) -> String {
+        self.fmt(
+            format!("{count} file(s) were changed on another device; those changes are only in the cloud copy."),
+            format!(
+                "{count} Datei(en) wurden auf einem anderen Gerät geändert; diese Änderungen sind nur in der Kopie \
+                 in der Cloud."
+            ),
+        )
+    }
+    pub fn moving_progress(self, done: u64, total: u64) -> String {
+        self.fmt(format!("Moving file {done} of {total}…"), format!("Verschiebe Datei {done} von {total}…"))
+    }
+    pub fn share_settings(self) -> &'static str {
+        self.pick("Share modules with my other computers", "Module mit meinen anderen Computern teilen")
+    }
+    pub fn share_hint(self) -> &'static str {
+        self.pick(
+            "Modules, keywords and file types are kept in the study folder in the cloud, so every computer \
+             sorts the same way.",
+            "Module, Schlüsselwörter und Dateitypen liegen im Studienordner in der Cloud, damit jeder Computer \
+             gleich sortiert.",
+        )
+    }
+    pub fn share_needs_cloud(self) -> &'static str {
+        self.pick(
+            "Needs the study folder in the cloud (moved there or as a copy).",
+            "Dafür muss der Studienordner in der Cloud liegen (verlegt oder als Kopie).",
+        )
+    }
+    pub fn snack_shared_from(self, computer: &str) -> String {
+        self.fmt(format!("Modules taken over from {computer}"), format!("Module von {computer} übernommen"))
+    }
+    pub fn snack_mirror_off(self, provider: &str) -> String {
+        self.fmt(
+            format!("The copy in {provider} stays, but is no longer updated"),
+            format!("Die Kopie in {provider} bleibt, wird aber nicht mehr aktualisiert"),
+        )
+    }
+    pub fn cloud_chip(self, provider: &str, copy: bool) -> String {
+        if copy { self.fmt(format!("Copy in {provider}"), format!("Kopie in {provider}")) } else { provider.into() }
+    }
+
+    // cloud dialogs
+    pub fn confirm_move_title(self, provider: &str) -> String {
+        self.fmt(format!("Move the study folder into {provider}?"), format!("Studienordner nach {provider} verlegen?"))
+    }
+    pub fn confirm_move_text(self, files: u64, size: &str, from: &str, to: &str) -> String {
+        self.fmt(
+            format!(
+                "{files} files ({size}) are moved from {from} to {to}. Nothing is overwritten: if a different \
+                 file with the same name is already there, the moved one gets a number."
+            ),
+            format!(
+                "{files} Dateien ({size}) werden von {from} nach {to} verschoben. Nichts wird überschrieben: \
+                 Liegt dort schon eine andere Datei mit dem gleichen Namen, bekommt die verschobene eine Nummer."
+            ),
+        )
+    }
+    pub fn confirm_existing(self, files: u64) -> String {
+        self.fmt(
+            format!("There are already {files} files in that folder in the cloud; both are merged."),
+            format!("In diesem Ordner in der Cloud liegen schon {files} Dateien; beides wird zusammengeführt."),
+        )
+    }
+    pub fn confirm_close_documents(self) -> &'static str {
+        self.pick(
+            "Close open documents first: files that are still open stay where they are.",
+            "Schliesse offene Dokumente vorher: Dateien, die noch geöffnet sind, bleiben, wo sie sind.",
+        )
+    }
+    pub fn move_button(self) -> &'static str {
+        self.pick("Move", "Verlegen")
+    }
+    pub fn confirm_mirror_title(self, provider: &str) -> String {
+        self.fmt(format!("Keep a copy in {provider}?"), format!("Kopie in {provider} anlegen?"))
+    }
+    pub fn confirm_mirror_text(self, files: u64, size: &str, to: &str) -> String {
+        self.fmt(
+            format!("{files} files ({size}) are copied to {to}. The study folder here stays as it is."),
+            format!("{files} Dateien ({size}) werden nach {to} kopiert. Der Studienordner hier bleibt, wie er ist."),
+        )
+    }
+    pub fn mirror_button(self) -> &'static str {
+        self.pick("Copy", "Kopieren")
+    }
+    pub fn back_title(self) -> &'static str {
+        self.pick("Bring the study folder back to this computer?", "Studienordner zurück auf diesen Computer holen?")
+    }
+    pub fn back_text(self, from: &str, to: &str) -> String {
+        self.fmt(
+            format!("The files are moved from {from} back to {to}. Then they are no longer on your other devices."),
+            format!(
+                "Die Dateien werden von {from} zurück nach {to} verschoben. Danach sind sie nicht mehr auf deinen \
+                 anderen Geräten."
+            ),
+        )
+    }
+    pub fn back_button(self) -> &'static str {
+        self.pick("Bring back", "Zurückholen")
+    }
+    pub fn leave_button(self, provider: &str) -> String {
+        self.fmt(format!("Leave it in {provider}"), format!("In {provider} lassen"))
+    }
+    pub fn shared_conflict_title(self) -> &'static str {
+        self.pick("Other modules in the cloud", "Andere Module in der Cloud")
+    }
+    pub fn shared_conflict_text(self, computer: &str, theirs: usize, ours: usize) -> String {
+        self.fmt(
+            format!(
+                "{computer} saved {theirs} module(s) in the cloud; this computer has {ours} that differ. Which \
+                 should all your computers use?"
+            ),
+            format!(
+                "{computer} hat {theirs} Modul(e) in der Cloud gespeichert; dieser Computer hat {ours} andere. \
+                 Welche sollen alle deine Computer verwenden?"
+            ),
+        )
+    }
+    pub fn take_cloud(self) -> &'static str {
+        self.pick("Use the ones in the cloud", "Die aus der Cloud")
+    }
+    pub fn keep_mine(self) -> &'static str {
+        self.pick("Keep mine", "Meine behalten")
+    }
+
+    // cloud activity entries
+    pub fn relocated(self, provider: &str, files: u64) -> String {
+        self.fmt(
+            format!("Study folder moved to {provider}: {files} files"),
+            format!("Studienordner nach {provider} verlegt: {files} Dateien"),
+        )
+    }
+    pub fn relocated_back(self, files: u64) -> String {
+        self.fmt(
+            format!("Study folder back on this computer: {files} files"),
+            format!("Studienordner zurück auf diesem Computer: {files} Dateien"),
+        )
+    }
+    pub fn relocate_details(self, duplicates: u64, renamed: usize, left: usize) -> String {
+        let mut parts = Vec::new();
+        if duplicates > 0 {
+            parts.push(self.fmt(
+                format!("{duplicates} identical ones were there already"),
+                format!("{duplicates} gleiche lagen schon dort"),
+            ));
+        }
+        if renamed > 0 {
+            parts.push(self.fmt(format!("{renamed} saved with a number"), format!("{renamed} mit Nummer gespeichert")));
+        }
+        if left > 0 {
+            parts.push(self.fmt(
+                format!("{left} still open – they stay at the old place"),
+                format!("{left} noch geöffnet – sie bleiben am alten Ort"),
+            ));
+        }
+        parts.join(" · ")
+    }
+    pub fn relocate_failed(self, error: &str) -> String {
+        self.fmt(
+            format!("Could not move the study folder: {error}"),
+            format!("Studienordner konnte nicht verlegt werden: {error}"),
+        )
+    }
+    pub fn relocate_cancelled(self, moved: u64) -> String {
+        self.fmt(
+            format!("Moving stopped after {moved} files; the rest is still at the old place."),
+            format!("Verlegen nach {moved} Dateien gestoppt; der Rest liegt noch am alten Ort."),
+        )
+    }
+    pub fn cloud_same_folder(self) -> &'static str {
+        self.pick(
+            "The study folder can't be moved into itself. Choose another cloud folder.",
+            "Der Studienordner kann nicht in sich selbst verschoben werden. Wähle einen anderen Cloud-Ordner.",
+        )
+    }
+    pub fn size(self, bytes: u64) -> String {
+        let (value, unit) = match bytes {
+            0..1_000_000 => (bytes as f64 / 1e3, "KB"),
+            1_000_000..1_000_000_000 => (bytes as f64 / 1e6, "MB"),
+            _ => (bytes as f64 / 1e9, "GB"),
+        };
+        let text = if value < 10.0 { format!("{value:.1}") } else { format!("{value:.0}") };
+        let text = if self == Lang::De { text.replace('.', ",") } else { text };
+        format!("{text} {unit}")
+    }
 }
 
 #[cfg(test)]
@@ -653,5 +1008,16 @@ mod tests {
         assert_eq!(Lang::De.reason(&Reason::FileName(vec!["prog1".into()])), "Dateiname enthält «prog1»");
         assert!(Lang::De.already_running().contains("Schliesse"));
         assert!(!Lang::De.already_running().contains('ß'));
+    }
+
+    #[test]
+    fn sizes_and_times() {
+        assert_eq!(Lang::En.size(340_000_000), "340 MB");
+        assert_eq!(Lang::De.size(1_234_000_000), "1,2 GB");
+        assert_eq!(Lang::De.size(2_500), "2,5 KB");
+        assert_eq!(Lang::De.ago(5), "gerade eben");
+        assert_eq!(Lang::De.ago(150), "vor 2 Min.");
+        assert_eq!(Lang::En.provider_label(Provider::OneDriveBusiness, Some("Contoso"), ""), "OneDrive – Contoso");
+        assert_eq!(Lang::De.provider_label(Provider::Dropbox, None, ""), "Dropbox");
     }
 }

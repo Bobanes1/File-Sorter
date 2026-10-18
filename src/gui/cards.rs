@@ -28,6 +28,8 @@ pub(crate) enum Note {
     NoFilesToScan { module: String, folder: String },
     ScanFailed,
     ConfigUnreadable { path: String, error: String },
+    /// Moving the study folder, the copy in the cloud.
+    Cloud { title: String, details: String, warn: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +135,7 @@ pub(crate) fn note_title(lang: Lang, note: &Note) -> String {
         Note::NoFilesToScan { module, .. } => lang.no_files_to_scan(module),
         Note::ScanFailed => lang.scan_failed().into(),
         Note::ConfigUnreadable { path, error } => lang.config_unreadable(path, error),
+        Note::Cloud { title, .. } => title.clone(),
     }
 }
 
@@ -144,6 +147,7 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
     let neutral = (p.container_highest, p.on_surface_variant);
     let good = (p.success_container, p.on_success_container);
     let warn = (p.warning_container, p.on_warning_container);
+    let warn_colors = warn;
     let bad = (p.error_container, p.on_error_container);
     let blue = (p.primary_container, p.on_primary_container);
     let make = |glyph, (container, on_container): (Color32, Color32), title: String, line, detail| Look {
@@ -212,6 +216,14 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
                     make(icon::FOLDER_OPEN, warn, title, Some(lang.folder_empty(folder)), None)
                 }
                 Note::ScanFailed | Note::ConfigUnreadable { .. } => make(icon::X, bad, title, None, None),
+                Note::Cloud { details, warn, .. } => {
+                    let details = (!details.is_empty()).then(|| details.clone());
+                    if *warn {
+                        make(icon::CLOUD_WARNING, warn_colors, title, details, None)
+                    } else {
+                        make(icon::CLOUD_CHECK, blue, title, details, None)
+                    }
+                }
             }
         }
     }

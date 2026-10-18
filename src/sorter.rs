@@ -121,6 +121,15 @@ impl SortResult {
         }
     }
 
+    /// Where the sorted file is (its copy, or the identical file that was already there).
+    pub fn sorted_path_mut(&mut self) -> Option<&mut PathBuf> {
+        match &mut self.outcome {
+            Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } => Some(destination),
+            Outcome::DuplicateRemoved { existing, .. } => Some(existing),
+            Outcome::Left(_) => None,
+        }
+    }
+
     /// English description, for the log file and the command line.
     pub fn describe(&self) -> String {
         let name = self.file_name();

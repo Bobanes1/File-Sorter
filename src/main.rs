@@ -5,6 +5,8 @@
 // No console window behind the app in release builds on Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+#[allow(dead_code)] // wired into the window step by step
+mod cloud;
 mod common_words;
 mod config;
 mod desktop;

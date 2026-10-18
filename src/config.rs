@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::cloud::CloudSettings;
 use crate::matcher::normalise;
 
 pub const DEFAULT_EXTENSIONS: &[&str] =
@@ -106,6 +107,8 @@ pub struct Config {
     pub results_window: bool,
     /// Keep watching in the notification area when the window is closed (Windows).
     pub background: bool,
+    /// The study folder in OneDrive, Dropbox, Google Drive, … (moved there, or a copy).
+    pub cloud: CloudSettings,
     /// Folder for File Sorter's own lists (copied files, files to leave alone, history):
     /// the folder of config.json. Set at runtime, not saved.
     #[serde(skip)]
@@ -151,6 +154,7 @@ impl Default for Config {
             autostart: false,
             results_window: true,
             background: false,
+            cloud: CloudSettings::default(),
             state_dir: None,
         }
     }

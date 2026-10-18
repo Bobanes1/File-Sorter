@@ -125,7 +125,8 @@ impl App {
         if let Some(chip) = self.cloud_chip() {
             let glyph = if self.cloud.moving() { icon::CLOUD_ARROW_UP } else { icon::CLOUD_CHECK };
             let text = RichText::new(format!("{glyph}  {chip}")).small().color(p.primary);
-            let rect = Rect::from_min_size(egui::pos2(study.left() + 12.0, study.bottom() + 2.0), vec2(study.width(), 16.0));
+            let rect =
+                Rect::from_min_size(egui::pos2(study.left() + 12.0, study.bottom() + 2.0), vec2(study.width(), 16.0));
             let link = ui.put(rect, egui::Label::new(text).sense(Sense::click()).halign(Align::Min));
             if link.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 self.switch_tab(super::Tab::Settings);

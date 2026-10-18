@@ -22,14 +22,33 @@ pub(crate) enum Note {
     Started(String),
     Stopped,
     SortingExisting,
-    Imported { added: usize, known: usize },
-    KeywordsAdded { module: String, words: Vec<String> },
-    NoNewKeywords { module: String, files: usize },
-    NoFilesToScan { module: String, folder: String },
+    Imported {
+        added: usize,
+        known: usize,
+    },
+    KeywordsAdded {
+        module: String,
+        words: Vec<String>,
+    },
+    NoNewKeywords {
+        module: String,
+        files: usize,
+    },
+    NoFilesToScan {
+        module: String,
+        folder: String,
+    },
     ScanFailed,
-    ConfigUnreadable { path: String, error: String },
+    ConfigUnreadable {
+        path: String,
+        error: String,
+    },
     /// Moving the study folder, the copy in the cloud.
-    Cloud { title: String, details: String, warn: bool },
+    Cloud {
+        title: String,
+        details: String,
+        warn: bool,
+    },
 }
 
 #[derive(Debug, Clone)]

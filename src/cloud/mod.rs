@@ -150,9 +150,11 @@ pub fn content_hash(path: &Path) -> io::Result<u64> {
     }
 }
 
-/// A path for comparing: absolute, without `\\?\`, `.` and `..`, lower-case on Windows.
+/// A path for comparing: absolute, without `.` and `..`, its deepest existing folder resolved
+/// (so `RUNNER~1` and `runneradmin`, or a symlinked `/var`, compare equal also for files
+/// that don't exist yet), without `\\?\`, lower-case on Windows.
 fn comparable(path: &Path) -> PathBuf {
-    let full = path.canonicalize().or_else(|_| std::path::absolute(path)).unwrap_or_else(|_| path.to_path_buf());
+    let full = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut clean = PathBuf::new();
     for part in full.components() {
         match part {
@@ -163,7 +165,21 @@ fn comparable(path: &Path) -> PathBuf {
             other => clean.push(other),
         }
     }
-    let text = clean.to_string_lossy();
+    let mut missing = Vec::new();
+    let mut existing = clean.as_path();
+    let resolved = loop {
+        if let Ok(real) = existing.canonicalize() {
+            break missing.iter().rev().fold(real, |path: PathBuf, name| path.join(name));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => break clean.clone(),
+        }
+    };
+    let text = resolved.to_string_lossy();
     let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
     PathBuf::from(if cfg!(windows) { text.to_lowercase() } else { text.to_string() })
 }
@@ -215,6 +231,20 @@ mod tests {
         assert!(!computer_name().is_empty());
     }
 
+    /// The same folder spelled two ways (Windows: `RUNNER~1` and `runneradmin`; here a symlink).
+    #[cfg(unix)]
+    #[test]
+    fn inside_through_another_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(is_inside(&link.join("new").join("x.pdf"), &real));
+        assert!(is_inside(&real.join("new"), &link));
+        assert!(!is_inside(&tmp.path().join("other"), &link));
+    }
+
     #[test]
     fn inside_and_stamps() {
         let tmp = tempfile::tempdir().unwrap();
@@ -223,6 +253,8 @@ mod tests {
         assert!(is_inside(&a.join("b"), &a) && is_inside(&a, &a));
         assert!(is_inside(&a.join("b").join("..").join("b").join("new.pdf"), &a));
         assert!(!is_inside(&tmp.path().join("ab"), &a));
+        assert!(is_inside(&a.join("not").join("there.pdf"), &a), "paths that don't exist yet");
+        assert!(!is_inside(&a, &a.join("b")));
         let f = a.join("f.txt");
         fs::write(&f, "hello").unwrap();
         let s = stamp(&f).unwrap();

@@ -34,9 +34,16 @@ pub enum Job {
 #[derive(Debug, Clone)]
 pub enum CloudEvent {
     Progress(Progress),
-    Relocated { from: PathBuf, to: PathBuf, result: Result<Report, String> },
+    Relocated {
+        from: PathBuf,
+        to: PathBuf,
+        result: Result<Report, String>,
+    },
     /// A pass over the whole copy (`full`), or one file.
-    Mirrored { report: MirrorReport, full: bool },
+    Mirrored {
+        report: MirrorReport,
+        full: bool,
+    },
     /// A pass over the whole copy started.
     MirrorStarted,
 }

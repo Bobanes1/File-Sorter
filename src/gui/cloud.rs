@@ -153,7 +153,9 @@ impl App {
         let folder = expand_user(self.config.cloud.folder.trim());
         match self.config.cloud.provider {
             Some(provider) if provider != Provider::Other => self.lang.provider(provider).to_string(),
-            _ => folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.lang.cloud().into()),
+            _ => {
+                folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.lang.cloud().into())
+            }
         }
     }
 
@@ -243,12 +245,17 @@ impl App {
                     Ok(report) => {
                         self.relocate_cards(&from, &to, &report.renamed);
                         let files = report.moved + report.duplicates + report.renamed.len() as u64;
-                        let title = if back { lang.relocated_back(files) } else { lang.relocated(&self.cloud_name(), files) };
+                        let title =
+                            if back { lang.relocated_back(files) } else { lang.relocated(&self.cloud_name(), files) };
                         let details = lang.relocate_details(report.duplicates, report.renamed.len(), report.left.len());
                         let warn = !report.left.is_empty() || report.cancelled;
                         self.note(Note::Cloud { title, details, warn });
                         if report.cancelled {
-                            self.note(Note::Cloud { title: lang.relocate_cancelled(files), details: String::new(), warn });
+                            self.note(Note::Cloud {
+                                title: lang.relocate_cancelled(files),
+                                details: String::new(),
+                                warn,
+                            });
                         }
                         let rest = relocate::plan(&from);
                         self.cloud.leftover = (!back && rest.files > 0).then_some((from, rest));
@@ -260,15 +267,18 @@ impl App {
                             self.config.cloud = settings;
                             self.save_quietly();
                         }
-                        self.note(Note::Cloud { title: lang.relocate_failed(&error), details: String::new(), warn: true });
+                        self.note(Note::Cloud {
+                            title: lang.relocate_failed(&error),
+                            details: String::new(),
+                            warn: true,
+                        });
                     }
                 }
             }
             CloudEvent::MirrorStarted => self.cloud.syncing = true,
             CloudEvent::Mirrored { report, full } => {
                 if !report.conflicts.is_empty() {
-                    let names: Vec<String> =
-                        report.conflicts.iter().map(|p| crate::sorter::file_name(p)).collect();
+                    let names: Vec<String> = report.conflicts.iter().map(|p| crate::sorter::file_name(p)).collect();
                     let title = lang.mirror_conflicts(names.len());
                     self.note(Note::Cloud { title, details: names.join(" · "), warn: true });
                 }
@@ -576,7 +586,8 @@ impl App {
             }
             for root in shown {
                 let on = self.cloud.pick.as_ref().is_some_and(|p| same_folder(&p.path, &root.path));
-                let name = lang.provider_label(root.provider, root.account.as_deref(), &root.path.display().to_string());
+                let name =
+                    lang.provider_label(root.provider, root.account.as_deref(), &root.path.display().to_string());
                 let chip = fx::chip(ui, on, &format!("{}  {name}", glyph(root.provider)));
                 if chip.on_hover_text(root.path.display().to_string()).clicked() {
                     self.cloud.pick = Some(root);
@@ -592,7 +603,9 @@ impl App {
         });
         if let Some(pick) = &self.cloud.pick {
             let target = match (self.cloud.choice, self.config.cloud.mode) {
-                (CloudMode::Move, CloudMode::Move) if same_folder(&pick.path, &expand_user(&self.config.cloud.folder)) => {
+                (CloudMode::Move, CloudMode::Move)
+                    if same_folder(&pick.path, &expand_user(&self.config.cloud.folder)) =>
+                {
                     self.study_root()
                 }
                 _ => pick.path.join(self.study_name()),
@@ -632,7 +645,8 @@ impl App {
         }
         let configured = expand_user(self.config.cloud.folder.trim());
         let pick_differs = self.cloud.pick.as_ref().is_some_and(|p| !same_folder(&p.path, &configured));
-        let pending = self.cloud.choice != self.config.cloud.mode || (self.cloud.choice != CloudMode::Off && pick_differs);
+        let pending =
+            self.cloud.choice != self.config.cloud.mode || (self.cloud.choice != CloudMode::Off && pick_differs);
         if pending {
             let (glyph, text) = match self.cloud.choice {
                 CloudMode::Off => (icon::CLOUD_SLASH, lang.cloud_apply_off()),
@@ -665,11 +679,7 @@ impl App {
                 status(ui, icon::CLOUD_CHECK, p.success, lang.cloud_status_moved(&name, &root));
                 status(ui, icon::DEVICES, p.on_surface_variant, lang.cloud_other_devices(provider));
                 if let Some((old, plan)) = self.cloud.leftover.clone() {
-                    let text = format!(
-                        "{} {}",
-                        lang.relocate_details(0, 0, plan.files as usize),
-                        old.display()
-                    );
+                    let text = format!("{} {}", lang.relocate_details(0, 0, plan.files as usize), old.display());
                     status(ui, icon::WARNING_CIRCLE, p.warning, text);
                     ui.horizontal(|ui| {
                         ui.add_space(30.0);
@@ -694,7 +704,12 @@ impl App {
                         status(ui, icon::CLOUD_WARNING, p.warning, lang.cloud_unreachable(&name));
                     } else {
                         let ago = lang.ago((self.now() - at).max(0.0) as u64);
-                        status(ui, icon::CLOUD_CHECK, p.on_surface_variant, lang.last_sync(&ago, report.copied, report.updated));
+                        status(
+                            ui,
+                            icon::CLOUD_CHECK,
+                            p.on_surface_variant,
+                            lang.last_sync(&ago, report.copied, report.updated),
+                        );
                     }
                     if report.changed_in_cloud > 0 {
                         status(ui, icon::INFO, p.on_surface_variant, lang.changed_in_cloud(report.changed_in_cloud));
@@ -705,7 +720,9 @@ impl App {
                     ui.add_space(30.0);
                     let idle = !self.cloud.syncing;
                     if ui
-                        .add_enabled_ui(idle, |ui| fx::button(ui, ButtonStyle::Text, icon::ARROWS_CLOCKWISE, lang.sync_now()))
+                        .add_enabled_ui(idle, |ui| {
+                            fx::button(ui, ButtonStyle::Text, icon::ARROWS_CLOCKWISE, lang.sync_now())
+                        })
                         .inner
                         .clicked()
                     {
@@ -754,7 +771,15 @@ impl App {
                 CloudDialog::Move { root, from, to, plan, existing } => {
                     title(ui, lang.confirm_move_title(&self.pick_name(root)));
                     let size = lang.size(plan.bytes);
-                    text(ui, lang.confirm_move_text(plan.files, &size, &from.display().to_string(), &to.display().to_string()));
+                    text(
+                        ui,
+                        lang.confirm_move_text(
+                            plan.files,
+                            &size,
+                            &from.display().to_string(),
+                            &to.display().to_string(),
+                        ),
+                    );
                     if existing.files > 0 {
                         text(ui, lang.confirm_existing(existing.files));
                     }
@@ -775,7 +800,10 @@ impl App {
                 }
                 CloudDialog::Shared(remote) => {
                     title(ui, lang.shared_conflict_title().into());
-                    text(ui, lang.shared_conflict_text(&remote.updated_by, remote.courses.len(), self.config.courses.len()));
+                    text(
+                        ui,
+                        lang.shared_conflict_text(&remote.updated_by, remote.courses.len(), self.config.courses.len()),
+                    );
                     buttons(ui, lang.take_cloud(), Some(lang.keep_mine().into()), false);
                 }
                 CloudDialog::Message(message) => {

@@ -23,10 +23,20 @@ const KEEP_AFTER_TRIM: usize = 300;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum Line {
-    Sorted { id: u64, time: i64, result: SortResult },
-    Undone { id: u64 },
+    Sorted {
+        id: u64,
+        time: i64,
+        result: SortResult,
+    },
+    Undone {
+        id: u64,
+    },
     /// The study folder moved from `from` to `to`; `renamed` files got another name there.
-    Relocated { from: PathBuf, to: PathBuf, renamed: Vec<(PathBuf, PathBuf)> },
+    Relocated {
+        from: PathBuf,
+        to: PathBuf,
+        renamed: Vec<(PathBuf, PathBuf)>,
+    },
 }
 
 /// One sorted file from the history.

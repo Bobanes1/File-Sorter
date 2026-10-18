@@ -9,7 +9,13 @@ use crate::fx::{self, ButtonStyle};
 use crate::i18n::Lang;
 
 /// One setting: icon, title and explanation on the left, its control on the right.
-pub(super) fn setting_row(ui: &mut egui::Ui, glyph: &str, title: &str, hint: &str, control: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn setting_row(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    title: &str,
+    hint: &str,
+    control: impl FnOnce(&mut egui::Ui),
+) {
     let p = fx::pal(ui);
     ui.horizontal(|ui| {
         ui.set_min_height(56.0);

@@ -94,9 +94,6 @@ impl CloudState {
             .then(|| expand_user(settings.local_root.trim()));
         std::thread::spawn(move || {
             let roots = detect::detect();
-            for root in &roots {
-                log::info!("Cloud folder: {:?} at {}", root.provider, root.path.display());
-            }
             let leftover = old_place.map(|p| relocate::plan(&p)).filter(|plan| plan.files > 0);
             let _ = found_tx.send((roots, leftover));
             repaint.request_repaint();

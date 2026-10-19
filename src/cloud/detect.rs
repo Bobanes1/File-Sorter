@@ -10,7 +10,9 @@
 //!   - Dropbox: its `info.json` in `%APPDATA%\Dropbox` or `%LOCALAPPDATA%\Dropbox`.
 //!   - Google Drive for desktop: a drive of its own (`G:\`) whose "My Drive" folder is named
 //!     in the account's language ("Meine Ablage", "Mon Drive", …), or `~\My Drive` when it
-//!     mirrors; `~\Google Drive` from the old Backup and Sync.
+//!     mirrors. When it streams into a folder instead of a drive letter, the My Drive in
+//!     `~\Google Drive` is found (like the old Backup and Sync's folder); a streaming folder
+//!     elsewhere is not (its setting is in DriveFS's own database), so it is picked by hand.
 //!   - iCloud: `~\iCloudDrive`.
 //! - macOS: the folders the apps keep in `~/Library/CloudStorage` (`OneDrive-Personal`,
 //!   `OneDrive-<Org>`, `Dropbox`, `GoogleDrive-<email>/<My Drive>`), iCloud Drive in
@@ -20,7 +22,9 @@
 //! Folders known only by their usual name (`~\OneDrive`, `~\OneDrive - <Org>`, `~/Dropbox`,
 //! `~/Google Drive`) count only when the app's own records name none: a signed-out account or
 //! an uninstalled app leaves its folder behind, and a study folder moved there would silently
-//! stop syncing.
+//! stop syncing. For the same reason, on Windows OneDrive's and Dropbox's folders count only
+//! while the app's program is there or Windows lists the folder as a sync root: uninstalling
+//! leaves the records too (OneDrive's variables and registry keys, Dropbox's `info.json`).
 //!
 //! Only folders that exist are returned, each once (several sources often name the same
 //! folder, spelled differently), sorted by [`Provider`] and otherwise in the order found.
@@ -66,13 +70,40 @@ pub struct Probe {
     pub macos: bool,
     pub home: PathBuf,
     /// Environment variables (`OneDrive`, `OneDriveConsumer`, `OneDriveCommercial`,
-    /// `APPDATA`, `LOCALAPPDATA`, `USERPROFILE`).
+    /// `APPDATA`, `LOCALAPPDATA`, `USERPROFILE`, `ProgramFiles`, `ProgramFiles(x86)`).
     pub vars: HashMap<String, String>,
     /// OneDrive accounts from the registry (Windows): key name ("Personal", "Business1"),
     /// its `UserFolder` and its `DisplayName`.
     pub onedrive_accounts: Vec<(String, PathBuf, Option<String>)>,
     /// Roots of drives that may be Google Drive (Windows: `G:\`), already checked to respond.
     pub drive_roots: Vec<PathBuf>,
+    /// The apps whose program was found (Windows: [`Provider::OneDrive`] for both kinds of
+    /// OneDrive, [`Provider::Dropbox`]); see [`programs`].
+    pub installed: Vec<Provider>,
+    /// The folders Windows lists as sync roots (`SyncRootManager`): OneDrive, newer Dropbox and
+    /// others register theirs and remove them when unlinked, so a folder listed there is
+    /// synced even if its program is somewhere [`programs`] doesn't look.
+    pub sync_roots: Vec<PathBuf>,
+}
+
+/// Where the programs of the apps whose records outlive them can be (Windows): per user in
+/// `%LOCALAPPDATA%`, per computer in Program Files, very old Dropbox in `%APPDATA%`.
+fn programs(vars: &HashMap<String, String>) -> Vec<(Provider, PathBuf)> {
+    let var = |name: &str| vars.get(name).map(|v| v.trim()).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let dropbox = |dir: PathBuf| (Provider::Dropbox, dir.join("Dropbox").join("Client").join("Dropbox.exe"));
+    let mut found = Vec::new();
+    if let Some(local) = var("LOCALAPPDATA") {
+        found.push((Provider::OneDrive, local.join("Microsoft").join("OneDrive").join("OneDrive.exe")));
+        found.push(dropbox(local));
+    }
+    for dir in [var("ProgramFiles"), var("ProgramFiles(x86)")].into_iter().flatten() {
+        found.push((Provider::OneDrive, dir.join("Microsoft OneDrive").join("OneDrive.exe")));
+        found.push(dropbox(dir));
+    }
+    if let Some(roaming) = var("APPDATA") {
+        found.push((Provider::Dropbox, roaming.join("Dropbox").join("bin").join("Dropbox.exe")));
+    }
+    found
 }
 
 /// "My Drive" in Google Drive's languages: the folder is named in the account's language.
@@ -104,17 +135,34 @@ impl Probe {
     /// The real computer. On Windows this can take up to 1.5 s (drives that are slow to
     /// answer), so better not on the UI thread.
     pub fn system() -> Probe {
-        const VARS: [&str; 6] =
-            ["OneDrive", "OneDriveConsumer", "OneDriveCommercial", "APPDATA", "LOCALAPPDATA", "USERPROFILE"];
+        const VARS: [&str; 8] = [
+            "OneDrive",
+            "OneDriveConsumer",
+            "OneDriveCommercial",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "USERPROFILE",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+        ];
         let vars: HashMap<String, String> = VARS
             .iter()
             .filter_map(|&name| Some((name.to_string(), std::env::var(name).ok().filter(|v| !v.trim().is_empty())?)))
             .collect();
         let home = dirs::home_dir().unwrap_or_default();
         #[cfg(windows)]
-        let (onedrive_accounts, drive_roots) = (win::onedrive_accounts(), win::drive_roots());
+        let (onedrive_accounts, drive_roots, sync_roots) =
+            (win::onedrive_accounts(), win::drive_roots(), win::sync_roots());
         #[cfg(not(windows))]
-        let (onedrive_accounts, drive_roots) = (Vec::new(), Vec::new());
+        let (onedrive_accounts, drive_roots, sync_roots) = (Vec::new(), Vec::new(), Vec::new());
+        let mut installed = Vec::new();
+        if cfg!(windows) {
+            for (app, program) in programs(&vars) {
+                if !installed.contains(&app) && program.is_file() {
+                    installed.push(app);
+                }
+            }
+        }
         Probe {
             windows: cfg!(target_os = "windows"),
             macos: cfg!(target_os = "macos"),
@@ -122,6 +170,8 @@ impl Probe {
             vars,
             onedrive_accounts,
             drive_roots,
+            installed,
+            sync_roots,
         }
     }
 }
@@ -136,7 +186,15 @@ pub fn detect() -> Vec<CloudRoot> {
 
 /// The cloud folders `probe` describes (only folders that exist).
 pub fn detect_with(probe: &Probe) -> Vec<CloudRoot> {
-    let mut found = Found::default();
+    let mut found = Found { sync_roots: &probe.sync_roots, ..Found::default() };
+    if probe.windows {
+        use Provider::*;
+        for (provider, app) in [(OneDrive, OneDrive), (OneDriveBusiness, OneDrive), (Dropbox, Dropbox)] {
+            if !probe.installed.contains(&app) {
+                found.unproven.push(provider);
+            }
+        }
+    }
     let profile = if probe.windows { var(probe, "USERPROFILE") } else { None };
     let home = std::iter::once(probe.home.clone()).chain(profile).find(|h| h.is_absolute());
     if probe.windows {
@@ -144,7 +202,7 @@ pub fn detect_with(probe: &Probe) -> Vec<CloudRoot> {
     } else if let Some(home) = &home {
         if probe.macos { on_macos(home, &mut found) } else { on_linux(home, &mut found) }
     }
-    let mut roots = found.0;
+    let mut roots = found.roots;
     roots.sort_by_key(|r| r.provider); // stable: the order found within a provider
     roots
 }
@@ -179,29 +237,43 @@ fn resolved(path: &Path) -> PathBuf {
 
 /// The folders found so far: only existing ones, each once.
 #[derive(Default)]
-struct Found(Vec<CloudRoot>);
+struct Found<'a> {
+    roots: Vec<CloudRoot>,
+    /// Providers whose app wasn't found: their folders count only if they are in `sync_roots`.
+    unproven: Vec<Provider>,
+    sync_roots: &'a [PathBuf],
+}
 
-impl Found {
+impl Found<'_> {
     fn add(&mut self, provider: Provider, path: impl AsRef<Path>, account: Option<String>) {
         // Relative paths (an empty variable, no home folder) would depend on the current folder.
         let path: PathBuf = path.as_ref().components().collect();
         if !path.is_absolute() || !path.is_dir() {
             return;
         }
+        if self.unproven.contains(&provider) && !self.sync_roots.iter().any(|r| same_folder(r, &path)) {
+            log::info!("Not offering {} as {provider:?}: the app is not installed", path.display());
+            return;
+        }
         let account = account.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
-        if let Some(known) = self.0.iter_mut().find(|r| is_inside(&r.path, &path) && is_inside(&path, &r.path)) {
+        if let Some(known) = self.roots.iter_mut().find(|r| same_folder(&r.path, &path)) {
             // The same folder from another source: the first one stays, but may learn its account.
             if known.provider == provider && known.account.is_none() {
                 known.account = account;
             }
         } else {
-            self.0.push(CloudRoot { provider, path, account });
+            self.roots.push(CloudRoot { provider, path, account });
         }
     }
 
     fn has(&self, provider: Provider) -> bool {
-        self.0.iter().any(|r| r.provider == provider)
+        self.roots.iter().any(|r| r.provider == provider)
     }
+}
+
+/// True if `a` and `b` are the same folder, however spelled.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    is_inside(a, b) && is_inside(b, a)
 }
 
 fn var(probe: &Probe, name: &str) -> Option<PathBuf> {
@@ -238,13 +310,13 @@ fn on_windows(probe: &Probe, home: Option<&Path>, found: &mut Found) {
         found.add(OneDrive, home.join("OneDrive"), None);
         for (name, dir) in folders_in(home) {
             match name.strip_prefix("OneDrive - ") {
-                Some(org) if org.trim().eq_ignore_ascii_case("Personal") => found.add(OneDrive, dir, None),
+                Some(org) if is_personal(org) => found.add(OneDrive, dir, None),
                 Some(org) => found.add(OneDriveBusiness, dir, Some(org.to_string())),
                 None => {}
             }
         }
     }
-    for root in found.0.iter_mut().filter(|r| r.provider == OneDriveBusiness && r.account.is_none()) {
+    for root in found.roots.iter_mut().filter(|r| r.provider == OneDriveBusiness && r.account.is_none()) {
         root.account = org_of(&root.path);
     }
 
@@ -367,6 +439,31 @@ fn folders_in(dir: &Path) -> Vec<(String, PathBuf)> {
     folders
 }
 
+/// True for the suffix of the personal OneDrive's folder ("OneDrive - Personal") when a work or
+/// school account is signed in too. It is in Windows' language; one not listed here makes the
+/// folder show as work or school.
+fn is_personal(suffix: &str) -> bool {
+    const PERSONAL: &[&str] = &[
+        "Personal",
+        "Persönlich",
+        "Personnel",
+        "Personale",
+        "Pessoal",
+        "Persoonlijk",
+        "Personlig",
+        "Henkilökohtainen",
+        "Osobiste",
+        "Osobní",
+        "Личный",
+        "個人用",
+        "개인",
+        "个人",
+        "個人",
+    ];
+    let suffix = suffix.trim();
+    PERSONAL.iter().any(|p| p.to_lowercase() == suffix.to_lowercase())
+}
+
 /// 1 for OneDrive's registry account "Business1", …; None for "Personal" and others.
 fn business_number(key: &str) -> Option<u32> {
     let (kind, number) = (key.get(..8)?, key.get(8..)?);
@@ -417,7 +514,8 @@ mod win {
 
     use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
     use winreg::RegKey;
-    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::types::FromRegValue;
 
     use super::{DRIVE_WAIT, answering_drives, my_drive};
 
@@ -444,6 +542,28 @@ mod win {
                 (!folder.is_empty()).then(|| (name.clone(), PathBuf::from(folder), display))
             })
             .collect()
+    }
+
+    /// The folders registered as sync roots, of every user (the value's name is the user's
+    /// SID): comparing paths is enough to tell whether a folder found is one of them.
+    pub fn sync_roots() -> Vec<PathBuf> {
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        let Ok(manager) = hklm.open_subkey(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager")
+        else {
+            return Vec::new();
+        };
+        let mut roots = Vec::new();
+        for name in manager.enum_keys().flatten() {
+            let Ok(users) = manager.open_subkey(format!(r"{name}\UserSyncRoots")) else { continue };
+            for (_, value) in users.enum_values().flatten() {
+                if let Ok(path) = String::from_reg_value(&value)
+                    && !path.trim().is_empty()
+                {
+                    roots.push(PathBuf::from(path.trim()));
+                }
+            }
+        }
+        roots
     }
 
     /// Drives that may be Google Drive's (`G:\`): with a My Drive folder, answering in time.
@@ -487,8 +607,10 @@ mod tests {
         roots.iter().map(|r| (r.provider, r.path.clone(), r.account.as_deref())).collect()
     }
 
+    /// Windows with OneDrive and Dropbox installed.
     fn windows_probe(home: &Path) -> Probe {
-        Probe { windows: true, home: home.to_path_buf(), ..Probe::default() }
+        let installed = vec![Provider::OneDrive, Provider::Dropbox];
+        Probe { windows: true, home: home.to_path_buf(), installed, ..Probe::default() }
     }
 
     fn account(key: &str, dir: PathBuf, name: Option<&str>) -> (String, PathBuf, Option<String>) {
@@ -561,6 +683,7 @@ mod tests {
         let dirs = [
             "OneDrive - Personal",
             "OneDrive - Contoso",
+            "OneDrive - Persönlich", // the personal one, in German
             "Dropbox",
             "iCloudDrive",
             "Google Drive/Mon Drive",
@@ -569,15 +692,18 @@ mod tests {
         mkdirs(&home, &dirs);
         let expected = [
             (OneDrive, home.join("OneDrive - Personal"), None),
+            (OneDrive, home.join("OneDrive - Persönlich"), None),
             (OneDriveBusiness, home.join("OneDrive - Contoso"), Some("Contoso")),
             (Dropbox, home.join("Dropbox"), None),
+            // Also Google Drive for desktop streaming into a folder instead of a drive letter.
             (GoogleDrive, home.join("Google Drive").join("Mon Drive"), None),
             (ICloud, home.join("iCloudDrive"), None),
         ];
         assert_eq!(found(&detect_with(&windows_probe(&home))), expected);
 
         // Without a home folder from the system, USERPROFILE says where it is.
-        let probe = Probe { windows: true, vars: vars(&[("USERPROFILE", home.clone())]), ..Probe::default() };
+        let probe =
+            Probe { home: PathBuf::new(), vars: vars(&[("USERPROFILE", home.clone())]), ..windows_probe(&home) };
         assert_eq!(found(&detect_with(&probe)), expected);
 
         // The plain "OneDrive" folder is the personal one.
@@ -587,6 +713,80 @@ mod tests {
             found(&detect_with(&windows_probe(&other))),
             [(OneDrive, other.join("OneDrive"), None), (GoogleDrive, other.join("Google Drive"), None)]
         );
+    }
+
+    /// Uninstalling OneDrive or Dropbox leaves their records and folders behind; a study folder
+    /// moved there would no longer sync.
+    #[test]
+    fn records_of_an_uninstalled_app_are_not_trusted() {
+        use Provider::*;
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("Anna");
+        let local = tmp.path().join("Local");
+        mkdirs(&home, &["OneDrive", "OneDrive - Contoso", "Dropbox", "iCloudDrive"]);
+        mkdirs(&local, &["Dropbox"]);
+        let info = serde_json::json!({ "personal": { "path": home.join("Dropbox") } });
+        fs::write(local.join("Dropbox").join("info.json"), info.to_string()).unwrap();
+        let mut probe = windows_probe(&home);
+        probe.installed = Vec::new();
+        probe.vars = vars(&[("OneDrive", home.join("OneDrive")), ("LOCALAPPDATA", local.clone())]);
+        probe.onedrive_accounts = vec![
+            account("Personal", home.join("OneDrive"), None),
+            account("Business1", home.join("OneDrive - Contoso"), Some("Contoso")),
+        ];
+        assert_eq!(found(&detect_with(&probe)), [(ICloud, home.join("iCloudDrive"), None)]);
+
+        // Without records either: the usual folders don't count.
+        let bare = Probe { vars: HashMap::new(), onedrive_accounts: Vec::new(), ..probe.clone() };
+        assert_eq!(found(&detect_with(&bare)), [(ICloud, home.join("iCloudDrive"), None)]);
+
+        // A folder Windows lists as a sync root is synced, wherever the program is.
+        probe.sync_roots = vec![PathBuf::from(format!("{}/", home.join("OneDrive - Contoso").display()))];
+        assert_eq!(
+            found(&detect_with(&probe)),
+            [
+                (OneDriveBusiness, home.join("OneDrive - Contoso"), Some("Contoso")),
+                (ICloud, home.join("iCloudDrive"), None)
+            ]
+        );
+
+        // Only Dropbox installed.
+        probe.sync_roots = Vec::new();
+        probe.installed = vec![Dropbox];
+        assert_eq!(
+            found(&detect_with(&probe)),
+            [(Dropbox, home.join("Dropbox"), None), (ICloud, home.join("iCloudDrive"), None)]
+        );
+
+        // Elsewhere the apps' programs aren't looked for.
+        let linux = Probe { windows: false, ..bare };
+        assert_eq!(
+            found(&detect_with(&linux)),
+            [(OneDrive, home.join("OneDrive"), None), (Dropbox, home.join("Dropbox"), None)]
+        );
+    }
+
+    #[test]
+    fn where_the_programs_are() {
+        use Provider::*;
+        let probe = vars(&[
+            ("LOCALAPPDATA", PathBuf::from("/u/Local")),
+            ("ProgramFiles", PathBuf::from("/pf")),
+            ("ProgramFiles(x86)", PathBuf::from(" ")),
+            ("APPDATA", PathBuf::from("/u/Roaming")),
+        ]);
+        let p = |path: &str| path.split('/').fold(PathBuf::from("/"), |full, part| full.join(part));
+        assert_eq!(
+            programs(&probe),
+            [
+                (OneDrive, p("u/Local/Microsoft/OneDrive/OneDrive.exe")),
+                (Dropbox, p("u/Local/Dropbox/Client/Dropbox.exe")),
+                (OneDrive, p("pf/Microsoft OneDrive/OneDrive.exe")),
+                (Dropbox, p("pf/Dropbox/Client/Dropbox.exe")),
+                (Dropbox, p("u/Roaming/Dropbox/bin/Dropbox.exe")),
+            ]
+        );
+        assert_eq!(programs(&HashMap::new()), []);
     }
 
     #[test]
@@ -832,6 +1032,12 @@ mod tests {
         ];
         for (key, expected) in cases {
             assert_eq!(business_number(key), expected, "{key}");
+        }
+        for suffix in ["Personal", " personal ", "Persönlich", "PERSÖNLICH", "Personnel", "個人用"] {
+            assert!(is_personal(suffix), "{suffix}");
+        }
+        for suffix in ["Contoso", "Personalabteilung", ""] {
+            assert!(!is_personal(suffix), "{suffix}");
         }
         assert_eq!(org_of(Path::new("/h/OneDrive - Contoso GmbH")), Some("Contoso GmbH".to_string()));
         assert_eq!(org_of(Path::new("/h/OneDrive - ")), None);

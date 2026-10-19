@@ -184,6 +184,9 @@ impl Thread {
         log::info!("Moving the study folder from {} to {}", from.display(), to.display());
         let sink = Arc::clone(&self.sink);
         let result = relocate::relocate(&from, &to, cancel, &mut |p| sink(CloudEvent::Progress(p.clone())));
+        // Files moved between the study folder and the cloud folder (also by a move that
+        // failed halfway): what the copy's state says is where is out of date.
+        self.mirror.reset();
         if let (Ok(report), Some(dir)) = (&result, self.state_dir.as_deref()) {
             record(dir, &from, &to, report);
         }

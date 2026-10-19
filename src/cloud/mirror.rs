@@ -17,18 +17,29 @@
 //!   - not known, a different cloud file → conflict: copied beside it as "name (<computer>).ext".
 //!   - known, unchanged here → nothing (changed in the cloud: counted in `changed_in_cloud`;
 //!     deleted in the cloud: respected, not copied again).
+//!   - known, but deleted here since (seen gone by a pass) or just sorted into the name (which
+//!     was free, so the file there before is gone), and now holding something else → another
+//!     file under the old name: its copy, perhaps the only one left of the old file, is never
+//!     replaced by it; it goes beside it as a conflict.
 //!   - known, changed here, cloud copy unchanged → the cloud copy is replaced.
 //!   - known, changed here, cloud copy deleted → copied again.
 //!   - known, changed here and in the cloud → conflict copy beside it, followed from then on;
 //!     the cloud version stays as it is.
 //! - New names are claimed with `sorter::reserve_destination`, so no file is ever overwritten by
 //!   accident. Content goes into "<name>.filesorter-tmp" next to it first, is checked and then
-//!   renamed into place, so a run that is killed never leaves half a file under a real name.
+//!   flushed to the disk and only then renamed into place, so neither a killed run nor a power
+//!   cut leaves half a file under a real name. The temporary file is made writable first:
+//!   `fs::copy` carries a read-only attribute over, and a read-only copy could never be replaced.
 //! - Deleting a local file never deletes its cloud copy; only [`Mirror::forget`] (undo) does,
-//!   and only while nobody changed the cloud copy (to the Recycle Bin).
+//!   only for copies this computer wrote (not adopted ones) and only while nobody changed the
+//!   cloud copy (to the Recycle Bin). If that can't be done right away (the cloud app or a virus
+//!   scanner has the copy open, the cloud folder is away), it is tried again on every pass.
+//! - Only a sharing or lock violation counts as "in use"; "access denied" (Controlled Folder
+//!   Access, missing rights) doesn't pass by itself and is reported as an error.
 //! - When the cloud folder (the parent of `cloud`) is missing, nothing happens: `unreachable`.
-//! - The state belongs to one study folder and one copy. For another pair, or when the copy's
-//!   folder is gone altogether (switched off, deleted, switched on again), it starts afresh:
+//! - The state belongs to one study folder and one copy. For another pair, when the copy's
+//!   folder is gone altogether (switched off, deleted, switched on again), or after the study
+//!   folder was moved into or out of the cloud folder ([`Mirror::reset`]), it starts afresh:
 //!   files already there with the same content are adopted, everything else is copied.
 //! - `sync_all`, `sync_file` and `forget` save the state themselves when they changed it.
 //! - `sync_file` copies right away (no 3-second wait: the sorter just finished the file), but
@@ -93,6 +104,17 @@ struct Entry {
     cloud_stamp: Stamp,
     /// `content_hash` of what was copied.
     hash: u64,
+    /// The copy was already in the cloud (another computer's, or put there by hand), so it
+    /// isn't this computer's to remove on undo.
+    #[serde(default)]
+    adopted: bool,
+    /// The local file was seen gone: a file turning up under its name is another file, unless
+    /// it holds what was copied.
+    #[serde(default)]
+    orphan: bool,
+    /// Undo asked for the copy to go, but that couldn't be done yet: tried again every pass.
+    #[serde(default)]
+    undo: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -129,16 +151,18 @@ enum Skip {
 }
 
 impl From<io::Error> for Skip {
+    /// Only a sharing or lock violation means another program has the file open. "Access
+    /// denied" (Controlled Folder Access, missing rights) won't pass by itself, so it is
+    /// reported instead of being counted as "in use" on every pass.
     fn from(e: io::Error) -> Skip {
-        if sorter::in_use(&e) { Skip::Busy } else { Skip::Failed(e) }
+        if cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33)) { Skip::Busy } else { Skip::Failed(e) }
     }
 }
 
 impl From<MoveError> for Skip {
     fn from(e: MoveError) -> Skip {
         match e {
-            MoveError::InUse(_) => Skip::Busy,
-            MoveError::Failed(e) => Skip::Failed(e),
+            MoveError::InUse(e) | MoveError::Failed(e) => e.into(),
         }
     }
 }
@@ -207,6 +231,7 @@ impl Mirror {
                 }
             }
             if !pass.report.cancelled {
+                self.retry_undo(local, cloud);
                 self.prune(local, cloud);
             }
         }
@@ -228,41 +253,61 @@ impl Mirror {
     }
 
     /// `file` (below `local`) was taken out again (undo): put its cloud copy into the
-    /// Recycle Bin unless it was changed there, and forget it. Returns whether a copy was removed.
+    /// Recycle Bin unless it was changed there or isn't this computer's, and forget it. Returns
+    /// whether a copy was removed. On an error the entry is kept and tried again every pass.
     pub fn forget(&mut self, local: &Path, cloud: &Path, file: &Path) -> io::Result<bool> {
         if !self.bound(local, cloud) {
             return Ok(false);
         }
         let Some(key) = relative(local, file).and_then(|rel| key(&rel)) else { return Ok(false) };
         let Some(entry) = self.state.files.get(&key).cloned() else { return Ok(false) };
-        let removed = match below(cloud, &entry.cloud) {
-            None => false,
-            Some(copy) => {
-                // The entry stays for later rather than the copy being taken for deleted.
-                if !reachable(cloud) {
-                    return Err(io::Error::new(io::ErrorKind::NotFound, "the cloud folder can't be reached"));
-                }
-                match check_cloud(&copy, &entry)? {
-                    CloudCopy::Unchanged(_) => {
-                        // Not from under a program showing it (notes may still be saved into it).
-                        if !is_placeholder(&copy) {
-                            sorter::retry_while_in_use(PATIENCE, || sorter::ensure_not_open_elsewhere(&copy))?;
-                        }
-                        sorter::retry_while_in_use(PATIENCE, || sorter::discard(&copy))?;
-                        true
-                    }
-                    CloudCopy::Changed => {
-                        log::info!("Keeping {}: it was changed in the cloud", copy.display());
-                        false
-                    }
-                    CloudCopy::Missing => false,
-                }
-            }
-        };
-        self.state.files.remove(&key);
-        self.dirty = true;
+        let result = remove_copy(cloud, &entry, PATIENCE);
+        if result.is_ok() {
+            self.state.files.remove(&key);
+            self.dirty = true;
+        } else if let Some(entry) = self.state.files.get_mut(&key)
+            && !entry.undo
+        {
+            entry.undo = true;
+            self.dirty = true;
+        }
         self.save_if_dirty();
-        Ok(removed)
+        result
+    }
+
+    /// The study folder was moved into or out of the cloud folder: the entries no longer say
+    /// what is where (a copy moved away would look deleted in the cloud and never be made
+    /// again), so the copy starts afresh, adopting the files that are the same.
+    pub fn reset(&mut self) {
+        if !self.state.files.is_empty() {
+            log::info!("The study folder was moved; the cloud copy is compared afresh");
+            self.state.files.clear();
+            self.dirty = true;
+        }
+        self.save_if_dirty();
+    }
+
+    /// Undo that couldn't remove a copy at the time: try again (while the file is still gone here).
+    fn retry_undo(&mut self, local: &Path, cloud: &Path) {
+        let pending: Vec<(String, Entry)> = self
+            .state
+            .files
+            .iter()
+            .filter(|(key, entry)| entry.undo && below(local, key).is_some_and(|p| gone(&p)))
+            .map(|(key, entry)| (key.clone(), entry.clone()))
+            .collect();
+        for (key, entry) in pending {
+            match remove_copy(cloud, &entry, Duration::ZERO) {
+                Ok(removed) => {
+                    if removed {
+                        log::info!("Removed the cloud copy {} (sorting it was undone)", entry.cloud);
+                    }
+                    self.state.files.remove(&key);
+                    self.dirty = true;
+                }
+                Err(e) => self.log_once(format!("Could not remove the cloud copy {} yet: {e}", entry.cloud)),
+            }
+        }
     }
 
     pub fn save(&self) -> io::Result<()> {
@@ -360,8 +405,20 @@ impl Mirror {
     }
 
     fn sync_one(&mut self, pass: &mut Pass, file: &Local, settle: bool) -> Result<(), Skip> {
-        if let Some(entry) = self.state.files.get(&file.key).cloned() {
+        if let Some(mut entry) = self.state.files.get(&file.key).cloned() {
             if let Some(copy) = below(pass.cloud, &entry.cloud) {
+                // Gone here before, or just sorted into a free name: the file the entry is
+                // about was gone, so this is another one unless it holds what was copied.
+                if entry.orphan || entry.undo || !settle {
+                    if entry.local != file.now && content_hash(file.path)? != entry.hash {
+                        return self.sync_successor(pass, file, &copy, settle);
+                    }
+                    if entry.orphan || entry.undo || entry.local != file.now {
+                        (entry.local, entry.orphan, entry.undo) = (file.now, false, false);
+                        self.state.files.insert(file.key.clone(), entry.clone());
+                        self.dirty = true;
+                    }
+                }
                 return self.sync_known(pass, file, &entry, &copy, settle);
             }
             // Not a path inside the copy (a damaged state file): not trusted.
@@ -370,6 +427,26 @@ impl Mirror {
         }
         ready(file, settle)?;
         self.sync_new(pass, file)
+    }
+
+    /// Another file under the name of one that was gone here (week 2's "Übung.pdf" after week
+    /// 1's was deleted): the old copy may be the only one left of the old file, so it is never
+    /// replaced; this file goes beside it.
+    fn sync_successor(&mut self, pass: &mut Pass, file: &Local, copy: &Path, settle: bool) -> Result<(), Skip> {
+        ready(file, settle)?;
+        if !is_file(copy) {
+            self.state.files.remove(&file.key);
+            self.dirty = true;
+            return self.sync_new(pass, file);
+        }
+        let hash = content_hash(file.path)?;
+        if sorter::same_content(file.path, copy) {
+            return self.adopt(pass.cloud, file, copy, hash);
+        }
+        log::info!("{} is another file than the one copied to {} before", file.path.display(), copy.display());
+        let folder = copy.parent().unwrap_or(pass.cloud);
+        // The old entry still claims the old copy, so the conflict copy can't land on it.
+        self.conflict(pass, file, folder, copy, hash)
     }
 
     fn sync_known(
@@ -393,7 +470,9 @@ impl Mirror {
             CloudCopy::Unchanged(seen) => {
                 let hash = content_hash(file.path)?;
                 let placed = pass.fill(file, copy, Expect::Stamp(seen))?;
-                self.record(pass.cloud, file, copy, placed, hash);
+                // Undo still leaves alone a copy that was adopted (it holds this file now, but
+                // it was there before).
+                self.record(pass.cloud, file, copy, placed, hash, entry.adopted);
                 pass.report.updated += 1;
                 Ok(())
             }
@@ -427,7 +506,7 @@ impl Mirror {
             Ok(meta) => meta,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 let (copy, placed) = pass.copy_new(file, folder, &name)?;
-                self.record(pass.cloud, file, &copy, placed, hash);
+                self.record(pass.cloud, file, &copy, placed, hash, false);
                 pass.report.copied += 1;
                 return Ok(());
             }
@@ -441,7 +520,7 @@ impl Mirror {
         if free && existing.len() == 0 && file.now.size > 0 {
             // Claimed by a run that was killed before filling it: it holds nothing.
             let placed = pass.fill(file, &target, Expect::Empty)?;
-            self.record(pass.cloud, file, &target, placed, hash);
+            self.record(pass.cloud, file, &target, placed, hash, false);
             pass.report.copied += 1;
             return Ok(());
         }
@@ -477,20 +556,21 @@ impl Mirror {
             other.display(),
             sorter::file_name(copy)
         );
-        self.record(pass.cloud, file, copy, placed, hash);
+        self.record(pass.cloud, file, copy, placed, hash, false);
         pass.report.conflicts.push(copy.to_path_buf());
     }
 
-    /// Follow `copy`, which already holds what `file` holds.
+    /// Follow `copy`, which already holds what `file` holds (not this computer's to remove).
     fn adopt(&mut self, cloud: &Path, file: &Local, copy: &Path, hash: u64) -> Result<(), Skip> {
         let seen = stamp(copy).ok_or(Skip::Gone)?;
-        self.record(cloud, file, copy, seen, hash);
+        self.record(cloud, file, copy, seen, hash, true);
         Ok(())
     }
 
-    fn record(&mut self, cloud: &Path, file: &Local, copy: &Path, cloud_stamp: Stamp, hash: u64) {
+    fn record(&mut self, cloud: &Path, file: &Local, copy: &Path, cloud_stamp: Stamp, hash: u64, adopted: bool) {
         let Some(rel) = copy.strip_prefix(cloud).ok().and_then(slashed) else { return };
-        self.state.files.insert(file.key.clone(), Entry { local: file.now, cloud: rel, cloud_stamp, hash });
+        let entry = Entry { local: file.now, cloud: rel, cloud_stamp, hash, adopted, orphan: false, undo: false };
+        self.state.files.insert(file.key.clone(), entry);
         self.dirty = true;
     }
 
@@ -511,18 +591,22 @@ impl Mirror {
         self.state.files.values().any(|entry| fold(&entry.cloud) == rel)
     }
 
-    /// Forget files gone both here and in the cloud. (Gone only here: the entry stays, so the
-    /// copy isn't taken for someone else's file should the file come back.)
+    /// Forget files gone both here and in the cloud. (Gone only here: the entry stays, marked
+    /// as an orphan, so the copy isn't taken for someone else's file, nor replaced by another
+    /// file that gets the name later.)
     fn prune(&mut self, local: &Path, cloud: &Path) {
-        let before = self.state.files.len();
+        let mut changed = false;
         self.state.files.retain(|key, entry| {
             let here = below(local, key).is_some_and(|p| !gone(&p));
             let there = below(cloud, &entry.cloud).is_some_and(|p| !gone(&p));
+            if !here && there && !entry.orphan {
+                entry.orphan = true;
+                changed = true;
+            }
+            changed |= !(here || there);
             here || there
         });
-        if self.state.files.len() != before {
-            self.dirty = true;
-        }
+        self.dirty |= changed;
     }
 }
 
@@ -556,9 +640,9 @@ impl<'a> Pass<'a> {
             return Err(Skip::Busy);
         }
         sorter::copy_file_with_patience(file.path, &tmp, PATIENCE)?;
-        let placed = finish(file, &tmp, target, expect);
+        let placed = make_writable(&tmp).map_err(Skip::from).and_then(|()| finish(file, &tmp, target, expect));
         if placed.is_err() {
-            let _ = fs::remove_file(&tmp);
+            let _ = remove_temp(&tmp);
         }
         placed
     }
@@ -580,7 +664,7 @@ impl<'a> Pass<'a> {
                 .and_then(|meta| meta.modified().ok())
                 .and_then(|modified| modified.elapsed().ok())
                 .is_some_and(|age| age >= STALE);
-            if stale && fs::remove_file(entry.path()).is_ok() {
+            if stale && remove_temp(&entry.path()).is_ok() {
                 log::info!("Removed {}, left over from an interrupted copy", entry.path().display());
             }
         }
@@ -596,6 +680,9 @@ fn finish(file: &Local, tmp: &Path, target: &Path, expect: Expect) -> Result<Sta
     if fs::metadata(tmp)?.len() != file.now.size {
         return Err(Skip::Failed(io::Error::other("the copy is incomplete")));
     }
+    // On the disk before it gets the real name: after a power cut that name must not hold
+    // zeros, which the cloud app would upload over the good version.
+    sorter::retry_while_in_use(PATIENCE, || reopen(tmp).and_then(|f| f.sync_all()))?;
     let still = match expect {
         Expect::Empty => fs::symlink_metadata(target).is_ok_and(|meta| meta.is_file() && meta.len() == 0),
         // Not from under a program showing it either: notes may still be saved into it.
@@ -608,8 +695,44 @@ fn finish(file: &Local, tmp: &Path, target: &Path, expect: Expect) -> Result<Sta
     if !still {
         return Err(Skip::Busy); // decided again next time
     }
-    sorter::retry_while_in_use(PATIENCE, || fs::rename(tmp, target))?;
-    stamp(target).ok_or(Skip::Gone)
+    match sorter::retry_while_in_use(PATIENCE, || fs::rename(tmp, target)) {
+        Ok(()) => stamp(target).ok_or(Skip::Gone),
+        Err(e) if fs::symlink_metadata(target).is_ok_and(|meta| meta.permissions().readonly()) => {
+            Err(Skip::Failed(io::Error::new(e.kind(), format!("{} is read-only", target.display()))))
+        }
+        // Windows refuses to replace a file another program has open with "access denied" too.
+        Err(e) if cfg!(windows) && e.raw_os_error() == Some(5) => Err(Skip::Busy),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Put `entry`'s copy into the Recycle Bin, unless it was changed in the cloud or this computer
+/// didn't write it. Returns whether it was removed.
+fn remove_copy(cloud: &Path, entry: &Entry, patience: Duration) -> io::Result<bool> {
+    let Some(copy) = below(cloud, &entry.cloud) else { return Ok(false) };
+    if entry.adopted {
+        log::info!("Keeping {}: it was in the cloud before this computer copied it", copy.display());
+        return Ok(false);
+    }
+    // The entry stays for later rather than the copy being taken for deleted.
+    if !reachable(cloud) {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "the cloud folder can't be reached"));
+    }
+    match check_cloud(&copy, entry)? {
+        CloudCopy::Unchanged(_) => {
+            // Not from under a program showing it (notes may still be saved into it).
+            if !is_placeholder(&copy) {
+                sorter::retry_while_in_use(patience, || sorter::ensure_not_open_elsewhere(&copy))?;
+            }
+            sorter::retry_while_in_use(patience, || sorter::discard(&copy))?;
+            Ok(true)
+        }
+        CloudCopy::Changed => {
+            log::info!("Keeping {}: it was changed in the cloud", copy.display());
+            Ok(false)
+        }
+        CloudCopy::Missing => Ok(false),
+    }
 }
 
 /// Whether the copy is still what was copied there. It is hashed only when its stamp differs,
@@ -768,9 +891,39 @@ fn temp_path(target: &Path) -> PathBuf {
 
 /// The copy keeps the original's modification time, as copies made on Windows do anyway.
 fn keep_modified(path: &Path, nanos: u64) {
-    if let Ok(file) = fs::OpenOptions::new().write(true).open(path) {
+    if let Ok(file) = reopen(path) {
         let _ = file.set_modified(UNIX_EPOCH + Duration::from_nanos(nanos));
     }
+}
+
+/// A temporary copy, opened for finishing touches: with write access where possible (Windows
+/// needs it), else for reading (enough on Linux and macOS).
+fn reopen(path: &Path) -> io::Result<fs::File> {
+    fs::OpenOptions::new().write(true).open(path).or_else(|_| fs::File::open(path))
+}
+
+/// Clear the read-only attribute `fs::copy` carried over (Windows): a read-only copy in the
+/// cloud could never be replaced, and a read-only temporary file never removed.
+fn make_writable(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let mut permissions = fs::symlink_metadata(path)?.permissions();
+        if permissions.readonly() {
+            // Only the attribute on Windows, not Unix mode bits for everyone.
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions)?;
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+    Ok(())
+}
+
+/// Remove one of File Sorter's own temporary files, also when it is read-only.
+fn remove_temp(path: &Path) -> io::Result<()> {
+    let _ = make_writable(path);
+    fs::remove_file(path)
 }
 
 #[cfg(test)]
@@ -1153,7 +1306,130 @@ mod tests {
         fs::write(f.here("Blatt1.pdf"), "just changed").unwrap();
         assert_eq!(f.sync(&mut m), busy);
         assert_eq!(read(&f.there("Blatt1.pdf")).as_deref(), Some("just downloaded"));
-        assert_eq!(f.sync_file(&mut m, "Blatt1.pdf"), updated(1));
+        set_modified(&f.here("Blatt1.pdf"), SystemTime::now() - Duration::from_secs(10));
+        assert_eq!(f.sync(&mut m), updated(1));
+        assert_eq!(read(&f.there("Blatt1.pdf")).as_deref(), Some("just changed"));
+    }
+
+    /// Generic weekly names: week 2's "Übung.pdf" gets the name of week 1's, deleted here.
+    #[test]
+    fn another_file_under_a_deleted_files_name_never_replaces_its_copy() {
+        let f = fixture();
+        put(&f.here("Mathe/Übung.pdf"), "week 1", 300);
+        let mut m = f.mirror();
+        assert_eq!(f.sync(&mut m), copied(1));
+        let beside = f.beside("Mathe/Übung.pdf");
+
+        // Deleted here and seen gone by a pass, then another file gets the name.
+        fs::remove_file(f.here("Mathe/Übung.pdf")).unwrap();
+        assert_eq!(f.sync(&mut m), MirrorReport::default());
+        put(&f.here("Mathe/Übung.pdf"), "week 2", 200);
+        let conflict = MirrorReport { conflicts: vec![beside.clone()], ..Default::default() };
+        assert_eq!(f.sync(&mut f.mirror()), conflict, "also after a restart");
+        assert_eq!(read(&f.there("Mathe/Übung.pdf")).as_deref(), Some("week 1"));
+        assert_eq!(read(&beside).as_deref(), Some("week 2"));
+
+        // The new file's copy is followed from then on.
+        put(&f.here("Mathe/Übung.pdf"), "week 2 with notes", 100);
+        let mut m = f.mirror();
+        assert_eq!(f.sync(&mut m), updated(1));
+        assert_eq!(read(&beside).as_deref(), Some("week 2 with notes"));
+
+        // Deleted and another one sorted there before a pass saw it gone: a file just sorted
+        // got a free name, so it is another file too.
+        fs::remove_file(f.here("Mathe/Übung.pdf")).unwrap();
+        put(&f.here("Mathe/Übung.pdf"), "week 3", 50);
+        let report = f.sync_file(&mut m, "Mathe/Übung.pdf");
+        assert_eq!(report.conflicts.len(), 1, "{report:?}");
+        assert_eq!(read(&report.conflicts[0]).as_deref(), Some("week 3"));
+        assert_eq!(read(&beside).as_deref(), Some("week 2 with notes"));
+        assert_eq!(read(&f.there("Mathe/Übung.pdf")).as_deref(), Some("week 1"));
+        assert_eq!(files(&f.cloud).len(), 3);
+        assert_eq!(f.sync(&mut m), MirrorReport::default());
+    }
+
+    #[test]
+    fn a_deleted_file_that_comes_back_is_followed_again() {
+        let f = fixture();
+        put(&f.here("Skript.pdf"), "v1", 300);
+        let mut m = f.mirror();
+        assert_eq!(f.sync(&mut m), copied(1));
+        fs::remove_file(f.here("Skript.pdf")).unwrap();
+        assert_eq!(f.sync(&mut m), MirrorReport::default());
+
+        // Restored (with another time): the same content, so the same file.
+        put(&f.here("Skript.pdf"), "v1", 250);
+        assert_eq!(f.sync(&mut m), MirrorReport::default());
+        put(&f.here("Skript.pdf"), "v2", 200);
+        assert_eq!(f.sync(&mut m), updated(1));
+        assert_eq!(files(&f.cloud), ["Skript.pdf"]);
+
+        // Deleted here and in the cloud: another file under the name is simply copied.
+        fs::remove_file(f.here("Skript.pdf")).unwrap();
+        assert_eq!(f.sync(&mut m), MirrorReport::default());
+        fs::remove_file(f.there("Skript.pdf")).unwrap();
+        put(&f.here("Skript.pdf"), "something else", 100);
+        assert_eq!(f.sync_file(&mut m, "Skript.pdf"), copied(1));
+        assert_eq!(read(&f.there("Skript.pdf")).as_deref(), Some("something else"));
+    }
+
+    /// Mirror, then Move (the copies became the study folder), then Mirror again (moved back).
+    #[test]
+    fn after_the_study_folder_was_in_the_cloud_and_back_the_copy_is_made_again() {
+        let f = fixture();
+        put(&f.here("Mathe/Skript.pdf"), "slides", 300);
+        put(&f.here("notes.txt"), "notes", 300);
+        let mut m = f.mirror();
+        assert_eq!(f.sync(&mut m), copied(2));
+        fs::remove_dir_all(&f.local).unwrap();
+        fs::rename(&f.cloud, &f.local).unwrap();
+        put(&f.cloud.join(SHARED_FILE), "{}", 10); // written there right away again
+        assert_eq!(f.sync(&mut f.mirror()), MirrorReport::default(), "the moved copies look deleted in the cloud");
+
+        m.reset();
+        assert_eq!(f.sync(&mut m), copied(2));
+        assert_eq!(files(&f.cloud), [SHARED_FILE, "Mathe/Skript.pdf", "notes.txt"]);
+        assert_eq!(f.mirror().state.files.len(), 2);
+    }
+
+    #[test]
+    fn undo_leaves_a_copy_that_was_there_before() {
+        let f = fixture();
+        // Sorted on the laptop and copied there, then sorted here as well.
+        put(&f.there("Mathe/Blatt3.pdf"), "sheet 3", 100);
+        put(&f.here("Mathe/Blatt3.pdf"), "sheet 3", 300);
+        let mut m = f.mirror();
+        assert_eq!(f.sync_file(&mut m, "Mathe/Blatt3.pdf"), MirrorReport::default());
+        fs::remove_file(f.here("Mathe/Blatt3.pdf")).unwrap();
+        assert!(!f.forget(&mut m, "Mathe/Blatt3.pdf").unwrap());
+        assert_eq!(read(&f.there("Mathe/Blatt3.pdf")).as_deref(), Some("sheet 3"));
+        assert!(f.mirror().state.files.is_empty());
+    }
+
+    #[test]
+    fn undo_that_could_not_remove_the_copy_is_tried_again() {
+        let f = fixture();
+        put(&f.here("a.pdf"), "aaa", 300);
+        put(&f.here("b.pdf"), "bbb", 300);
+        let mut m = f.mirror();
+        assert_eq!(f.sync(&mut m), copied(2));
+        fs::rename(f.root.join("OneDrive"), f.root.join("away")).unwrap();
+        for name in ["a.pdf", "b.pdf"] {
+            fs::remove_file(f.here(name)).unwrap();
+            assert!(f.forget(&mut m, name).is_err());
+        }
+        fs::rename(f.root.join("away"), f.root.join("OneDrive")).unwrap();
+
+        // b was sorted again meanwhile: followed again, its copy stays.
+        put(&f.here("b.pdf"), "bbb", 200);
+        assert_eq!(f.sync_file(&mut m, "b.pdf"), MirrorReport::default());
+
+        // The next pass (also after a restart) removes a's copy.
+        assert_eq!(f.sync(&mut f.mirror()), MirrorReport::default());
+        assert_eq!(files(&f.cloud), ["b.pdf"]);
+        assert_eq!(f.mirror().state.files.len(), 1);
+        put(&f.here("b.pdf"), "bbb v2", 100);
+        assert_eq!(f.sync(&mut f.mirror()), updated(1));
     }
 
     #[test]
@@ -1346,6 +1622,62 @@ mod tests {
         assert_eq!(f.sync(&mut m), updated(1));
         assert_eq!(read(&f.there("a.pdf")).as_deref(), Some("aaa with notes"));
         assert_eq!(files(&f.cloud), ["a.pdf"]);
+    }
+
+    /// The cloud app or a virus scanner looking at a brand-new copy right when undo is clicked.
+    #[cfg(windows)]
+    #[test]
+    fn undo_while_the_copy_is_open_is_finished_later() {
+        let f = fixture();
+        put(&f.here("a.pdf"), "aaa", 300);
+        let mut m = f.mirror();
+        assert_eq!(f.sync(&mut m), copied(1));
+        fs::remove_file(f.here("a.pdf")).unwrap();
+        let open = fs::File::open(f.there("a.pdf")).unwrap();
+        assert!(f.forget(&mut m, "a.pdf").is_err());
+        assert_eq!(f.sync(&mut m), MirrorReport::default());
+        assert!(f.there("a.pdf").exists(), "not from under the program");
+        drop(open);
+        assert_eq!(f.sync(&mut m), MirrorReport::default());
+        assert!(!f.there("a.pdf").exists());
+        assert!(f.mirror().state.files.is_empty());
+    }
+
+    /// Files extracted from archives or copied from a share are often read-only.
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn read_only_files_get_copies_that_can_be_replaced() {
+        let set_readonly = |path: &Path, readonly: bool| {
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_readonly(readonly);
+            fs::set_permissions(path, permissions).unwrap();
+        };
+        let f = fixture();
+        put(&f.here("a.pdf"), "aaa", 300);
+        set_readonly(&f.here("a.pdf"), true);
+        let mut m = f.mirror();
+        assert_eq!(f.sync(&mut m), copied(1));
+        assert!(!fs::metadata(f.there("a.pdf")).unwrap().permissions().readonly());
+        set_readonly(&f.here("a.pdf"), false);
+        put(&f.here("a.pdf"), "aaa v2", 200);
+        assert_eq!(f.sync(&mut m), updated(1));
+        assert_eq!(read(&f.there("a.pdf")).as_deref(), Some("aaa v2"));
+
+        // A read-only leftover of a killed run is still cleared away.
+        put(&f.there("b.pdf.filesorter-tmp"), "b", 7200);
+        set_readonly(&f.there("b.pdf.filesorter-tmp"), true);
+        put(&f.here("b.pdf"), "bbb", 300);
+        assert_eq!(f.sync(&mut m), copied(1));
+        assert_eq!(files(&f.cloud), ["a.pdf", "b.pdf"]);
+
+        // A copy made read-only in the cloud is an error to see, not "in use" for ever.
+        set_readonly(&f.there("a.pdf"), true);
+        put(&f.here("a.pdf"), "aaa v3", 100);
+        let report = f.sync(&mut m);
+        assert_eq!(report.in_use, 0, "{report:?}");
+        assert!(report.errors.len() == 1 || report.updated == 1, "{report:?}");
+        set_readonly(&f.there("a.pdf"), false);
     }
 
     #[cfg(windows)]

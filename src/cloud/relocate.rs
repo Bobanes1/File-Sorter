@@ -1227,11 +1227,21 @@ mod tests {
         assert_eq!(plan(&from).files, 2);
 
         let report = run(&from, &to);
-        assert_eq!(report.moved, 1);
-        assert_eq!(report.left.len(), 1, "{report:?}");
-        assert_eq!(report.left[0].0, odd);
-        assert_eq!(fs::read_to_string(&verbatim).unwrap(), "from WSL");
-        assert_eq!(plan(&from), Plan { files: 1, bytes: 0 }, "still counted as left there");
-        fs::remove_file(&verbatim).unwrap();
+        // Whether Windows lets it through or it stays: it is never lost or emptied.
+        let arrived = PathBuf::from(format!(
+            r"\\?\{}",
+            std::path::absolute(to.join("Mathe").join("Notizen.")).unwrap().display()
+        ));
+        if report.left.iter().any(|(path, _)| *path == odd) {
+            assert_eq!(report.moved, 1, "{report:?}");
+            assert_eq!(fs::read_to_string(&verbatim).unwrap(), "from WSL");
+            assert_eq!(plan(&from), Plan { files: 1, bytes: 0 }, "still counted as left there");
+            fs::remove_file(&verbatim).unwrap();
+        } else {
+            assert_eq!(report.moved, 2, "{report:?}");
+            assert_eq!(fs::read_to_string(&arrived).unwrap(), "from WSL", "{report:?}");
+            assert!(fs::symlink_metadata(&verbatim).is_err(), "moved, not copied");
+            fs::remove_file(&arrived).unwrap();
+        }
     }
 }

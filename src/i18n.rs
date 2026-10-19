@@ -869,6 +869,9 @@ impl Lang {
             "Schliesse offene Dokumente vorher: Dateien, die noch geöffnet sind, bleiben, wo sie sind.",
         )
     }
+    pub fn move_rest(self) -> &'static str {
+        self.pick("Move them now", "Jetzt nachholen")
+    }
     pub fn move_button(self) -> &'static str {
         self.pick("Move", "Verlegen")
     }

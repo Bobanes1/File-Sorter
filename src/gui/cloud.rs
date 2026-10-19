@@ -259,7 +259,8 @@ impl App {
                             });
                         }
                         let rest = relocate::plan(&from);
-                        self.cloud.leftover = (!back && rest.files > 0).then_some((from, rest));
+                        // Files still at the old place (open, failed, stopped) can be moved later.
+                        self.cloud.leftover = (rest.files > 0).then_some((from, rest));
                     }
                     Err(error) => {
                         if let Some(Moving { before: (root, settings), .. }) = moving {
@@ -519,6 +520,20 @@ impl App {
         self.cloud.worker.send(Job::Relocate { from, to });
     }
 
+    /// Move what is still at the study folder's old place into the study folder.
+    fn move_rest(&mut self, from: PathBuf) {
+        let to = self.study_root();
+        if same_folder(&from, &to) {
+            self.cloud.leftover = None;
+            return;
+        }
+        let before = (self.config.destination_root.clone(), self.config.cloud.clone());
+        let back = self.config.cloud.mode != CloudMode::Move;
+        self.cloud.leftover = None;
+        self.cloud.moving = Some(Moving { progress: Progress::default(), back, before });
+        self.cloud.worker.send(Job::Relocate { from, to });
+    }
+
     // ---------- the card ----------
 
     pub(super) fn cloud_settings_ui(&mut self, ui: &mut egui::Ui) {
@@ -666,6 +681,17 @@ impl App {
                 ui.add(egui::Label::new(RichText::new(text).color(p.on_surface)).wrap());
             });
         };
+        // Files a move left at the old place (open at the time, failed, stopped): offer them again.
+        if let Some((old, plan)) = self.cloud.leftover.clone() {
+            let text = format!("{} {}", lang.relocate_details(0, 0, plan.files as usize), old.display());
+            status(ui, icon::WARNING_CIRCLE, p.warning, text);
+            ui.horizontal(|ui| {
+                ui.add_space(30.0);
+                if fx::button(ui, ButtonStyle::Tonal, icon::ARROWS_CLOCKWISE, lang.move_rest()).clicked() {
+                    self.move_rest(old);
+                }
+            });
+        }
         let name = self.cloud_name();
         let provider = self.config.cloud.provider.unwrap_or(Provider::Other);
         match self.config.cloud.mode {
@@ -674,19 +700,6 @@ impl App {
                 let root = self.study_root().display().to_string();
                 status(ui, icon::CLOUD_CHECK, p.success, lang.cloud_status_moved(&name, &root));
                 status(ui, icon::DEVICES, p.on_surface_variant, lang.cloud_other_devices(provider));
-                if let Some((old, plan)) = self.cloud.leftover.clone() {
-                    let text = format!("{} {}", lang.relocate_details(0, 0, plan.files as usize), old.display());
-                    status(ui, icon::WARNING_CIRCLE, p.warning, text);
-                    ui.horizontal(|ui| {
-                        ui.add_space(30.0);
-                        if fx::button(ui, ButtonStyle::Tonal, icon::CLOUD_ARROW_UP, lang.cloud_apply_move()).clicked()
-                            && let Some(root) = self.cloud.pick.clone()
-                        {
-                            let to = self.study_root();
-                            self.start_move(&root, old, to);
-                        }
-                    });
-                }
             }
             CloudMode::Mirror => {
                 let copy = cloud_study_root(&self.config).map(|c| c.display().to_string()).unwrap_or_default();

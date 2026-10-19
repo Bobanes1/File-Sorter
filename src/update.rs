@@ -19,6 +19,8 @@ const LATEST: &str = "https://api.github.com/repos/Bobanes1/File-Sorter/releases
 const ASSET: &str = "FileSorter.exe";
 /// Name of the previous exe after an update, removed at the next start.
 const OLD_EXE: &str = "FileSorter.old.exe";
+/// The new exe while it is put next to the running one.
+const NEW_EXE: &str = "FileSorter.new.exe";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Release {
@@ -169,19 +171,26 @@ pub fn download(release: &Release, dir: &Path) -> Result<PathBuf, String> {
 
 /// Put the downloaded exe in place of `current` (the running one), keeping the old one as
 /// `FileSorter.old.exe` until the next start. On failure everything stays as it was.
+/// `new` must be in the same folder as `current`, so both steps are plain renames: the
+/// program file is always either the whole old or the whole new exe.
 pub fn swap(new: &Path, current: &Path) -> Result<(), String> {
     let old = current.with_file_name(OLD_EXE);
     if old.exists() {
         fs::remove_file(&old).map_err(|e| format!("{} is in the way: {e}", old.display()))?;
     }
     fs::rename(current, &old).map_err(|e| format!("the program file can't be replaced ({e})"))?;
-    if let Err(e) = fs::rename(new, current).or_else(|_| fs::copy(new, current).map(drop)) {
+    if let Err(e) = fs::rename(new, current) {
         // Put the old exe back; nothing is lost.
-        let _ = fs::remove_file(current);
-        let _ = fs::rename(&old, current);
-        return Err(format!("the new version could not be put in place ({e})"));
+        return match fs::rename(&old, current) {
+            Ok(()) => Err(format!("the new version could not be put in place ({e})")),
+            Err(back) => Err(format!(
+                "the new version could not be put in place ({e}), and the old one could not be renamed back ({back}): \
+                 rename {} to {} by hand",
+                old.display(),
+                current.display()
+            )),
+        };
     }
-    let _ = fs::remove_file(new);
     Ok(())
 }
 
@@ -191,8 +200,14 @@ pub fn install(release: &Release, state_dir: &Path) -> Result<(), String> {
         return Err("installing is only done on Windows".into());
     }
     let current = std::env::current_exe().map_err(|e| e.to_string())?;
-    let new = download(release, state_dir)?;
-    let result = swap(&new, &current);
+    let downloaded = download(release, state_dir)?;
+    // Next to the program (maybe on another drive), checked again, then swapped by renaming.
+    let new = current.with_file_name(NEW_EXE);
+    let placed = fs::copy(&downloaded, &new).map_err(|e| format!("can't write next to the program ({e})"));
+    let _ = fs::remove_file(&downloaded);
+    let result = placed
+        .and_then(|_| verified(&new, release.download.as_ref().ok_or("no download")?))
+        .and_then(|_| swap(&new, &current));
     let _ = fs::remove_file(&new);
     result
 }
@@ -285,5 +300,6 @@ mod tests {
         let err = swap(&tmp.path().join("missing.exe"), &current);
         assert!(err.is_err());
         assert_eq!(fs::read_to_string(&current).unwrap(), "new");
+        assert!(!tmp.path().join(OLD_EXE).exists() || fs::read_to_string(tmp.path().join(OLD_EXE)).unwrap() != "new");
     }
 }

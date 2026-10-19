@@ -19,8 +19,8 @@ pub const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Extracted {
     pub folder: PathBuf,
-    /// Each file, relative to `folder`, with its size.
-    pub files: Vec<(PathBuf, u64)>,
+    /// Each file, relative to `folder`, with its size and modification time (nanoseconds).
+    pub files: Vec<(PathBuf, u64, u64)>,
 }
 
 #[derive(Debug)]
@@ -123,7 +123,7 @@ fn unpack(
     entries: &[(usize, PathBuf, bool)],
     strip: Option<&std::ffi::OsStr>,
     folder: &Path,
-) -> Result<Vec<(PathBuf, u64)>, UnzipError> {
+) -> Result<Vec<(PathBuf, u64, u64)>, UnzipError> {
     let mut files = Vec::new();
     let mut written: u64 = 0;
     for (index, path, dir) in entries {
@@ -153,15 +153,20 @@ fn unpack(
             return Err(UnzipError::TooBig);
         }
         out.flush()?;
-        files.push((relative, copied));
+        drop(out);
+        files.push((relative, copied, modified(&fs::metadata(&target)?)));
     }
     files.sort();
     Ok(files)
 }
 
-/// The files now in `extracted.folder` with their sizes, in the same form as recorded.
-fn current_files(folder: &Path) -> Vec<(PathBuf, u64)> {
-    fn walk(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, u64)>) {
+fn modified(meta: &fs::Metadata) -> u64 {
+    meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64)
+}
+
+/// The files now in `extracted.folder` with sizes and times, in the same form as recorded.
+fn current_files(folder: &Path) -> Vec<(PathBuf, u64, u64)> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, u64, u64)>) {
         let Ok(entries) = fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -169,7 +174,7 @@ fn current_files(folder: &Path) -> Vec<(PathBuf, u64)> {
             if meta.is_dir() {
                 walk(root, &path, out);
             } else if let Ok(relative) = path.strip_prefix(root) {
-                out.push((relative.to_path_buf(), meta.len()));
+                out.push((relative.to_path_buf(), meta.len(), modified(&meta)));
             }
         }
     }
@@ -180,7 +185,8 @@ fn current_files(folder: &Path) -> Vec<(PathBuf, u64)> {
 }
 
 /// True if the unpacked folder still holds exactly what was unpacked (nothing added,
-/// removed or changed in size), so removing it loses nothing of the user's.
+/// removed or changed – also not saved again with the same size), so removing it loses
+/// nothing of the user's.
 pub fn unchanged(extracted: &Extracted) -> bool {
     let mut recorded = extracted.files.clone();
     recorded.sort();
@@ -219,6 +225,12 @@ mod tests {
         assert!(!done.folder.join("__MACOSX").exists());
         assert_eq!(done.files.len(), 2);
         assert!(unchanged(&done));
+        // Saved again with the same size but other content (a later time).
+        let script = done.folder.join("aufgabe1.py");
+        let file = fs::OpenOptions::new().write(true).open(&script).unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+        drop(file);
+        assert!(!unchanged(&done), "changed with the same size");
         fs::write(done.folder.join("notizen.txt"), "x").unwrap();
         assert!(!unchanged(&done), "something was added");
     }
@@ -243,7 +255,7 @@ mod tests {
         let done = extract_next_to(&zip).unwrap();
         assert!(!tmp.path().join("escaped.txt").exists() && !Path::new("/abs.txt").exists());
         // "/abs.txt" lands inside the new folder, "../escaped.txt" nowhere.
-        let names: Vec<PathBuf> = done.files.iter().map(|(p, _)| p.clone()).collect();
+        let names: Vec<PathBuf> = done.files.iter().map(|(p, _, _)| p.clone()).collect();
         assert_eq!(names, [PathBuf::from("abs.txt"), PathBuf::from("ok.txt")]);
     }
 

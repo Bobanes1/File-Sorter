@@ -10,6 +10,7 @@ use crate::ledger::{COPIED_LIST, CopyLedger, KEPT_LIST, KeptFiles};
 use crate::sorter::{
     IN_USE_RETRY, MoveError, Outcome, SortResult, copy_file_with_patience, discard, ensure_not_open_elsewhere,
     file_name, in_use, move_file_with_patience, release_placeholder, reserve_destination, retry_while_in_use,
+    same_content,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +21,8 @@ pub enum UndoError {
     InUse,
     /// Nothing to undo (the file wasn't sorted).
     NotSorted,
+    /// Copy mode: the copy was changed (notes added?), so it isn't removed.
+    CopyChanged,
     Failed(String),
 }
 
@@ -77,6 +80,10 @@ pub fn undo(result: &SortResult, config: &Config) -> Result<PathBuf, UndoError> 
                 return Err(UndoError::Missing);
             }
             if destination.is_file() {
+                // Only a copy that is still the same as the original: notes added to it stay.
+                if !same_content(source, destination) {
+                    return Err(UndoError::CopyChanged);
+                }
                 retry_while_in_use(IN_USE_RETRY, || ensure_not_open_elsewhere(destination))?;
                 retry_while_in_use(IN_USE_RETRY, || discard(destination))?;
             }
@@ -90,7 +97,7 @@ pub fn undo(result: &SortResult, config: &Config) -> Result<PathBuf, UndoError> 
         }
         Outcome::Left(_) => return Err(UndoError::NotSorted),
     };
-    undo_extras(result);
+    undo_extras(result, config);
     keep(&back, config);
     if let (Some(dir), Some(id)) = (&config.state_dir, result.id)
         && let Err(e) = history::record_undo(dir, id)
@@ -103,9 +110,15 @@ pub fn undo(result: &SortResult, config: &Config) -> Result<PathBuf, UndoError> 
 
 /// Reverse what happened along with sorting: older versions go back, and the unpacked
 /// folder of a ZIP file is removed, but only if nobody changed anything in it.
-fn undo_extras(result: &SortResult) {
-    for stuck in crate::sorter::put_back(&result.extras.older_versions) {
-        log::info!("Could not put the older version {} back", stuck.display());
+fn undo_extras(result: &SortResult, config: &Config) {
+    let (stuck, moved) = crate::sorter::put_back_moved(&result.extras.older_versions);
+    for path in stuck {
+        log::info!("Could not put the older version {} back", path.display());
+    }
+    if let Some(dir) = &config.state_dir {
+        for (from, to) in &moved {
+            crate::sorter::note_moved(dir, from, to);
+        }
     }
     if let Some(extracted) = &result.extras.extracted
         && extracted.folder.is_dir()
@@ -314,6 +327,43 @@ mod tests {
         fs::write(folder.join("my notes.txt"), "keep me").unwrap();
         undo(&again[0], &cfg).unwrap();
         assert!(folder.join("my notes.txt").exists());
+    }
+
+    #[test]
+    fn undoing_an_earlier_sort_finds_the_version_that_was_moved_aside() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = config(tmp.path());
+        cfg.features.versions = true;
+        let module = tmp.path().join("University").join("Programming Course");
+        let download = cfg.watch_path().join("prog1_Skript.pdf");
+        make_pdf(&download, "first");
+        let first = sort_file(&download, &cfg);
+        make_pdf(&download, "second, a new version under the same name");
+        let second = sort_file(&download, &cfg);
+        assert_eq!(second.destination().unwrap(), module.join("prog1_Skript.pdf"));
+        // The first entry, read back from the history, points into the versions folder now.
+        let entries = history::recent(cfg.state_dir.as_ref().unwrap(), 10);
+        let earlier = entries.iter().find(|e| e.result.id == first.id).unwrap().result.clone();
+        let aside = module.join("Ältere Versionen").join("prog1_Skript.pdf");
+        assert_eq!(earlier.destination().unwrap(), aside);
+        // Undoing it puts the first version back, and the new one stays in the module.
+        let back = undo(&earlier, &cfg).unwrap();
+        assert!(fs::read(&back).unwrap().windows(5).any(|w| w == b"first"));
+        assert!(fs::read(module.join("prog1_Skript.pdf")).unwrap().windows(6).any(|w| w == b"second"));
+    }
+
+    #[test]
+    fn a_changed_copy_is_not_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = Config { action: FileAction::Copy, ..config(tmp.path()) };
+        let src = cfg.watch_path().join("stats_blatt2.pdf");
+        make_pdf(&src, "Blatt 2");
+        let result = sort_file(&src, &cfg);
+        let copy = result.destination().unwrap().to_path_buf();
+        fs::write(&copy, "with my notes").unwrap();
+        assert_eq!(undo(&result, &cfg), Err(UndoError::CopyChanged));
+        assert_eq!(reassign(&result, 0, &cfg).map(|r| r.sorted()), Err(UndoError::CopyChanged));
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "with my notes");
     }
 
     #[test]

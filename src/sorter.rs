@@ -537,6 +537,12 @@ fn sort_any_file(path: &Path, config: &Config, patience: Duration, target: Targe
     if result.sorted()
         && let Some(dir) = &config.state_dir
     {
+        // Earlier entries of an older version follow it into the versions folder (before this
+        // entry is written, which keeps the name it freed): undoing them must find that file,
+        // not the new one now under its old name.
+        for (from, to) in &result.extras.older_versions {
+            note_moved(dir, from, to);
+        }
         match crate::history::record(dir, &result) {
             Ok(id) => result.id = Some(id),
             Err(e) => log::info!("Could not add {} to the history: {e}", result.file_name()),
@@ -758,9 +764,23 @@ fn move_older_versions(others: &[PathBuf], versions: &Path) -> Vec<(PathBuf, Pat
     moved
 }
 
+/// Note in the history that the sorted file `from` is now at `to`.
+pub(crate) fn note_moved(dir: &Path, from: &Path, to: &Path) {
+    let renamed = [(from.to_path_buf(), to.to_path_buf())];
+    if let Err(e) = crate::history::record_relocation(dir, from, to, &renamed) {
+        log::info!("Could not note in the history that {} moved: {e}", from.display());
+    }
+}
+
 /// Undo `move_older_versions` (the new file couldn't be sorted after all, or it is undone):
 /// each older version goes back to its old name, or "name (1)" if that is taken now.
+/// Returns the ones that couldn't be moved back, and (from, to) of those that were.
 pub(crate) fn put_back(older_versions: &[(PathBuf, PathBuf)]) -> Vec<PathBuf> {
+    put_back_moved(older_versions).0
+}
+
+pub(crate) fn put_back_moved(older_versions: &[(PathBuf, PathBuf)]) -> (Vec<PathBuf>, Vec<(PathBuf, PathBuf)>) {
+    let mut moved = Vec::new();
     let mut stuck = Vec::new();
     for (from, to) in older_versions {
         let (Some(dir), true) = (from.parent(), to.is_file()) else {
@@ -777,9 +797,11 @@ pub(crate) fn put_back(older_versions: &[(PathBuf, PathBuf)]) -> Vec<PathBuf> {
         if move_file_with_patience(to, &back, IN_USE_RETRY).is_err() {
             release_placeholder(&back);
             stuck.push(to.clone());
+        } else {
+            moved.push((to.clone(), back));
         }
     }
-    stuck
+    (stuck, moved)
 }
 
 fn remember_copy(ledger: &mut Option<(CopyLedger, &PathBuf)>, original: &Path, course: &str, copy: &Path) {

@@ -26,6 +26,9 @@ pub struct Archived {
     /// Where its folder is now, and where it was.
     pub folder: PathBuf,
     pub original: PathBuf,
+    /// Its folder was moved into the archive (a module without files had none).
+    #[serde(default)]
+    pub moved: bool,
 }
 
 /// The semester in Swiss naming: autumn semester (HS, Herbstsemester) from August to
@@ -84,7 +87,15 @@ fn files_in(folder: &Path) -> Vec<PathBuf> {
 /// list by the caller (with the returned `Archived`).
 pub fn archive(config: &Config, course: &Course, semester: &str) -> Result<(Archived, Moved), String> {
     let from = config.course_folder(course);
-    let to = archive_folder(config, course, semester);
+    // Never into a folder that is there already (another module with the same name).
+    let wanted = archive_folder(config, course, semester);
+    let mut to = wanted.clone();
+    let name = wanted.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut n = 1;
+    while to.exists() {
+        to = wanted.with_file_name(format!("{name} ({n})"));
+        n += 1;
+    }
     let files = files_in(&from);
     let report = move_folder(&from, &to)?;
     let archived = Archived {
@@ -92,6 +103,7 @@ pub fn archive(config: &Config, course: &Course, semester: &str) -> Result<(Arch
         semester: semester.trim().to_string(),
         folder: to.clone(),
         original: from.clone(),
+        moved: report.is_some(),
     };
     Ok((archived, Moved { from, to, report, files }))
 }
@@ -99,6 +111,9 @@ pub fn archive(config: &Config, course: &Course, semester: &str) -> Result<(Arch
 /// Bring an archived module's folder back to where it was.
 pub fn restore(archived: &Archived) -> Result<Moved, String> {
     let (from, to) = (archived.folder.clone(), archived.original.clone());
+    if archived.moved && !from.is_dir() {
+        return Err(format!("the archived folder {} is not there", from.display()));
+    }
     let files = files_in(&from);
     let report = move_folder(&from, &to)?;
     // The semester's folder and "Archiv" itself go once they are empty (only empty folders).
@@ -162,6 +177,19 @@ mod tests {
         assert_eq!(fs::read_to_string(folder.join("Übungen").join("Blatt1.pdf")).unwrap(), "new");
         assert_eq!(fs::read_to_string(folder.join("Übungen").join("Blatt1 (1).pdf")).unwrap(), "notes");
         assert!(!tmp.path().join("University").join(ARCHIVE_FOLDER).exists(), "empty archive folders go");
+
+        // Another module with the same folder name in the same semester gets its own folder.
+        let mut other = Course::new("Programmieren", &[]).with_subject("Informatik");
+        other.folder = tmp.path().join("elsewhere").join("Programmieren").display().to_string();
+        let (a, _) = archive(&config, &course, "FS2027").unwrap();
+        fs::create_dir_all(config.course_folder(&other)).unwrap();
+        fs::write(config.course_folder(&other).join("x.pdf"), "x").unwrap();
+        fs::create_dir_all(&a.folder).unwrap();
+        let (b, _) = archive(&config, &other, "FS2027").unwrap();
+        assert_ne!(a.folder, b.folder);
+        // Gone from the archive (study folder moved, deleted by hand): no false «restored».
+        fs::remove_dir_all(&b.folder).unwrap();
+        assert!(restore(&b).is_err());
 
         // A module without a folder is archived without moving anything.
         let empty = Course::new("Leer", &[]);

@@ -399,6 +399,7 @@ impl App {
                     Outcome::Copied { .. } => self.lang.snack_sorted(&name, course, true),
                     _ => self.lang.snack_sorted(&name, course, false),
                 });
+                self.follow_older_versions(&result);
                 self.cloud_after_sort(&result);
                 self.study_after_sort(&result);
                 let state = FileState::Done(result);
@@ -476,7 +477,11 @@ impl App {
                 return;
             }
         };
-        card.set_state(FileState::Done(new.clone()), now);
+        card.set_state(FileState::Assigning(new.clone()), now);
+        self.follow_older_versions(&new);
+        if let Some(card) = self.cards.iter_mut().find(|c| c.key == key) {
+            card.set_state(FileState::Done(new.clone()), now);
+        }
         if old.sorted() {
             self.cloud_after_undo(&old);
             if let Some(count) = old.sorted_course().and_then(|c| self.module_counts.get_mut(c)) {
@@ -520,6 +525,14 @@ impl App {
         }
     }
 
+    /// Older versions moved aside for `result`: earlier entries follow them (before the new
+    /// entry shows, which now holds their old name).
+    fn follow_older_versions(&mut self, result: &SortResult) {
+        for (from, to) in &result.extras.older_versions {
+            self.relocate_cards(from, to, &[(from.clone(), to.clone())]);
+        }
+    }
+
     /// Take back keywords learned from an assigned file.
     fn forget_keywords(&mut self, module: &str, words: &[String]) {
         let Some(i) = self.config.courses.iter().position(|c| c.label() == module) else { return };
@@ -539,6 +552,12 @@ impl App {
         match outcome {
             Ok(back) => {
                 card.set_state(FileState::Undone { back }, now);
+                // Older versions went back to their places: entries pointing at them follow.
+                for (from, to) in &result.extras.older_versions {
+                    if from.exists() && !to.exists() {
+                        self.relocate_cards(to, from, &[(to.clone(), from.clone())]);
+                    }
+                }
                 self.cloud_after_undo(&result);
                 if result.sorted() {
                     self.stats.sorted = self.stats.sorted.saturating_sub(1);

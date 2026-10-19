@@ -218,6 +218,12 @@ impl Lang {
                 )
                 .into(),
             UndoError::NotSorted => self.pick("Nothing to undo", "Nichts rückgängig zu machen").into(),
+            UndoError::CopyChanged => self
+                .pick(
+                    "The copy was changed since (notes?), so it stays where it is",
+                    "Die Kopie wurde inzwischen verändert (Notizen?) und bleibt deshalb, wo sie ist",
+                )
+                .into(),
             UndoError::Failed(e) => {
                 self.fmt(format!("Can't put it back: {e}"), format!("Zurücklegen nicht möglich: {e}"))
             }

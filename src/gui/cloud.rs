@@ -310,6 +310,15 @@ impl App {
     /// Entries in the activity list follow their files to the study folder's new place.
     pub(super) fn relocate_cards(&mut self, from: &Path, to: &Path, renamed: &[(PathBuf, PathBuf)]) {
         self.deadlines_follow(|path| crate::history::relocated(path, from, to, renamed));
+        // Archived modules: their folder in the archive, and where they go back to.
+        for archived in &mut self.config.archived {
+            if let Some(new) = crate::history::relocated(&archived.folder, from, to, renamed) {
+                archived.folder = new;
+            }
+            if let Ok(rest) = archived.original.strip_prefix(from) {
+                archived.original = to.join(rest);
+            }
+        }
         for card in &mut self.cards {
             if let CardKind::File { state: FileState::Done(result) | FileState::UndoFailed { result, .. }, .. } =
                 &mut card.kind
@@ -364,7 +373,7 @@ impl App {
             if let Some(extracted) = &result.extras.extracted
                 && !extracted.folder.exists()
             {
-                gone.extend(extracted.files.iter().map(|(f, _)| extracted.folder.join(f)));
+                gone.extend(extracted.files.iter().map(|(f, _, _)| extracted.folder.join(f)));
             }
             self.cloud_forget(gone);
             if !result.extras.is_empty() {

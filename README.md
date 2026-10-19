@@ -77,7 +77,7 @@ Click a sorted file in *Activity* to open its folder with the file selected. The
 
 ## Undo
 
-Sorted a file by mistake? Click **Undo** next to it in *Activity* (or in the bar that appears right after sorting). The file goes back where it came from – a moved file is moved back, a copy is removed again, a duplicate that went to the Recycle Bin is restored – and **it stays there**: File Sorter won't sort that file again (unless you sort it yourself with the right-click menu). Earlier sorts are still listed after a restart, so you can undo them later too.
+Sorted a file by mistake? Click **Undo** next to it in *Activity* (or in the bar that appears right after sorting). The file goes back where it came from – a moved file is moved back, a copy is removed again, a duplicate that went to the Recycle Bin is restored – and **it stays there**: File Sorter won't sort that file again (unless you sort it yourself with the right-click menu). Earlier sorts are still listed after a restart, so you can undo them later too. In *Copy* mode a copy you have changed since (notes added) is never removed by *Undo* or *Other module*.
 
 ## Put a file into a module yourself
 

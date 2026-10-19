@@ -1,6 +1,7 @@
 //! Tell versions of the same file apart: "Skript.pdf", "Skript_v2.pdf", "Skript (1).pdf",
-//! "Skript final 2026-10-24.pdf" are one document in several versions, while "Blatt 1"
-//! and "Blatt 2" or "Klausur 2023" and "Klausur 2024" are different documents.
+//! "Skript final.pdf" are one document in several versions, while "Blatt 1" and "Blatt 2",
+//! "Klausur 2023" and "Klausur 2024" or "Protokoll 24.10.2026" and "Protokoll 31.10.2026"
+//! are different documents.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,10 +37,6 @@ fn is_number(token: &str, max_len: usize) -> bool {
     !token.is_empty() && token.len() <= max_len && token.chars().all(|c| c.is_ascii_digit())
 }
 
-fn is_year(token: &str) -> bool {
-    token.len() == 4 && is_number(token, 4) && (token.starts_with("19") || token.starts_with("20"))
-}
-
 /// A stem without a trailing " (1)", as File Sorter, browsers and Windows add for copies.
 fn without_copy_number(stem: &str) -> &str {
     let trimmed = stem.trim_end();
@@ -61,18 +58,11 @@ fn split(stem: &str) -> (Vec<String>, Option<u32>) {
     while i < tokens.len() {
         let t = tokens[i].as_str();
         let next = tokens.get(i + 1).map(String::as_str);
-        let after = tokens.get(i + 2).map(String::as_str);
         if NUMBER_WORDS.contains(&t) && next.is_some_and(|n| is_number(n, 3)) {
             number = next.and_then(|n| n.parse().ok());
             i += 2;
         } else if VERSION_WORDS.contains(&t) {
             i += 1;
-        } else if t.len() == 8 && is_number(t, 8) && is_year(&t[..4]) {
-            i += 1; // 20261024
-        } else if is_year(t) && next.is_some_and(|n| is_number(n, 2)) && after.is_some_and(|n| is_number(n, 2)) {
-            i += 3; // 2026-10-24
-        } else if is_number(t, 2) && next.is_some_and(|n| is_number(n, 2)) && after.is_some_and(is_year) {
-            i += 3; // 24.10.2026
         } else {
             kept.push(tokens[i].clone());
             i += 1;
@@ -117,11 +107,13 @@ pub fn other_versions(folder: &Path, new: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// True if `new` is an older version than `existing` by their version numbers ("v1" arriving
-/// while "v2" is there). Without numbers, the file that arrives is the newer one.
+/// True if `new` is an older version than `existing`: a lower version number ("v1" arriving
+/// while "v2" is there), or none while the existing one has one ("Skript" after
+/// "Skript_v2"). Otherwise the file that arrives is the newer one.
 pub fn is_older(new: &Path, existing: &Path) -> bool {
     match (version_number(&stem_and_ext(new).0), version_number(&stem_and_ext(existing).0)) {
         (Some(a), Some(b)) => a < b,
+        (None, Some(_)) => true,
         _ => false,
     }
 }
@@ -139,9 +131,6 @@ mod tests {
             "Skript (1)",
             "Skript final",
             "Skript-neu",
-            "Skript 2026-10-24",
-            "Skript_24.10.2026",
-            "Skript 20261024",
             "Skript Version 3 korrigiert",
             "skript_rev2",
         ] {
@@ -156,6 +145,7 @@ mod tests {
         assert_ne!(base("Klausur 2023"), base("Klausur 2024"));
         assert_ne!(base("Blatt3"), base("Blatt3_Lösung"));
         assert_ne!(base("VL 1 2026"), base("VL 2 2026"));
+        assert_ne!(base("Protokoll 24.10.2026"), base("Protokoll 31.10.2026"));
         assert_eq!(base_name("v2"), None, "nothing left");
         assert_eq!(base_name("neu (1)"), None);
     }
@@ -167,7 +157,8 @@ mod tests {
         assert_eq!(version_number("Skript"), None);
         assert!(is_older(Path::new("a/Skript_v1.pdf"), Path::new("a/Skript_v2.pdf")));
         assert!(!is_older(Path::new("a/Skript_v3.pdf"), Path::new("a/Skript_v2.pdf")));
-        assert!(!is_older(Path::new("a/Skript.pdf"), Path::new("a/Skript_v2.pdf")));
+        assert!(is_older(Path::new("a/Skript.pdf"), Path::new("a/Skript_v2.pdf")));
+        assert!(!is_older(Path::new("a/Skript_v2.pdf"), Path::new("a/Skript.pdf")));
     }
 
     #[test]

@@ -87,7 +87,12 @@ pub struct Config {
     pub destination_root: String,
     pub extensions: Vec<String>,
     pub read_file_contents: bool,
-    pub sort_existing_on_start: bool,
+    /// Sort the files already in the watched folder when watching starts: none, only the
+    /// ones from the last days, or all.
+    #[serde(deserialize_with = "on_start_or_bool")]
+    pub sort_existing_on_start: OnStart,
+    /// "Sort existing files" in the window: only the last days (true) or everything.
+    pub sort_existing_recent: bool,
     pub courses: Vec<Course>,
     /// "de" or "en"; empty means: follow the system language.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,6 +114,8 @@ pub struct Config {
     pub background: bool,
     /// The study folder in OneDrive, Dropbox, Google Drive, … (moved there, or a copy).
     pub cloud: CloudSettings,
+    /// Features that can be switched on or off in the settings.
+    pub features: Features,
     /// Folder for File Sorter's own lists (copied files, files to leave alone, history):
     /// the folder of config.json. Set at runtime, not saved.
     #[serde(skip)]
@@ -124,6 +131,110 @@ pub enum FileAction {
     Move,
     /// The original stays in the watched folder, a copy goes to the module folder.
     Copy,
+}
+
+/// How many days count as "recent" for sorting existing files.
+pub const RECENT_DAYS: u32 = 7;
+
+/// Which files already in the watched folder are sorted when watching starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnStart {
+    /// Only new downloads.
+    #[default]
+    Off,
+    /// Files from the last [`RECENT_DAYS`] days too.
+    Recent,
+    /// Everything that is there.
+    All,
+}
+
+impl OnStart {
+    /// What to sort when watching starts, if anything.
+    pub fn scope(self) -> Option<ExistingScope> {
+        match self {
+            OnStart::Off => None,
+            OnStart::Recent => Some(ExistingScope::Recent(RECENT_DAYS)),
+            OnStart::All => Some(ExistingScope::All),
+        }
+    }
+}
+
+/// Versions before 0.9 saved `true` / `false` here.
+fn on_start_or_bool<'de, D: Deserializer<'de>>(d: D) -> Result<OnStart, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Old(bool),
+        New(OnStart),
+    }
+    Ok(match Option::<Either>::deserialize(d)? {
+        Some(Either::Old(true)) => OnStart::All,
+        Some(Either::Old(false)) | None => OnStart::Off,
+        Some(Either::New(choice)) => choice,
+    })
+}
+
+/// Which of the files already in the watched folder to sort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExistingScope {
+    All,
+    /// Only files downloaded (or changed) in the last so many days.
+    Recent(u32),
+}
+
+/// Whether updates are installed by themselves or only offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    #[default]
+    Ask,
+    Auto,
+}
+
+/// Features that can be switched on or off in the settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Features {
+    /// "Assign" a file to a module by hand, and learn keywords from it.
+    pub learn: bool,
+    /// Use the web page a file was downloaded from (Moodle course, …) to find its module.
+    pub origin: bool,
+    /// Sort into Vorlesung / Übungen / Lösungen / Prüfungen inside the module.
+    pub subfolders: bool,
+    /// Names of those subfolders (lecture, exercises, solutions, exams).
+    pub subfolder_names: [String; 4],
+    /// Unpack zip files into the module.
+    pub unzip: bool,
+    /// Put the older version of a file into "Ältere Versionen" when a new one comes.
+    pub versions: bool,
+    /// Search the text of all documents in the study folder.
+    pub search: bool,
+    /// Find submission deadlines in exercise sheets.
+    pub deadlines: bool,
+    /// "New this week" on the overview.
+    pub weekly: bool,
+    /// Look for new versions of File Sorter.
+    pub update_check: bool,
+    pub update_install: UpdateMode,
+}
+
+impl Default for Features {
+    fn default() -> Self {
+        Features {
+            learn: true,
+            origin: true,
+            subfolders: false,
+            subfolder_names: ["Vorlesung", "Übungen", "Lösungen", "Prüfungen"].map(String::from),
+            unzip: false,
+            versions: false,
+            search: true,
+            deadlines: true,
+            weekly: true,
+            update_check: true,
+            update_install: UpdateMode::Ask,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -143,7 +254,8 @@ impl Default for Config {
             destination_root: home().join("University").to_string_lossy().into_owned(),
             extensions: DEFAULT_EXTENSIONS.iter().map(|e| e.to_string()).collect(),
             read_file_contents: true,
-            sort_existing_on_start: false,
+            sort_existing_on_start: OnStart::Off,
+            sort_existing_recent: true,
             courses: Vec::new(),
             language: None,
             context_menu: true,
@@ -155,12 +267,18 @@ impl Default for Config {
             results_window: true,
             background: false,
             cloud: CloudSettings::default(),
+            features: Features::default(),
             state_dir: None,
         }
     }
 }
 
 impl Config {
+    /// What "Sort existing files" sorts: the last [`RECENT_DAYS`] days or everything.
+    pub fn existing_scope(&self) -> ExistingScope {
+        if self.sort_existing_recent { ExistingScope::Recent(RECENT_DAYS) } else { ExistingScope::All }
+    }
+
     /// One of File Sorter's own lists, if the settings were loaded from a file.
     pub fn state_file(&self, name: &str) -> Option<PathBuf> {
         self.state_dir.as_ref().map(|dir| dir.join(name))
@@ -386,6 +504,20 @@ mod tests {
         }
         fs::write(root.join("Studium").join("notes.txt"), "loose file").unwrap();
         root.join("Studium")
+    }
+
+    #[test]
+    fn old_on_start_switch_and_missing_features_still_read() {
+        let read = |json: &str| serde_json::from_str::<Config>(json).unwrap();
+        assert_eq!(read(r#"{"sort_existing_on_start": true}"#).sort_existing_on_start, OnStart::All);
+        assert_eq!(read(r#"{"sort_existing_on_start": false}"#).sort_existing_on_start, OnStart::Off);
+        assert_eq!(read(r#"{"sort_existing_on_start": "recent"}"#).sort_existing_on_start, OnStart::Recent);
+        let old = read("{}");
+        assert_eq!(old.sort_existing_on_start, OnStart::Off);
+        assert_eq!(old.features, Features::default());
+        assert_eq!(old.existing_scope(), ExistingScope::Recent(RECENT_DAYS));
+        let partial = read(r#"{"features": {"unzip": true}}"#).features;
+        assert!(partial.unzip && partial.learn && !partial.subfolders);
     }
 
     #[test]

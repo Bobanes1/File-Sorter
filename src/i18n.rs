@@ -122,7 +122,39 @@ impl Lang {
         self.pick("Stop watching", "Überwachung stoppen")
     }
     pub fn sort_now(self) -> &'static str {
-        self.pick("Sort existing files now", "Vorhandene Dateien jetzt sortieren")
+        self.pick("Sort existing files", "Vorhandene Dateien sortieren")
+    }
+    pub fn sort_now_tooltip(self, days: Option<u32>) -> String {
+        match days {
+            Some(d) => self.fmt(
+                format!("Sort the files in the downloads folder from the last {d} days"),
+                format!("Die Dateien der letzten {d} Tage im Download-Ordner sortieren"),
+            ),
+            None => {
+                self.pick("Sort all files in the downloads folder", "Alle Dateien im Download-Ordner sortieren").into()
+            }
+        }
+    }
+    pub fn last_days(self, days: u32) -> String {
+        self.fmt(format!("Last {days} days"), format!("Letzte {days} Tage"))
+    }
+    pub fn all_files(self) -> &'static str {
+        self.pick("All files", "Alle Dateien")
+    }
+    pub fn sort_recent(self, days: u32) -> String {
+        self.fmt(format!("Only the last {days} days"), format!("Nur die letzten {days} Tage"))
+    }
+    pub fn sort_recent_hint(self, days: u32) -> String {
+        self.fmt(
+            format!("Files downloaded or changed in the last {days} days"),
+            format!("Dateien, die in den letzten {days} Tagen heruntergeladen oder geändert wurden"),
+        )
+    }
+    pub fn sort_all(self) -> &'static str {
+        self.pick("All files", "Alle Dateien")
+    }
+    pub fn sort_all_hint(self) -> &'static str {
+        self.pick("Everything in the downloads folder, however old", "Alles im Download-Ordner, egal wie alt")
     }
 
     // ---------- activity ----------
@@ -254,8 +286,16 @@ impl Lang {
     pub fn stopped_watching(self) -> &'static str {
         self.pick("Stopped watching.", "Überwachung gestoppt.")
     }
-    pub fn sorting_existing(self) -> &'static str {
-        self.pick("Sorting files already in the folder…", "Sortiere die Dateien, die schon im Ordner liegen…")
+    pub fn sorting_existing(self, days: Option<u32>) -> String {
+        match days {
+            Some(d) => self.fmt(
+                format!("Sorting the files from the last {d} days…"),
+                format!("Sortiere die Dateien der letzten {d} Tage…"),
+            ),
+            None => self
+                .pick("Sorting files already in the folder…", "Sortiere die Dateien, die schon im Ordner liegen…")
+                .into(),
+        }
     }
     pub fn imported(self, added: usize, known: usize) -> String {
         self.fmt(
@@ -468,10 +508,119 @@ impl Lang {
     pub fn sort_existing_on_start(self) -> &'static str {
         self.pick("Include files already there", "Vorhandene Dateien mitsortieren")
     }
+    // ---------- features ----------
+    pub fn features(self) -> &'static str {
+        self.pick("Features", "Funktionen")
+    }
+    pub fn feature_learn(self) -> &'static str {
+        self.pick("Learn from assigning", "Aus Zuordnungen lernen")
+    }
+    pub fn feature_learn_hint(self) -> &'static str {
+        self.pick(
+            "When you assign a file to a module by hand, words from its name become keywords of that module.",
+            "Ordnest du eine Datei von Hand einem Modul zu, werden Wörter aus ihrem Namen zu Stichwörtern des Moduls.",
+        )
+    }
+    pub fn feature_origin(self) -> &'static str {
+        self.pick("Download source", "Download-Herkunft")
+    }
+    pub fn feature_origin_hint(self) -> &'static str {
+        self.pick(
+            "Remember which Moodle, ILIAS or OLAT course a file came from and sort the next one from there the same way.",
+            "Merken, aus welchem Moodle-, ILIAS- oder OLAT-Kurs eine Datei kam, und weitere von dort gleich einsortieren.",
+        )
+    }
+    pub fn feature_subfolders(self) -> &'static str {
+        self.pick("Subfolders", "Unterordner")
+    }
+    pub fn feature_subfolders_hint(self) -> &'static str {
+        self.pick(
+            "Put lecture slides, exercises, solutions and exams into their own folder inside the module.",
+            "Vorlesungsfolien, Übungen, Lösungen und Prüfungen im Modul in eigene Ordner legen.",
+        )
+    }
+    pub fn subfolder_names_hint(self) -> &'static str {
+        self.pick(
+            "Folder names for: lectures · exercises · solutions · exams. Other files stay in the module folder.",
+            "Ordnernamen für: Vorlesung · Übungen · Lösungen · Prüfungen. Andere Dateien bleiben im Modulordner.",
+        )
+    }
+    pub fn subfolder_defaults(self) -> [&'static str; 4] {
+        match self {
+            Lang::En => ["Lectures", "Exercises", "Solutions", "Exams"],
+            Lang::De => ["Vorlesung", "Übungen", "Lösungen", "Prüfungen"],
+        }
+    }
+    pub fn feature_unzip(self) -> &'static str {
+        self.pick("Unpack ZIP files", "ZIP-Dateien entpacken")
+    }
+    pub fn feature_unzip_hint(self) -> &'static str {
+        self.pick(
+            "Sort ZIP files by their content and unpack them in the module folder (the ZIP is kept).",
+            "ZIP-Dateien nach ihrem Inhalt einsortieren und im Modulordner entpacken (die ZIP-Datei bleibt).",
+        )
+    }
+    pub fn feature_versions(self) -> &'static str {
+        self.pick("Keep older versions apart", "Ältere Versionen ablegen")
+    }
+    pub fn feature_versions_hint(self) -> &'static str {
+        self.pick(
+            "When a new version of a file arrives (\"Script v2\"), move the old one into \"Older versions\".",
+            "Kommt eine neue Version einer Datei («Skript v2»), die alte in «Ältere Versionen» verschieben.",
+        )
+    }
+    pub fn feature_search(self) -> &'static str {
+        self.pick("Search in files", "Suche in Dateien")
+    }
+    pub fn feature_search_hint(self) -> &'static str {
+        self.pick(
+            "Search the text of all PDFs, slides and documents in the study folder (Ctrl+F).",
+            "Den Text aller PDFs, Folien und Dokumente im Studienordner durchsuchen (Ctrl+F).",
+        )
+    }
+    pub fn feature_deadlines(self) -> &'static str {
+        self.pick("Deadlines", "Abgabetermine")
+    }
+    pub fn feature_deadlines_hint(self) -> &'static str {
+        self.pick(
+            "Find due dates in exercise sheets and show what is due soon.",
+            "Abgabetermine in Übungsblättern erkennen und anzeigen, was bald fällig ist.",
+        )
+    }
+    pub fn feature_weekly(self) -> &'static str {
+        self.pick("New this week", "Neu diese Woche")
+    }
+    pub fn feature_weekly_hint(self) -> &'static str {
+        self.pick(
+            "Show which files arrived in each module in the last 7 days.",
+            "Anzeigen, welche Dateien in den letzten 7 Tagen in welchem Modul dazugekommen sind.",
+        )
+    }
+    pub fn feature_update(self) -> &'static str {
+        self.pick("Updates", "Aktualisierungen")
+    }
+    pub fn feature_update_hint(self) -> &'static str {
+        self.pick(
+            "Check for a new version of File Sorter once a day.",
+            "Einmal am Tag nach einer neuen Version von File Sorter suchen.",
+        )
+    }
+    pub fn update_ask(self) -> &'static str {
+        self.pick("Ask first", "Vorher fragen")
+    }
+    pub fn update_auto(self) -> &'static str {
+        self.pick("Install automatically", "Automatisch installieren")
+    }
+    pub fn none(self) -> &'static str {
+        self.pick("None", "Keine")
+    }
+    pub fn all(self) -> &'static str {
+        self.pick("All", "Alle")
+    }
     pub fn sort_existing_on_start_hint(self) -> &'static str {
         self.pick(
-            "When watching starts, also sort the files already in the folder.",
-            "Beim Start der Überwachung auch die Dateien sortieren, die schon im Ordner liegen.",
+            "When watching starts, also sort the files already in the folder: none, only recent ones, or all.",
+            "Beim Start der Überwachung auch Dateien sortieren, die schon im Ordner liegen: keine, nur neue oder alle.",
         )
     }
     pub fn file_types(self) -> &'static str {

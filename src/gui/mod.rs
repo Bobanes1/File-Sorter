@@ -8,6 +8,7 @@
 mod cards;
 mod cloud;
 mod dialogs;
+mod features;
 mod overview;
 mod settings;
 
@@ -25,8 +26,8 @@ pub(crate) use cards::{Card, CardKind, FileState, RowAction, activity_row};
 use cards::{Note, SNACKBAR_SECS, Snackbar};
 
 use crate::config::{
-    Config, Course, DEFAULT_EXTENSIONS, EXTRA_EXTENSIONS, expand_user, load_config, merge_courses, save_config,
-    scan_study_folder,
+    Config, Course, DEFAULT_EXTENSIONS, EXTRA_EXTENSIONS, ExistingScope, expand_user, load_config, merge_courses,
+    save_config, scan_study_folder,
 };
 use crate::fx;
 use crate::i18n::Lang;
@@ -581,15 +582,21 @@ impl App {
         }
     }
 
+    /// Sort the files already in the downloads folder: only recent ones or all, as last chosen.
     fn sort_now(&mut self) {
         if !self.check_ready() {
             return;
         }
+        let scope = self.config.existing_scope();
         match &self.watcher {
-            Some(w) if w.running() => w.sort_existing_async(),
-            _ => FolderWatcher::new(self.config.clone(), self.sink()).sort_existing_async(),
+            Some(w) if w.running() => w.sort_existing_async(scope),
+            _ => FolderWatcher::new(self.config.clone(), self.sink()).sort_existing_async(scope),
         }
-        self.note(Note::SortingExisting);
+        let days = match scope {
+            ExistingScope::Recent(days) => Some(days),
+            ExistingScope::All => None,
+        };
+        self.note(Note::SortingExisting(days));
     }
 
     fn pick_folder(current: &str) -> Option<String> {

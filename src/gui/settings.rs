@@ -4,7 +4,7 @@ use eframe::egui::{self, Align, Layout, Margin, RichText, Sense, Stroke, vec2};
 use egui_phosphor::regular as icon;
 
 use super::{App, known_types, section_title};
-use crate::config::{DEFAULT_EXTENSIONS, FileAction, ThemeChoice};
+use crate::config::{DEFAULT_EXTENSIONS, FileAction, OnStart, RECENT_DAYS, ThemeChoice};
 use crate::fx::{self, ButtonStyle};
 use crate::i18n::Lang;
 
@@ -160,11 +160,23 @@ impl App {
                         lang.sort_existing_on_start(),
                         lang.sort_existing_on_start_hint(),
                         |ui| {
-                            changed |= fx::toggle(ui, &mut self.config.sort_existing_on_start).changed();
+                            let options = [
+                                (OnStart::Off, lang.none().to_string()),
+                                (OnStart::Recent, lang.last_days(RECENT_DAYS)),
+                                (OnStart::All, lang.all().to_string()),
+                            ];
+                            changed |=
+                                fx::segmented(ui, "sort-on-start", &mut self.config.sort_existing_on_start, &options);
                         },
                     );
                     divider(ui);
                     changed |= self.file_types_ui(ui);
+                });
+                ui.add_space(16.0);
+
+                section_title(ui, lang.features());
+                fx::card(ui, |ui| {
+                    changed |= self.features_ui(ui);
                 });
                 ui.add_space(16.0);
 

@@ -9,6 +9,7 @@ use egui_phosphor::regular as icon;
 
 use super::cards::{self, RowAction};
 use super::{App, CourseDialog, FLIGHT_SECS, GLOW_SECS};
+use crate::config::RECENT_DAYS;
 use crate::fx::{self, ButtonStyle};
 
 impl App {
@@ -338,7 +339,32 @@ impl App {
         let p = fx::pal(ui);
         let lang = self.lang;
         ui.horizontal(|ui| {
-            if fx::button(ui, ButtonStyle::Tonal, icon::BROOM, lang.sort_now()).clicked() {
+            let recent = self.config.sort_existing_recent;
+            let main = fx::button(ui, ButtonStyle::Tonal, icon::BROOM, lang.sort_now());
+            if main.on_hover_text(lang.sort_now_tooltip(recent.then_some(RECENT_DAYS))).clicked() {
+                self.sort_now();
+            }
+            // The scope ("last 7 days" / "all"), with a menu to sort with the other one.
+            let scope_text = if recent { lang.last_days(RECENT_DAYS) } else { lang.all_files().to_string() };
+            let menu_button = fx::button(ui, ButtonStyle::Text, icon::CARET_DOWN, &scope_text);
+            let mut chosen = None;
+            egui::Popup::menu(&menu_button).width(330.0).show(|ui| {
+                ui.set_min_width(330.0);
+                for (value, title, hint) in [
+                    (true, lang.sort_recent(RECENT_DAYS), lang.sort_recent_hint(RECENT_DAYS)),
+                    (false, lang.sort_all().to_string(), lang.sort_all_hint().to_string()),
+                ] {
+                    if scope_menu_row(ui, value == recent, &title, &hint) {
+                        chosen = Some(value);
+                        ui.close();
+                    }
+                }
+            });
+            if let Some(value) = chosen {
+                if value != self.config.sort_existing_recent {
+                    self.config.sort_existing_recent = value;
+                    self.settings_changed();
+                }
                 self.sort_now();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -484,4 +510,30 @@ impl App {
             self.glows.insert(flight.target, now);
         }
     }
+}
+
+/// One choice in the "sort existing files" menu: a check for the remembered one, title and hint.
+fn scope_menu_row(ui: &mut egui::Ui, selected: bool, title: &str, hint: &str) -> bool {
+    let p = fx::pal(ui);
+    let response = ui
+        .horizontal(|ui| {
+            ui.set_min_height(52.0);
+            ui.add_space(8.0);
+            let glyph = if selected { icon::CHECK } else { "" };
+            ui.allocate_ui_with_layout(vec2(20.0, 20.0), Layout::left_to_right(Align::Center), |ui| {
+                ui.label(RichText::new(glyph).size(16.0).color(p.primary));
+            });
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.add_space(6.0);
+                ui.label(RichText::new(title).size(14.5).color(p.on_surface));
+                ui.add(egui::Label::new(RichText::new(hint).small().color(p.on_surface_variant)).wrap());
+            });
+        })
+        .response;
+    let rect = response.rect;
+    let click = ui.interact(rect, ui.make_persistent_id(("scope-row", title)), Sense::click());
+    fx::state_layer(ui, &click, rect, 8, p.on_surface);
+    click.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }

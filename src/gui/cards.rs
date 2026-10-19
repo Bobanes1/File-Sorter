@@ -21,7 +21,8 @@ pub(crate) const CARD_FLASH_SECS: f64 = 0.9;
 pub(crate) enum Note {
     Started(String),
     Stopped,
-    SortingExisting,
+    /// Sorting the files already in the folder: all of them, or only the last `days` days.
+    SortingExisting(Option<u32>),
     Imported {
         added: usize,
         known: usize,
@@ -147,7 +148,7 @@ pub(crate) fn note_title(lang: Lang, note: &Note) -> String {
             lang.started(&path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| folder.clone()))
         }
         Note::Stopped => lang.stopped_watching().into(),
-        Note::SortingExisting => lang.sorting_existing().into(),
+        Note::SortingExisting(days) => lang.sorting_existing(*days),
         Note::Imported { added, known } => lang.imported(*added, *known),
         Note::KeywordsAdded { module, words } => lang.keywords_added(words.len(), module),
         Note::NoNewKeywords { module, files } => lang.no_new_keywords(module, *files),
@@ -227,7 +228,7 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
             match note {
                 Note::Started(folder) => make(icon::PLAY, blue, title, None, Some(folder.clone())),
                 Note::Stopped => make(icon::STOP, neutral, title, None, None),
-                Note::SortingExisting => make(icon::BROOM, blue, title, None, None),
+                Note::SortingExisting(_) => make(icon::BROOM, blue, title, None, None),
                 Note::Imported { .. } => make(icon::FOLDERS, blue, title, None, None),
                 Note::KeywordsAdded { words, .. } => make(icon::SPARKLE, blue, title, Some(words.join(" · ")), None),
                 Note::NoNewKeywords { .. } => make(icon::SPARKLE, neutral, title, None, None),

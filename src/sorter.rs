@@ -4,11 +4,11 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, FileAction};
+use crate::config::{Config, ExistingScope, FileAction};
 use crate::extract::extract_text;
 use crate::ledger::{COPIED_LIST, CopyLedger, KEPT_LIST, KeptFiles};
 use crate::matcher::{Reason, match_file};
@@ -557,12 +557,33 @@ fn remember_copy(ledger: &mut Option<(CopyLedger, &PathBuf)>, original: &Path, c
     }
 }
 
-/// Sort every file currently sitting in the watch folder.
-pub fn sort_existing(config: &Config) -> Vec<SortResult> {
+/// Sort the files currently sitting in the watch folder: all, or only the recent ones.
+pub fn sort_existing(config: &Config, scope: ExistingScope) -> Vec<SortResult> {
     let Ok(entries) = fs::read_dir(config.watch_path()) else { return Vec::new() };
     let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     files.sort();
-    files.into_iter().filter(|p| p.is_file() && is_candidate(p, config)).map(|p| sort_file(&p, config)).collect()
+    files
+        .into_iter()
+        .filter(|p| p.is_file() && is_candidate(p, config) && in_scope(p, scope))
+        .map(|p| sort_file(&p, config))
+        .collect()
+}
+
+/// True if `path` belongs to `scope`: always for `All`; for `Recent(days)` if it was
+/// downloaded or changed within that many days. Windows sets the creation time to the
+/// moment of the download, while browsers may keep the server's modification time, so the
+/// newer of the two counts.
+pub fn in_scope(path: &Path, scope: ExistingScope) -> bool {
+    let ExistingScope::Recent(days) = scope else { return true };
+    let Ok(meta) = fs::metadata(path) else { return false };
+    recent([meta.modified().ok(), meta.created().ok()], SystemTime::now(), days)
+}
+
+/// True if the newest of `times` is at most `days` days before `now` (or in the future).
+fn recent(times: [Option<SystemTime>; 2], now: SystemTime, days: u32) -> bool {
+    let limit = Duration::from_secs(u64::from(days) * 24 * 60 * 60);
+    let newest = times.into_iter().flatten().max();
+    newest.is_some_and(|t| now.duration_since(t).map(|age| age <= limit).unwrap_or(true))
 }
 
 #[cfg(test)]
@@ -615,6 +636,44 @@ pub(crate) mod tests {
             ],
             ..Config::default()
         }
+    }
+
+    #[test]
+    fn recent_means_downloaded_or_changed_in_the_last_days() {
+        let now = SystemTime::now();
+        let days = |d: u64| Some(now - Duration::from_secs(d * 24 * 60 * 60));
+        assert!(recent([days(1), None], now, 7));
+        assert!(recent([days(30), days(2)], now, 7), "downloaded recently, old server date");
+        assert!(!recent([days(8), days(9)], now, 7));
+        assert!(!recent([None, None], now, 7));
+        assert!(recent([Some(now + Duration::from_secs(60)), None], now, 7), "clock skew");
+    }
+
+    #[test]
+    fn sort_existing_last_days_leaves_older_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(tmp.path());
+        let new = cfg.watch_path().join("prog1_new.pdf");
+        let old = cfg.watch_path().join("prog1_old.pdf");
+        make_pdf(&new, "new");
+        make_pdf(&old, "old");
+        let long_ago = SystemTime::now() - Duration::from_secs(30 * 24 * 60 * 60);
+        let file = fs::OpenOptions::new().write(true).open(&old).unwrap();
+        let times = fs::FileTimes::new().set_modified(long_ago);
+        #[cfg(windows)]
+        let times = std::os::windows::fs::FileTimesExt::set_created(times, long_ago);
+        file.set_times(times).unwrap();
+        drop(file);
+        // Elsewhere the creation time can't be set back, so only Windows can test the old file.
+        let looks_old = cfg!(windows) || fs::metadata(&old).unwrap().created().is_err();
+        let results = sort_existing(&cfg, ExistingScope::Recent(7));
+        assert!(results.iter().any(|r| r.file_name() == "prog1_new.pdf" && r.sorted()));
+        if looks_old {
+            assert!(old.exists(), "older than 7 days: left alone");
+            assert_eq!(results.len(), 1);
+        }
+        let all = sort_existing(&cfg, ExistingScope::All);
+        assert!(all.iter().all(|r| r.sorted()) && !old.exists());
     }
 
     #[test]
@@ -772,7 +831,7 @@ pub(crate) mod tests {
         let cfg = test_config(tmp.path());
         make_pdf(&cfg.watch_path().join("stats_hw.pdf"), "x");
         make_pdf(&cfg.watch_path().join("random.pdf"), "nothing");
-        let results = sort_existing(&cfg);
+        let results = sort_existing(&cfg, ExistingScope::All);
         let get = |n: &str| results.iter().find(|r| r.file_name() == n).unwrap();
         assert_eq!(get("stats_hw.pdf").course(), Some("Statistics"));
         assert!(!get("random.pdf").sorted());
@@ -865,7 +924,7 @@ pub(crate) mod tests {
         for i in 0..5 {
             make_pdf(&cfg.watch_path().join(format!("python_{i}.pdf")), "x");
         }
-        for r in sort_existing(&cfg) {
+        for r in sort_existing(&cfg, ExistingScope::All) {
             assert!(r.sorted(), "{}", r.describe());
             assert!(!r.source.exists(), "{} still in the watch folder", r.file_name());
             assert!(r.destination().unwrap().exists());

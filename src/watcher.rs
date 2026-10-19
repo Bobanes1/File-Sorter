@@ -11,9 +11,9 @@ use std::time::{Duration, Instant, SystemTime};
 use notify::event::{ModifyKind, RenameMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::config::Config;
+use crate::config::{Config, ExistingScope};
 use crate::sorter::{
-    LeftReason, Outcome, SortResult, TEMP_SUFFIXES, file_name, is_candidate, sort_existing, sort_file,
+    LeftReason, Outcome, SortResult, TEMP_SUFFIXES, file_name, in_scope, is_candidate, sort_existing, sort_file,
 };
 
 pub const STABLE_FOR: Duration = Duration::from_secs(2);
@@ -210,10 +210,14 @@ impl FolderWatcher {
             }
         }
         *self.inner.folder.write().unwrap() = Some(folder.clone());
-        if !config.sort_existing_on_start {
-            let snapshot = candidates(&folder, &config).into_iter().map(|p| (file_name(&p), signature(&p))).collect();
-            *self.inner.ignore.lock().unwrap() = snapshot;
-        }
+        // Files that are already there and not to be sorted now are left alone until they change.
+        let scope = config.sort_existing_on_start.scope();
+        let snapshot = candidates(&folder, &config)
+            .into_iter()
+            .filter(|p| scope.is_none_or(|scope| !in_scope(p, scope)))
+            .map(|p| (file_name(&p), signature(&p)))
+            .collect();
+        *self.inner.ignore.lock().unwrap() = snapshot;
 
         let inner = Arc::clone(&self.inner);
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -234,8 +238,8 @@ impl FolderWatcher {
             .name("file-sorter-rescan".into())
             .spawn(move || rescan_loop(inner, generation))
             .map_err(|e| StartError::Other(e.to_string()))?;
-        if config.sort_existing_on_start {
-            self.sort_existing_async();
+        if let Some(scope) = scope {
+            self.sort_existing_async(scope);
         }
         Ok(())
     }
@@ -246,14 +250,14 @@ impl FolderWatcher {
         self.lock = None; // closing the file releases the lock
     }
 
-    /// Sort the files already in the watch folder on a background thread.
-    pub fn sort_existing_async(&self) {
+    /// Sort the files already in the watch folder (all, or only recent ones) on a background thread.
+    pub fn sort_existing_async(&self, scope: ExistingScope) {
         let inner = Arc::clone(&self.inner);
         thread::spawn(move || {
             let results = {
                 let _guard = inner.move_lock.lock().unwrap();
                 let config = inner.config.read().unwrap().clone();
-                sort_existing(&config)
+                sort_existing(&config, scope)
             };
             for result in results {
                 report(&inner, result);
@@ -587,7 +591,7 @@ mod tests {
 
     #[test]
     fn sort_existing_on_start() {
-        let mut h = Harness::new(|c| c.sort_existing_on_start = true);
+        let mut h = Harness::new(|c| c.sort_existing_on_start = crate::config::OnStart::All);
         make_pdf(&h.downloads().join("stats_old.pdf"), "x");
         h.watcher.start().unwrap();
         assert!(wait_for(|| h.uni().join("Statistics").join("stats_old.pdf").exists()));

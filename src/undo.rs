@@ -137,7 +137,7 @@ mod tests {
         // It stays: the watcher and "sort existing" leave it alone now.
         let again = sort_file(&src, &cfg);
         assert_eq!(again.outcome, Outcome::Left(LeftReason::Kept), "{}", again.describe());
-        assert!(sort_existing(&cfg).iter().all(|r| !r.sorted()));
+        assert!(sort_existing(&cfg, crate::config::ExistingScope::All).iter().all(|r| !r.sorted()));
         assert!(src.exists());
         // The history knows it was undone.
         let entries = history::recent(cfg.state_dir.as_ref().unwrap(), 10);

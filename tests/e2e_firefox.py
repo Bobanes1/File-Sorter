@@ -202,6 +202,29 @@ def main() -> int:
         extra = [p.name for p in prog.iterdir() if p.name not in expected]
         if extra:
             problems.append(f"unexpected files in module folder: {extra}")
+
+        # Where Firefox says the files came from (Windows keeps it in the Zone.Identifier
+        # stream), and whether a file whose name and text say nothing follows the others
+        # from the same page. Reported only: it depends on the browser.
+        if os.name == "nt":
+            for name in expected:
+                try:
+                    with open(str(prog / name) + ":Zone.Identifier", errors="replace") as fh:
+                        mark = fh.read()
+                except OSError as e:
+                    mark = f"(none: {e})"
+                print(f"Zone.Identifier of {name}:\n  " + mark.strip().replace("\n", "\n  "))
+        SlowHandler.files["Blatt3.pdf"] = padded_pdf(src / "c.pdf", "Aufgabe 1", size=50_000)
+        driver.get(base + "/index.html")
+        driver.find_element("id", f"f{len(SlowHandler.files) - 1}").click()
+        for _ in range(20):
+            if (prog / "Blatt3.pdf").is_file():
+                break
+            time.sleep(1)
+        where = "Programmierung 1" if (prog / "Blatt3.pdf").is_file() else "not sorted"
+        print(f"Blatt3.pdf (same page, nothing in name or text): {where}")
+        origins = work / "origins.json"
+        print("origins.json:\n" + (origins.read_text(errors="replace") if origins.exists() else "  (none)"))
     finally:
         driver.quit()
         sorter.terminate()

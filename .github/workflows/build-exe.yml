@@ -71,6 +71,38 @@ jobs:
           if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\vorlesung4.pdf")) { throw "PDF was not sorted" }
           Write-Host "exe sorted both files correctly"
 
+      - name: Smoke-test sorting only the last 7 days
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "recent"
+          New-Item -ItemType Directory -Force "$root\Downloads" | Out-Null
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\new_week.pptx"
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\old_week.pptx"
+          $old = (Get-Date).AddDays(-30)
+          (Get-Item "$root\Downloads\old_week.pptx").CreationTime = $old
+          (Get-Item "$root\Downloads\old_week.pptx").LastWriteTime = $old
+          @{
+            watch_folder = "$root\Downloads"
+            destination_root = "$root\Studium"
+            courses = @(@{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("programming") })
+          } | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--days", "7", "--config", "`"$root\config.json`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
+          Get-Content "$root\file-sorter.log"
+          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\new_week.pptx")) { throw "the new file was not sorted" }
+          if (-not (Test-Path "$root\Downloads\old_week.pptx")) { throw "the 30 days old file was sorted too" }
+          Write-Host "only the recent file was sorted"
+
+      - name: Smoke-test looking for updates
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "update"
+          New-Item -ItemType Directory -Force $root | Out-Null
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--check-update", "--config", "`"$root\config.json`"" -Wait -PassThru
+          Get-Content "$root\file-sorter.log"
+          # GitHub limits unauthenticated requests per address; shared runners may hit that.
+          if ($p.ExitCode -ne 0) { Write-Warning "looking for updates failed (exit code $($p.ExitCode))" }
+
       - name: Smoke-test removing the "downloaded from the web" mark
         shell: pwsh
         run: |

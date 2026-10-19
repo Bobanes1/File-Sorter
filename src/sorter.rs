@@ -200,6 +200,8 @@ pub fn reserve_destination(folder: &Path, filename: &str) -> io::Result<PathBuf>
         match fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
             Ok(_) => return Ok(candidate),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            // Windows says "access denied" instead when a folder has that name.
+            Err(_) if fs::symlink_metadata(&candidate).is_ok() => continue,
             Err(e) => return Err(e),
         }
     }
@@ -613,6 +615,15 @@ pub(crate) mod tests {
             ],
             ..Config::default()
         }
+    }
+
+    #[test]
+    fn a_folder_with_the_files_name_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("blatt.pdf")).unwrap();
+        let claimed = reserve_destination(tmp.path(), "blatt.pdf").unwrap();
+        assert_eq!(claimed, tmp.path().join("blatt (1).pdf"));
+        assert!(tmp.path().join("blatt.pdf").is_dir(), "the folder is left alone");
     }
 
     #[test]

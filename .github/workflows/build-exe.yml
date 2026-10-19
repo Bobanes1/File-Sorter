@@ -350,6 +350,11 @@ jobs:
           @{ personal = @{ path = "$root\Dropbox Uni" } } | ConvertTo-Json | Set-Content "$root\AppData\Dropbox\info.json"
           $env:OneDriveConsumer = "$root\OneDrive"
           $env:APPDATA = "$root\AppData"
+          # Folders of uninstalled apps are not offered, so the apps "are installed" here.
+          $env:LOCALAPPDATA = "$root\Local"
+          New-Item -ItemType Directory -Force "$root\Local\Microsoft\OneDrive", "$root\Local\Dropbox\Client" | Out-Null
+          Set-Content "$root\Local\Microsoft\OneDrive\OneDrive.exe" "fake"
+          Set-Content "$root\Local\Dropbox\Client\Dropbox.exe" "fake"
           $p = Start-Process $exe -ArgumentList "--list-clouds", "--config", "`"$root\config.json`"" -PassThru -Wait
           $log = Get-Content "$root\file-sorter.log" -Raw
           Write-Host $log

@@ -5,6 +5,7 @@
 // No console window behind the app in release builds on Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod archive;
 mod categories;
 mod cloud;
 mod common_words;
@@ -27,6 +28,7 @@ mod sorter;
 mod tray;
 mod undo;
 mod unzip;
+mod update;
 mod versions;
 mod watcher;
 mod winfix;
@@ -52,6 +54,7 @@ Usage: file-sorter [--config PATH] [--headless | --sort-now | [--sort] FILE... [
   --register-menu   add \"Sort with File Sorter\" to the right-click menu (Windows)
   --unregister-menu remove it again
   --list-clouds     write the cloud folders found (OneDrive, Dropbox, …) to the log
+  --check-update    write whether a newer File Sorter is available to the log
   --config PATH     settings file (default: per-user config.json)";
 
 struct Args {
@@ -66,6 +69,9 @@ struct Args {
     quiet: bool,
     register_menu: Option<bool>,
     list_clouds: bool,
+    check_update: bool,
+    /// Started again after an update: wait until the old process (this id) has ended.
+    wait_for: Option<u32>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -79,6 +85,8 @@ fn parse_args() -> Result<Args, String> {
         quiet: false,
         register_menu: None,
         list_clouds: false,
+        check_update: false,
+        wait_for: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -91,6 +99,8 @@ fn parse_args() -> Result<Args, String> {
             "--register-menu" => args.register_menu = Some(true),
             "--unregister-menu" => args.register_menu = Some(false),
             "--list-clouds" => args.list_clouds = true,
+            "--check-update" => args.check_update = true,
+            "--wait-for" => args.wait_for = it.next().and_then(|pid| pid.parse().ok()),
             "--config" => args.config = it.next().ok_or("--config needs a path")?.into(),
             "--days" => {
                 let days = it.next().ok_or("--days needs a number")?;
@@ -146,6 +156,27 @@ fn main() -> ExitCode {
     let log_file = args.config.parent().map(|p| p.join("file-sorter.log")).unwrap_or("file-sorter.log".into());
     logger::init(&log_file);
     winfix::unblock_self();
+    if let Some(pid) = args.wait_for {
+        update::wait_for(pid);
+    }
+    update::clean_up();
+    if args.check_update {
+        return match update::check() {
+            Ok(Some(release)) => {
+                let ready = if release.download.is_some() { "with a checked download" } else { "without a download" };
+                log::info!("File Sorter {} is available ({ready}): {}", release.version, release.page);
+                ExitCode::SUCCESS
+            }
+            Ok(None) => {
+                log::info!("File Sorter {} is the newest version", env!("CARGO_PKG_VERSION"));
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                log::error!("Could not look for updates: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     if let Some(enable) = args.register_menu {
         let lang = load_config(&args.config)

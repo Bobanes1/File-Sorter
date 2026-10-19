@@ -205,6 +205,10 @@ impl App {
 
                 self.cloud_settings_ui(ui);
 
+                section_title(ui, lang.semester());
+                fx::card(ui, |ui| self.archive_settings_ui(ui));
+                ui.add_space(16.0);
+
                 if cfg!(windows) {
                     section_title(ui, lang.right_click());
                     fx::card(ui, |ui| {
@@ -253,6 +257,9 @@ impl App {
                     });
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
+                        if fx::button(ui, ButtonStyle::Tonal, icon::MAGIC_WAND, lang.setup_again()).clicked() {
+                            self.wizard = Some(super::wizard::Wizard::new());
+                        }
                         let folder = self.config_path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
                         if fx::button(ui, ButtonStyle::Tonal, icon::FILE_TEXT, lang.open_log()).clicked() {
                             crate::desktop::open(&folder.join("file-sorter.log"));

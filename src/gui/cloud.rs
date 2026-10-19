@@ -35,7 +35,7 @@ pub(super) struct CloudState {
     worker: Worker,
     events: Receiver<CloudEvent>,
     /// Cloud folders on this computer (`None` while still looking).
-    roots: Option<Vec<CloudRoot>>,
+    pub(super) roots: Option<Vec<CloudRoot>>,
     detecting: Option<Receiver<(Vec<CloudRoot>, Option<Plan>)>>,
     /// The choice in the card, applied with its button.
     choice: CloudMode,
@@ -308,7 +308,7 @@ impl App {
     }
 
     /// Entries in the activity list follow their files to the study folder's new place.
-    fn relocate_cards(&mut self, from: &Path, to: &Path, renamed: &[(PathBuf, PathBuf)]) {
+    pub(super) fn relocate_cards(&mut self, from: &Path, to: &Path, renamed: &[(PathBuf, PathBuf)]) {
         self.deadlines_follow(|path| crate::history::relocated(path, from, to, renamed));
         for card in &mut self.cards {
             if let CardKind::File { state: FileState::Done(result) | FileState::UndoFailed { result, .. }, .. } =
@@ -329,11 +329,27 @@ impl App {
             && let Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } = &result.outcome
         {
             self.cloud.worker.send(Job::MirrorFile(destination.clone()));
-            // An unpacked ZIP file or an older version moved aside: a whole pass is simplest.
+            // An older version moved aside: its copy under the old name follows; a whole pass
+            // copies it (and an unpacked ZIP file) to the new place.
+            let old: Vec<_> = result.extras.older_versions.iter().map(|(from, _)| from.clone()).collect();
+            self.cloud_forget(old);
             if !result.extras.is_empty() {
                 self.cloud.worker.send(Job::MirrorNow);
             }
         }
+    }
+
+    /// Files that moved away within the study folder (archive, older versions): their copies
+    /// at the old place go too (only copies this computer made and nobody changed), and a
+    /// pass copies them to the new place.
+    pub(super) fn cloud_forget(&self, paths: Vec<PathBuf>) {
+        if self.config.cloud.mode != CloudMode::Mirror || paths.is_empty() {
+            return;
+        }
+        for path in paths {
+            self.cloud.worker.send(Job::Forget(path));
+        }
+        self.cloud.worker.send(Job::MirrorNow);
     }
 
     /// Sorting was undone: the file's copy in the cloud goes too (unless it was changed there).
@@ -342,6 +358,15 @@ impl App {
             && let Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } = &result.outcome
         {
             self.cloud.worker.send(Job::Forget(destination.clone()));
+            // Older versions went back (their copies in the versions folder go), and an
+            // unpacked folder was removed.
+            let mut gone: Vec<_> = result.extras.older_versions.iter().map(|(_, to)| to.clone()).collect();
+            if let Some(extracted) = &result.extras.extracted
+                && !extracted.folder.exists()
+            {
+                gone.extend(extracted.files.iter().map(|(f, _)| extracted.folder.join(f)));
+            }
+            self.cloud_forget(gone);
             if !result.extras.is_empty() {
                 self.cloud.worker.send(Job::MirrorNow);
             }
@@ -569,7 +594,7 @@ impl App {
     }
 
     /// Use `root` as the cloud folder in `mode` (without moving anything).
-    fn connect(&mut self, mode: CloudMode, root: &CloudRoot) {
+    pub(super) fn connect(&mut self, mode: CloudMode, root: &CloudRoot) {
         self.config.cloud.mode = mode;
         self.config.cloud.folder = root.path.display().to_string();
         self.config.cloud.provider = Some(root.provider);

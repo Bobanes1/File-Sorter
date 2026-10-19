@@ -5,6 +5,7 @@
 //! area (watch results, undo, the tray icon, closing) lives in `App::logic`, which eframe
 //! keeps calling then; `App::ui` only draws.
 
+mod archive;
 mod cards;
 mod cloud;
 mod dialogs;
@@ -12,6 +13,8 @@ mod features;
 mod overview;
 mod settings;
 mod study;
+mod update;
+mod wizard;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -180,6 +183,12 @@ pub(crate) struct App {
     cloud: cloud::CloudState,
     /// The search, deadlines and this week's files.
     study: study::Study,
+    /// Finishing a semester (archive).
+    archive: archive::ArchiveState,
+    /// A new version of File Sorter.
+    update: update::UpdateState,
+    /// The setup steps (first start, or from the settings).
+    wizard: Option<wizard::Wizard>,
 }
 
 fn known_types() -> impl Iterator<Item = &'static str> {
@@ -195,6 +204,7 @@ impl App {
         fx::install(&cc.egui_ctx);
         let (events_tx, events_rx) = channel();
         let (undo_tx, undo_rx) = channel();
+        let first_start = !config_path.exists();
         let (config, unreadable) = match load_config(&config_path) {
             Ok(config) => (config, None),
             Err(e) => {
@@ -251,6 +261,9 @@ impl App {
             quit: Arc::new(AtomicBool::new(false)),
             cloud,
             study,
+            archive: archive::ArchiveState::default(),
+            update: update::UpdateState::default(),
+            wizard: first_start.then(wizard::Wizard::new),
         };
         app.saved_config = app.config.clone();
         app.load_history();
@@ -969,6 +982,8 @@ impl eframe::App for App {
         self.window_logic(ctx, frame);
         self.cloud_logic();
         self.study_logic();
+        self.archive_logic();
+        self.update_logic();
         while let Ok(event) = self.events_rx.try_recv() {
             self.handle_event(event);
         }
@@ -1015,6 +1030,7 @@ impl eframe::App for App {
             .frame(egui::Frame::new().fill(p.surface).inner_margin(Margin { left: 20, right: 12, top: 8, bottom: 0 }))
             .show_separator_line(false)
             .show(ui, |ui| self.top_bar(ui));
+        self.update_banner(ui);
         // The opened tab fades in.
         let fade = if fx::motion(ui.ctx()) { fx::ease_out_cubic(((now - self.tab_opened) / 0.25) as f32) } else { 1.0 };
         let tab = if self.study.searching() { None } else { Some(self.tab) };
@@ -1048,6 +1064,8 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.flights_ui(&ctx);
         self.dialogs_ui(&ctx);
+        self.archive_dialog_ui(&ctx);
+        self.wizard_ui(&ctx);
         self.cloud_dialog_ui(&ctx);
         if let Some(bar) = &mut self.snackbar {
             match cards::snackbar_ui(&ctx, self.lang, bar, now) {

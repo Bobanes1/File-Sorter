@@ -589,6 +589,159 @@ impl Lang {
         self.pick("No files were sorted in the last 7 days.", "In den letzten 7 Tagen wurden keine Dateien sortiert.")
     }
 
+    // ---------- semester archive ----------
+    pub fn semester(self) -> &'static str {
+        self.pick("Semester", "Semester")
+    }
+    pub fn finish_semester(self) -> &'static str {
+        self.pick("Finish semester", "Semester abschliessen")
+    }
+    pub fn finish_semester_hint(self) -> &'static str {
+        self.pick(
+            "Move finished modules with their folders into «Archiv», so only the current ones remain.",
+            "Abgeschlossene Module samt Ordner ins «Archiv» verschieben, damit nur die aktuellen bleiben.",
+        )
+    }
+    pub fn finish_semester_button(self) -> &'static str {
+        self.pick("Finish semester…", "Semester abschliessen…")
+    }
+    pub fn archive_explained(self) -> &'static str {
+        self.pick(
+            "The chosen modules leave the list, and their folders move to Archiv/<semester>/ in the study folder. Nothing is deleted, and each module can be brought back in the settings.",
+            "Die gewählten Module verschwinden aus der Liste, ihre Ordner kommen nach Archiv/<Semester>/ im Studienordner. Es wird nichts gelöscht, und jedes Modul lässt sich in den Einstellungen wiederherstellen.",
+        )
+    }
+    pub fn semester_name(self) -> &'static str {
+        self.pick("Semester", "Semester")
+    }
+    pub fn modules_to_archive(self) -> &'static str {
+        self.pick("Modules that are over", "Module, die vorbei sind")
+    }
+    pub fn archive_count(self, count: usize) -> String {
+        match count {
+            0 | 1 => self.pick("Archive", "Archivieren").into(),
+            n => self.fmt(format!("Archive {n} modules"), format!("{n} Module archivieren")),
+        }
+    }
+    pub fn archived_note(self, count: usize) -> String {
+        match count {
+            1 => self.pick("1 module archived", "1 Modul archiviert").into(),
+            n => self.fmt(format!("{n} modules archived"), format!("{n} Module archiviert")),
+        }
+    }
+    pub fn restore(self) -> &'static str {
+        self.pick("Restore", "Wiederherstellen")
+    }
+    pub fn restored_note(self, module: &str) -> String {
+        self.fmt(format!("{module} is back"), format!("{module} ist zurück"))
+    }
+    pub fn restore_failed(self, module: &str) -> String {
+        self.fmt(format!("{module} could not be restored"), format!("{module} konnte nicht wiederhergestellt werden"))
+    }
+    pub fn stayed_behind(self, file: &str, why: &str) -> String {
+        self.fmt(format!("Stayed: {file} ({why})"), format!("Geblieben: {file} ({why})"))
+    }
+
+    // ---------- updates ----------
+    pub fn update_available(self, version: &str) -> String {
+        self.fmt(format!("File Sorter {version} is available."), format!("File Sorter {version} ist da."))
+    }
+    pub fn update_installing(self) -> String {
+        self.pick("Downloading and checking the new version…", "Neue Version wird heruntergeladen und geprüft…").into()
+    }
+    pub fn update_installed(self, version: &str) -> String {
+        self.fmt(
+            format!("File Sorter {version} is installed and runs from the next start."),
+            format!("File Sorter {version} ist installiert und läuft ab dem nächsten Start."),
+        )
+    }
+    pub fn update_failed(self, error: &str) -> String {
+        self.fmt(
+            format!("The update didn't work ({error}). The current version keeps running."),
+            format!("Die Aktualisierung hat nicht geklappt ({error}). Die jetzige Version läuft weiter."),
+        )
+    }
+    pub fn update_now(self) -> &'static str {
+        self.pick("Update now", "Jetzt aktualisieren")
+    }
+    pub fn later(self) -> &'static str {
+        self.pick("Later", "Später")
+    }
+    pub fn whats_new(self) -> &'static str {
+        self.pick("What's new", "Was ist neu")
+    }
+    pub fn restart_now(self) -> &'static str {
+        self.pick("Restart now", "Jetzt neu starten")
+    }
+
+    // ---------- setup ----------
+    pub fn setup_step(self, step: usize, of: usize) -> String {
+        self.fmt(format!("Setup · step {step} of {of}"), format!("Einrichtung · Schritt {step} von {of}"))
+    }
+    pub fn setup_welcome(self) -> &'static str {
+        self.pick("Welcome to File Sorter", "Willkommen bei File Sorter")
+    }
+    pub fn setup_downloads_text(self) -> &'static str {
+        self.pick(
+            "File Sorter watches the folder your browser saves downloads to and puts each course file into its module's folder. Which folder is it?",
+            "File Sorter beobachtet den Ordner, in den dein Browser Downloads speichert, und legt jede Kursdatei in den Ordner ihres Moduls. Welcher Ordner ist es?",
+        )
+    }
+    pub fn setup_study_title(self) -> &'static str {
+        self.pick("Your study folder", "Dein Studienordner")
+    }
+    pub fn setup_study_text(self) -> &'static str {
+        self.pick(
+            "Here each study program gets a folder and in it one folder per module (e.g. Studium/Informatik/Programmieren).",
+            "Hier bekommt jeder Studiengang einen Ordner und darin jedes Modul einen eigenen (z. B. Studium/Informatik/Programmieren).",
+        )
+    }
+    pub fn setup_in_cloud(self) -> &'static str {
+        self.pick(
+            "Or in a cloud folder, to have it on every device:",
+            "Oder in einem Cloud-Ordner, um ihn auf allen Geräten zu haben:",
+        )
+    }
+    pub fn setup_modules_title(self) -> &'static str {
+        self.pick("Your modules", "Deine Module")
+    }
+    pub fn setup_modules_text(self) -> &'static str {
+        self.pick(
+            "If the study folder already has a folder per module, File Sorter can read them in. Otherwise add modules in the overview with «+».",
+            "Hat der Studienordner schon einen Ordner pro Modul, kann File Sorter sie einlesen. Sonst fügst du Module in der Übersicht mit «+» hinzu.",
+        )
+    }
+    pub fn setup_found(self, count: usize) -> String {
+        match count {
+            0 => self.pick("No module folders found.", "Keine Modulordner gefunden.").into(),
+            n => self.fmt(format!("{n} module folders found."), format!("{n} Modulordner gefunden.")),
+        }
+    }
+    pub fn setup_modules_count(self, count: usize) -> String {
+        self.fmt(format!("Modules now: {count}"), format!("Module jetzt: {count}"))
+    }
+    pub fn setup_start_watching(self) -> &'static str {
+        self.pick("Start watching the downloads folder now", "Download-Ordner jetzt überwachen")
+    }
+    pub fn setup_finish(self) -> &'static str {
+        self.pick("Done", "Fertig")
+    }
+    pub fn setup_skip(self) -> &'static str {
+        self.pick("Skip", "Überspringen")
+    }
+    pub fn setup_again(self) -> &'static str {
+        self.pick("Run setup", "Einrichtung starten")
+    }
+    pub fn next(self) -> &'static str {
+        self.pick("Next", "Weiter")
+    }
+    pub fn back(self) -> &'static str {
+        self.pick("Back", "Zurück")
+    }
+    pub fn folder_missing(self) -> &'static str {
+        self.pick("This folder doesn't exist.", "Diesen Ordner gibt es nicht.")
+    }
+
     // ---------- tabs and settings ----------
     pub fn tab_overview(self) -> &'static str {
         self.pick("Overview", "Übersicht")

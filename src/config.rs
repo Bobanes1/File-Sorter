@@ -116,6 +116,8 @@ pub struct Config {
     pub cloud: CloudSettings,
     /// Features that can be switched on or off in the settings.
     pub features: Features,
+    /// Modules of finished semesters, moved into the archive (they can be brought back).
+    pub archived: Vec<crate::archive::Archived>,
     /// Folder for File Sorter's own lists (copied files, files to leave alone, history):
     /// the folder of config.json. Set at runtime, not saved.
     #[serde(skip)]
@@ -271,6 +273,7 @@ impl Default for Config {
             background: false,
             cloud: CloudSettings::default(),
             features: Features::default(),
+            archived: Vec::new(),
             state_dir: None,
         }
     }
@@ -446,7 +449,8 @@ pub fn scan_study_folder(root: &Path) -> Vec<Course> {
         return Vec::new();
     }
     let mut found: Vec<Course> = Vec::new();
-    for subject_dir in visible_subdirs(root) {
+    // The semester archive holds finished modules, not a study program.
+    for subject_dir in visible_subdirs(root).into_iter().filter(|d| file_name(d) != crate::archive::ARCHIVE_FOLDER) {
         for module_dir in visible_subdirs(&subject_dir) {
             found.push(Course::new(file_name(&module_dir), &[]).with_subject(file_name(&subject_dir)));
         }

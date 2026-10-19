@@ -7,16 +7,23 @@
 //!   saved as "name (1).ext" (`sorter::reserve_destination`) and listed in `renamed`.
 //! - A file whose identical twin (same content) is already there is not copied again; the
 //!   one in `from` goes to the Recycle Bin (`sorter::discard`) and counts as a duplicate.
-//!   A file reached through a linked folder is never taken for its own twin.
+//!   A file reached through a linked folder is never taken for its own twin. A twin that is
+//!   only in the cloud is downloaded to compare; if that fails, the file stays.
 //! - Files another program has open (a PDF viewer may still save notes into them) or that
 //!   fail stay where they are and are listed in `left`; everything else carries on. The
 //!   wait for an open file is short, so a few open files don't stall moving thousands.
+//!   "Open" is checked again right before the step that can't be undone (the rename, or
+//!   removing the original after copying), since hashing or copying a big file takes long.
+//! - Entries that can't be read, and (on Windows) names ending in a dot or space, which
+//!   Windows programs can't open, stay too and are listed in `left`.
 //! - On the same drive a file is simply renamed (instant and atomic). Across drives it is
 //!   copied to a temporary file beside its new name, checked, written to the disk and
 //!   renamed into place before the original is removed: killed at any moment, no half file
 //!   ever has a real name, and every file is complete in at least one place. If the
 //!   original can't be removed, the copy is removed again, so a file is not in both places.
 //!   (`sorter::move_file_with_patience` copies straight onto the real name, so it isn't used.)
+//!   An empty file with a temporary file beside it is the name claimed by a run that was
+//!   stopped while copying; the next run fills that name instead of using "name (1)".
 //! - The modification time is kept, also where copying would set it to now. A file that is
 //!   only in the cloud (moving back out of OneDrive) is downloaded first.
 //! - Junk files (`cloud::is_junk`): moved if `to` has none of that name, otherwise put in
@@ -26,15 +33,16 @@
 //! - Afterwards empty folders in `from` are removed, `from` itself too when empty; nothing
 //!   outside `from` is ever removed.
 //! - `cancel` is checked between files; a cancelled run leaves every file in one piece and
-//!   keeps the folders in `from`, which is still the study folder then.
+//!   keeps the folders in `from`, so the rest can be moved later. (The settings already
+//!   name `to` as the study folder; offering the rest is up to the caller.)
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::cloud::{TEMP_SUFFIX, is_inside, is_junk, is_placeholder, stamp};
+use crate::cloud::{Stamp, TEMP_SUFFIX, is_inside, is_junk, is_placeholder, stamp};
 use crate::sorter::{self, MoveError};
 
 /// How long to wait for a file another program has open before leaving it where it is.
@@ -69,7 +77,8 @@ pub struct Report {
     pub duplicates: u64,
     /// Saved under another name because a different file of that name was there: (from, to).
     pub renamed: Vec<(PathBuf, PathBuf)>,
-    /// Not moved (open in another program, or an error): (file, reason). They stay put.
+    /// Not moved (open in another program, unreadable, or an error): (file or folder,
+    /// reason). They stay put.
     pub left: Vec<(PathBuf, String)>,
     pub cancelled: bool,
 }
@@ -97,10 +106,12 @@ impl std::fmt::Display for RelocateError {
 }
 
 /// What moving `from` would involve (junk files not counted). Empty if it doesn't exist.
+/// Entries that can't be read count as files: they would stay behind, and a check for what
+/// is left at the old place must see them.
 pub fn plan(from: &Path) -> Plan {
-    let files = scan(from).map(|tree| tree.files).unwrap_or_default();
-    let (files, bytes) = totals(&files);
-    Plan { files, bytes }
+    let Ok(tree) = scan(from) else { return Plan::default() };
+    let (files, bytes) = totals(&tree.files);
+    Plan { files: files + tree.unreadable.len() as u64, bytes }
 }
 
 /// Move everything in `from` into `to` (see the module comment). `progress` is called
@@ -213,12 +224,15 @@ struct Tree {
     files: Vec<Item>,
     /// All subfolders, relative.
     folders: Vec<PathBuf>,
-    /// Subfolders that could not be read (their files stay where they are): (folder, reason).
+    /// Entries that could not be read, and subfolders whose files could not be listed; they
+    /// stay where they are: (path, reason).
     unreadable: Vec<(PathBuf, String)>,
 }
 
 /// Everything below `root`, so the totals are known before anything moves. Symbolic links,
 /// junctions and special files are skipped. Fails only if `root` itself can't be read.
+/// The entry's own metadata is used: on Windows it comes with the listing, while opening the
+/// path again fails for names Win32 changes on the way (a trailing dot or space).
 fn scan(root: &Path) -> io::Result<Tree> {
     let mut tree = Tree::default();
     let mut pending = vec![PathBuf::new()];
@@ -232,9 +246,26 @@ fn scan(root: &Path) -> io::Result<Tree> {
                 continue;
             }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    tree.unreadable.push((folder.clone(), format!("cannot read an entry in this folder: {e}")));
+                    continue;
+                }
+            };
             let path = entry.path();
-            let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+            if cfg!(windows) && unusable_on_windows(&entry.file_name().to_string_lossy()) {
+                tree.unreadable.push((path, "its name ends in a dot or a space, which Windows can't handle".into()));
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(meta) => meta,
+                Err(e) => {
+                    tree.unreadable.push((path, format!("cannot read it: {e}")));
+                    continue;
+                }
+            };
             let rel = rel.join(entry.file_name());
             if meta.is_dir() {
                 tree.folders.push(rel.clone());
@@ -247,6 +278,12 @@ fn scan(root: &Path) -> io::Result<Tree> {
     }
     tree.files.sort_by(|a, b| a.rel.as_path().cmp(b.rel.as_path()));
     Ok(tree)
+}
+
+/// Win32 drops a trailing dot or space from a name (made by WSL, git or a Mac), so such a
+/// file can't be opened, moved or removed by its path, nor synced by OneDrive.
+fn unusable_on_windows(name: &str) -> bool {
+    name.ends_with('.') || name.ends_with(' ')
 }
 
 /// Number and size of the files that count (junk doesn't).
@@ -294,12 +331,31 @@ fn move_one(source: &Path, dir: &Path) -> Result<Moved, String> {
         if same_file(source, &existing) {
             return Err(format!("{} is this very file (the folders are linked)", existing.display()));
         }
-        if meta.is_file() && sorter::same_content(source, &existing) {
-            return match sorter::retry_while_in_use(PATIENCE, || sorter::discard(source)) {
-                Ok(()) => Ok(Moved::Duplicate),
-                Err(e) if sorter::in_use(&e) => Err(IN_USE.to_string()),
-                Err(e) => Err(e.to_string()),
-            };
+        if meta.is_file() {
+            // Not downloadable (offline, a second computer): unread, it would look different
+            // and the same file would be saved again as "name (1)" on every device.
+            let same_size = fs::metadata(source).is_ok_and(|m| m.len() == meta.len());
+            if same_size && fetch_if_cloud_only(&existing).is_err() {
+                return Err(format!(
+                    "{} is only in the cloud and could not be downloaded to compare",
+                    existing.display()
+                ));
+            }
+            if sorter::same_content(source, &existing) {
+                return match sorter::retry_while_in_use(PATIENCE, || sorter::discard(source)) {
+                    Ok(()) => Ok(Moved::Duplicate),
+                    Err(e) if sorter::in_use(&e) => Err(IN_USE.to_string()),
+                    Err(e) => Err(e.to_string()),
+                };
+            }
+            if meta.len() == 0 && fs::symlink_metadata(temp_beside(&existing)).is_ok() {
+                // The name an earlier run claimed before it was stopped while copying (quit,
+                // crash): filled now, so the file doesn't end up as "name (1)" beside an empty one.
+                log::info!("Filling {}, claimed by a move that was stopped", existing.display());
+                let _ = fs::remove_file(temp_beside(&existing));
+                move_onto(source, &existing, PATIENCE)?;
+                return Ok(Moved::Here);
+            }
         }
     }
     let target =
@@ -353,8 +409,10 @@ fn transfer(source: &Path, target: &Path, patience: Duration) -> Result<(), Stri
     let modified = fs::metadata(source).and_then(|m| m.modified()).ok();
     fetch_if_cloud_only(source).map_err(|e| e.to_string())?;
     still_ours(target)?;
-    // Same drive: instant and atomic; it replaces nothing but the empty placeholder.
-    match sorter::retry_while_in_use(patience, || fs::rename(source, target)) {
+    // Same drive: instant and atomic; it replaces nothing but the empty placeholder. Not
+    // from under a viewer that opened the file while it was compared or downloaded.
+    let rename = || sorter::ensure_not_open_elsewhere(source).and_then(|()| fs::rename(source, target));
+    match sorter::retry_while_in_use(patience, rename) {
         Ok(()) => keep_modified(target, modified),
         Err(e) if sorter::in_use(&e) => return Err(IN_USE.to_string()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(e.to_string()),
@@ -368,37 +426,49 @@ fn transfer(source: &Path, target: &Path, patience: Duration) -> Result<(), Stri
 /// the disk, rename it onto `target`, then remove `source`. Killed at any moment, the real
 /// name holds either the empty placeholder or the complete file, and `source` goes only
 /// once its copy is safe. If `source` can't be removed, the copy is removed again.
+///
+/// From the check that the copy is complete until `source` is removed, `source` is held so
+/// that no other program can open it (Windows): a viewer that opened it during a long copy,
+/// allowing deletion, would otherwise save its notes into a file about to vanish for good.
 fn copy_onto(source: &Path, target: &Path, patience: Duration, modified: Option<SystemTime>) -> Result<(), String> {
     let temp = temp_beside(target);
     // A copy cut off by an earlier crash; Windows won't copy over it if it is read-only.
     let _ = fs::remove_file(&temp);
     let before = stamp(source);
+    let unchanged = |held: &fs::File| before.is_some() && held.metadata().ok().and_then(|m| stamp_of(&m)) == before;
     let placed = sorter::copy_file_with_patience(source, &temp, patience)
         .map_err(|e| match e {
             MoveError::InUse(_) => IN_USE.to_string(),
             MoveError::Failed(e) => e.to_string(),
         })
         .and_then(|()| {
+            let held = hold(source, patience).map_err(|e| reason_for(&e))?;
             // Written to while it was copied: the copy may be a mix of two versions.
-            if before.is_none() || stamp(source) != before {
-                return Err("it changed while it was being copied".to_string());
+            if !unchanged(&held) {
+                return Err(CHANGED.to_string());
             }
             keep_modified(&temp, modified);
             flush(&temp)?;
             still_ours(target)?;
-            sorter::retry_while_in_use(patience, || fs::rename(&temp, target)).map_err(|e| e.to_string())
+            sorter::retry_while_in_use(patience, || fs::rename(&temp, target)).map_err(|e| e.to_string())?;
+            Ok(held)
         });
-    if let Err(reason) = placed {
-        let _ = fs::remove_file(&temp);
-        return Err(reason);
-    }
+    let held = match placed {
+        Ok(held) => held,
+        Err(reason) => {
+            let _ = fs::remove_file(&temp);
+            return Err(reason);
+        }
+    };
     keep_name(target);
-    match sorter::retry_while_in_use(patience, || fs::remove_file(source)) {
+    // Checked once more for where nothing stops other programs from writing (not Windows).
+    let removed = if unchanged(&held) { remove_held(held, source) } else { Err(io::Error::other(CHANGED)) };
+    match removed {
         Ok(()) => Ok(()),
         // Removed by someone else in the meantime: the copy is the only one now, so it stays.
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => {
-            let reason = if sorter::in_use(&e) { IN_USE.to_string() } else { e.to_string() };
+            let reason = reason_for(&e);
             // The cloud app may be reading the new file to upload it.
             match sorter::retry_while_in_use(patience, || fs::remove_file(target)) {
                 Ok(()) => Err(reason),
@@ -409,6 +479,85 @@ fn copy_onto(source: &Path, target: &Path, patience: Duration, modified: Option<
             }
         }
     }
+}
+
+/// Why a copy isn't used: the original was written to while it was copied.
+const CHANGED: &str = "it changed while it was being copied";
+
+/// The reason a file stays, for an error.
+fn reason_for(e: &io::Error) -> String {
+    if sorter::in_use(e) { IN_USE.to_string() } else { e.to_string() }
+}
+
+/// Like `cloud::stamp`, from metadata already read.
+fn stamp_of(meta: &fs::Metadata) -> Option<Stamp> {
+    let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos() as u64;
+    meta.is_file().then_some(Stamp { size: meta.len(), modified })
+}
+
+/// Open `path` so that no other program can open it until the handle is closed (Windows;
+/// elsewhere files can't be locked, so it is only opened). Waits up to `patience` for
+/// programs that have it open now.
+fn hold(path: &Path, patience: Duration) -> io::Result<fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES};
+        let open = || fs::OpenOptions::new().access_mode(DELETE | FILE_READ_ATTRIBUTES).share_mode(0).open(path);
+        sorter::retry_while_in_use(patience, open)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = patience;
+        fs::File::open(path)
+    }
+}
+
+/// Remove a file opened with `hold`. On Windows through the handle itself: closing it first
+/// would let another program open the file before it is gone.
+fn remove_held(held: fs::File, path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let _ = path;
+        delete_through(&held)
+    }
+    #[cfg(not(windows))]
+    {
+        drop(held);
+        fs::remove_file(path)
+    }
+}
+
+/// Mark the file of `file` for deletion; it is gone once `file` is closed. Read-only files
+/// too (`fs::remove_file` removes those as well), where the drive supports it.
+#[cfg(windows)]
+fn delete_through(file: &fs::File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FileDispositionInfo,
+        FileDispositionInfoEx, SetFileInformationByHandle,
+    };
+    let handle = file.as_raw_handle();
+    let ex = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    // SAFETY: `handle` is open for DELETE while `file` lives; `ex` outlives the call.
+    let done = unsafe {
+        SetFileInformationByHandle(handle, FileDispositionInfoEx, (&raw const ex).cast(), size_of_val(&ex) as u32)
+    };
+    if done != 0 {
+        return Ok(());
+    }
+    // FAT and exFAT drives (a USB stick) only know the older way.
+    let plain = FILE_DISPOSITION_INFO { DeleteFile: true.into() };
+    // SAFETY: as above.
+    let done = unsafe {
+        SetFileInformationByHandle(handle, FileDispositionInfo, (&raw const plain).cast(), size_of_val(&plain) as u32)
+    };
+    if done != 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
 /// The temporary name a copy is written to before it gets its real name. It is junk to all
@@ -522,7 +671,6 @@ fn take_empty_folders(from: &Path, to: &Path, folders: &[PathBuf]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::UNIX_EPOCH;
 
     fn write(path: &Path, content: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -902,6 +1050,37 @@ mod tests {
         assert!(!from.exists());
     }
 
+    /// A run stopped while copying across drives (quit, crash) left the claimed name empty
+    /// with half a copy beside it: the next run fills that name, not "name (1)". An empty
+    /// file without a temporary file beside it is the user's and stays.
+    #[test]
+    fn a_name_claimed_by_a_stopped_run_is_filled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (from, to) = folders(&tmp);
+        write(&from.join("Mathe/Vorlesung.mp4"), "the whole video");
+        write(&to.join("Mathe/Vorlesung.mp4"), "");
+        write(&to.join("Mathe/Vorlesung.mp4.filesorter-tmp"), "half of it");
+        write(&from.join("Mathe/leer.txt"), "notes");
+        write(&to.join("Mathe/leer.txt"), "");
+
+        let report = run(&from, &to);
+        let renamed = vec![(from.join("Mathe/leer.txt"), to.join("Mathe/leer (1).txt"))];
+        assert_eq!(report, Report { moved: 2, renamed, ..Report::default() });
+        let expected =
+            [("Mathe/Vorlesung.mp4", "the whole video"), ("Mathe/leer (1).txt", "notes"), ("Mathe/leer.txt", "")];
+        assert_eq!(files_below(&to), pairs(&expected));
+    }
+
+    #[test]
+    fn names_windows_cannot_handle() {
+        for name in ["Notizen.", "Blatt 3 .pdf ", "Ordner "] {
+            assert!(unusable_on_windows(name), "{name}");
+        }
+        for name in ["Notizen", "Blatt 3 .pdf", ".hidden", "a.b"] {
+            assert!(!unusable_on_windows(name), "{name}");
+        }
+    }
+
     #[test]
     fn temporary_names_are_junk() {
         let temp = temp_beside(Path::new("cloud/skript (1).pdf"));
@@ -981,8 +1160,9 @@ mod tests {
         drop(viewer);
     }
 
-    /// Across drives, the original can't be removed after copying (another program opened
-    /// it without allowing that): the copy is removed again, the file is in one place only.
+    /// Across drives, the original is open in another program once it is copied: the copy is
+    /// removed again, the file is in one place only. (The empty claim is given up by
+    /// `move_onto`.)
     #[cfg(windows)]
     #[test]
     fn a_copy_is_removed_again_when_the_original_must_stay() {
@@ -999,6 +1179,59 @@ mod tests {
         assert_eq!(result, Err(IN_USE.to_string()));
         drop(reader);
         assert_eq!(read(&source), "notes");
-        assert_eq!(files_below(&dir), Vec::new(), "neither the copy nor a temporary file is left");
+        assert_eq!(files_below(&dir), pairs(&[("skript.pdf", "")]), "neither the copy nor a temporary file is left");
+    }
+
+    /// A viewer opened the file while it was being moved, allowing others to delete it (as
+    /// Edge and Acrobat do). It is neither removed under the viewer after copying, which would
+    /// lose the notes it saves later, nor renamed away from under it.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_opened_while_moving_stays_with_its_viewer() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("here").join("skript.pdf");
+        write(&source, "notes");
+        let dir = tmp.path().join("cloud");
+        fs::create_dir_all(&dir).unwrap();
+        let viewer = fs::OpenOptions::new().read(true).share_mode(7).open(&source).unwrap();
+
+        let target = sorter::reserve_destination(&dir, "skript.pdf").unwrap();
+        assert_eq!(copy_onto(&source, &target, Duration::from_millis(300), None), Err(IN_USE.to_string()));
+        assert_eq!(read(&source), "notes", "across drives");
+        assert_eq!(files_below(&dir), pairs(&[("skript.pdf", "")]));
+
+        assert_eq!(move_onto(&source, &target, Duration::from_millis(300)), Err(IN_USE.to_string()));
+        assert_eq!(read(&source), "notes", "on the same drive");
+        assert_eq!(files_below(&dir), Vec::new());
+        drop(viewer);
+
+        // Closed again: the file moves, through a handle no one else could open meanwhile.
+        let target = sorter::reserve_destination(&dir, "skript.pdf").unwrap();
+        copy_onto(&source, &target, Duration::ZERO, None).unwrap();
+        assert!(!source.exists());
+        assert_eq!(files_below(&dir), pairs(&[("skript.pdf", "notes")]));
+    }
+
+    /// Names Win32 can't open (a trailing dot or space, made by WSL or a Mac) stay, are listed
+    /// and count as left at the old place.
+    #[cfg(windows)]
+    #[test]
+    fn a_name_windows_cannot_open_stays_and_is_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (from, to) = folders(&tmp);
+        write(&from.join("Mathe").join("blatt.pdf"), "x");
+        let odd = from.join("Mathe").join("Notizen.");
+        let verbatim = PathBuf::from(format!(r"\\?\{}", std::path::absolute(&odd).unwrap().display()));
+        fs::write(&verbatim, "from WSL").unwrap();
+        assert_eq!(plan(&from).files, 2);
+
+        let report = run(&from, &to);
+        assert_eq!(report.moved, 1);
+        assert_eq!(report.left.len(), 1, "{report:?}");
+        assert_eq!(report.left[0].0, odd);
+        assert_eq!(fs::read_to_string(&verbatim).unwrap(), "from WSL");
+        assert_eq!(plan(&from), Plan { files: 1, bytes: 0 }, "still counted as left there");
+        fs::remove_file(&verbatim).unwrap();
     }
 }

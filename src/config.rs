@@ -208,6 +208,8 @@ pub struct Features {
     pub unzip: bool,
     /// Put the older version of a file into "Ältere Versionen" when a new one comes.
     pub versions: bool,
+    /// Name of that folder (inside the module or subfolder).
+    pub versions_folder: String,
     /// Search the text of all documents in the study folder.
     pub search: bool,
     /// Find submission deadlines in exercise sheets.
@@ -228,6 +230,7 @@ impl Default for Features {
             subfolder_names: ["Vorlesung", "Übungen", "Lösungen", "Prüfungen"].map(String::from),
             unzip: false,
             versions: false,
+            versions_folder: "Ältere Versionen".to_string(),
             search: true,
             deadlines: true,
             weekly: true,

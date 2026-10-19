@@ -137,10 +137,10 @@ pub fn recent(dir: &Path, limit: usize) -> Vec<Entry> {
             Ok(Line::Undone { id }) => undone.push(id),
             Ok(Line::Relocated { from, to, renamed }) => {
                 for entry in &mut entries {
-                    if let Some(path) = entry.result.sorted_path_mut()
-                        && let Some(new) = relocated(path, &from, &to, &renamed)
-                    {
-                        *path = new;
+                    for path in entry.result.study_paths_mut() {
+                        if let Some(new) = relocated(path, &from, &to, &renamed) {
+                            *path = new;
+                        }
                     }
                 }
             }

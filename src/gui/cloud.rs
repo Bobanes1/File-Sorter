@@ -312,10 +312,12 @@ impl App {
         for card in &mut self.cards {
             if let CardKind::File { state: FileState::Done(result) | FileState::UndoFailed { result, .. }, .. } =
                 &mut card.kind
-                && let Some(path) = result.sorted_path_mut()
-                && let Some(new) = crate::history::relocated(path, from, to, renamed)
             {
-                *path = new;
+                for path in result.study_paths_mut() {
+                    if let Some(new) = crate::history::relocated(path, from, to, renamed) {
+                        *path = new;
+                    }
+                }
             }
         }
     }
@@ -326,6 +328,10 @@ impl App {
             && let Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } = &result.outcome
         {
             self.cloud.worker.send(Job::MirrorFile(destination.clone()));
+            // An unpacked ZIP file or an older version moved aside: a whole pass is simplest.
+            if !result.extras.is_empty() {
+                self.cloud.worker.send(Job::MirrorNow);
+            }
         }
     }
 
@@ -335,6 +341,9 @@ impl App {
             && let Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } = &result.outcome
         {
             self.cloud.worker.send(Job::Forget(destination.clone()));
+            if !result.extras.is_empty() {
+                self.cloud.worker.send(Job::MirrorNow);
+            }
         }
     }
 

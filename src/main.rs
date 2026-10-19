@@ -5,6 +5,7 @@
 // No console window behind the app in release builds on Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod categories;
 mod cloud;
 mod common_words;
 mod config;
@@ -23,6 +24,8 @@ mod quicksort;
 mod sorter;
 mod tray;
 mod undo;
+mod unzip;
+mod versions;
 mod watcher;
 mod winfix;
 mod winwin;

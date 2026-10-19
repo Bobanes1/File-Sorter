@@ -234,9 +234,11 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
                 }
                 FileState::Done(result) => {
                     let saved_as = result.renamed_to().map(|n| lang.saved_as(&n));
-                    let with_reason = |reason| match &saved_as {
-                        Some(note) => Some(format!("{note} · {reason}")),
-                        None => Some(reason),
+                    let extras = extras_text(lang, result);
+                    let with_reason = |reason| {
+                        let parts: Vec<String> =
+                            [saved_as.clone(), Some(reason), extras.clone()].into_iter().flatten().collect();
+                        Some(parts.join(" · "))
                     };
                     match &result.outcome {
                         Outcome::Moved { course, reason, .. } => {
@@ -292,6 +294,23 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
             }
         }
     }
+}
+
+/// What happened along with sorting: older versions moved aside, a ZIP file unpacked.
+fn extras_text(lang: Lang, result: &SortResult) -> Option<String> {
+    let extras = &result.extras;
+    let mut parts = Vec::new();
+    if let Some((_, to)) = extras.older_versions.first() {
+        parts.push(lang.older_version_moved(extras.older_versions.len(), &folder_name(to)));
+    }
+    if let Some(extracted) = &extras.extracted {
+        let name = extracted.folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        parts.push(lang.unpacked_into(&name, extracted.files.len()));
+    }
+    if let Some(error) = &extras.unzip_failed {
+        parts.push(lang.not_unpacked(error));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// What the user did with an entry.

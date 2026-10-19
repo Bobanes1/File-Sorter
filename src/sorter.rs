@@ -8,11 +8,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use crate::categories;
 use crate::config::{Config, ExistingScope, FileAction};
 use crate::extract::extract_text;
 use crate::ledger::{COPIED_LIST, CopyLedger, KEPT_LIST, KeptFiles};
 use crate::matcher::{Match, Reason, match_file};
 use crate::origin;
+use crate::unzip::Extracted;
 
 /// Partial downloads written by browsers before the file is complete.
 pub const TEMP_SUFFIXES: &[&str] = &[".crdownload", ".part", ".partial", ".download", ".tmp", ".temp", ".opdownload"];
@@ -67,11 +69,50 @@ pub struct SortResult {
     /// Its entry in the history, once recorded there (needed to undo it).
     #[serde(skip)]
     pub id: Option<u64>,
+    /// What else happened along with it.
+    #[serde(default, skip_serializing_if = "Extras::is_empty")]
+    pub extras: Box<Extras>,
+}
+
+/// Steps taken along with sorting a file, which undo reverses too.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Extras {
+    /// Older versions of the file moved into the versions folder: (from, to).
+    pub older_versions: Vec<(PathBuf, PathBuf)>,
+    /// The ZIP file was unpacked here.
+    pub extracted: Option<Extracted>,
+    /// The ZIP file could not be unpacked (why).
+    pub unzip_failed: Option<String>,
+}
+
+impl Extras {
+    pub fn is_empty(&self) -> bool {
+        *self == Extras::default()
+    }
 }
 
 impl SortResult {
     pub fn new(source: PathBuf, outcome: Outcome) -> Self {
-        SortResult { source, outcome, id: None }
+        SortResult { source, outcome, id: None, extras: Box::default() }
+    }
+
+    /// Every path in the study folder this result refers to, to follow the folder when it moves.
+    pub fn study_paths_mut(&mut self) -> Vec<&mut PathBuf> {
+        let mut paths = Vec::new();
+        match &mut self.outcome {
+            Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } => paths.push(destination),
+            Outcome::DuplicateRemoved { existing, .. } => paths.push(existing),
+            Outcome::Left(_) => {}
+        }
+        for (from, to) in &mut self.extras.older_versions {
+            paths.push(from);
+            paths.push(to);
+        }
+        if let Some(extracted) = &mut self.extras.extracted {
+            paths.push(&mut extracted.folder);
+        }
+        paths
     }
 
     fn left(source: &Path, reason: LeftReason) -> Self {
@@ -132,15 +173,6 @@ impl SortResult {
         }
     }
 
-    /// Where the sorted file is (its copy, or the identical file that was already there).
-    pub fn sorted_path_mut(&mut self) -> Option<&mut PathBuf> {
-        match &mut self.outcome {
-            Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } => Some(destination),
-            Outcome::DuplicateRemoved { existing, .. } => Some(existing),
-            Outcome::Left(_) => None,
-        }
-    }
-
     /// English description, for the log file and the command line.
     pub fn describe(&self) -> String {
         let name = self.file_name();
@@ -194,7 +226,8 @@ pub fn is_candidate(path: &Path, config: &Config) -> bool {
         return false;
     }
     let ext = suffix(path);
-    !TEMP_SUFFIXES.contains(&ext.as_str()) && config.extensions.contains(&ext)
+    !TEMP_SUFFIXES.contains(&ext.as_str())
+        && (config.extensions.contains(&ext) || ext == ".zip" && config.features.unzip)
 }
 
 /// Claim a free name in `folder`: `filename`, or "name (1).ext", "name (2).ext", …
@@ -255,6 +288,21 @@ pub fn discard(path: &Path) -> io::Result<()> {
         Err(e) => log::info!("Could not put {} into the Recycle Bin ({e}); deleting it instead", path.display()),
     }
     fs::remove_file(path)
+}
+
+/// Put a folder File Sorter made (an unpacked ZIP file) into the Recycle Bin (Windows), or
+/// delete it elsewhere.
+pub fn discard_folder(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    match recycle(path) {
+        Ok(()) => return Ok(()),
+        Err(e) if !path.exists() => {
+            log::info!("{}: {e}, but it is gone", path.display());
+            return Ok(());
+        }
+        Err(e) => log::info!("Could not put {} into the Recycle Bin ({e}); deleting it instead", path.display()),
+    }
+    fs::remove_dir_all(path)
 }
 
 #[cfg(windows)]
@@ -497,9 +545,22 @@ fn sort_any_file(path: &Path, config: &Config, patience: Duration, target: Targe
     result
 }
 
-/// The module for `path` and why, or `None` if it isn't clear.
-fn choose_course(path: &Path, config: &Config, origin: Option<&origin::Source>) -> Option<Match> {
-    if let Some(m) = match_file(path, &config.courses, config.read_file_contents, extract_text) {
+/// The module for `path` and why, or `None` if it isn't clear. The text read from the file
+/// (if it was read) is left in `text`.
+fn choose_course(
+    path: &Path,
+    config: &Config,
+    origin: Option<&origin::Source>,
+    text: &mut Option<String>,
+) -> Option<Match> {
+    // A ZIP file's list of files is like a name, so it is always read.
+    let zip = suffix(path) == ".zip";
+    let read = |p: &Path| {
+        let t = if zip && !config.read_file_contents { crate::extract::zip_names(p) } else { extract_text(p) };
+        *text = Some(t.clone());
+        t
+    };
+    if let Some(m) = match_file(path, &config.courses, config.read_file_contents || zip, read) {
         return Some(m);
     }
     // Nothing (or a tie) by name and content: files from the same course page go together.
@@ -525,15 +586,16 @@ fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration, ta
     }
     // Read before the file moves (the note stays with the file, but only on the same drive).
     let origin = if config.features.origin { origin::source_of(path) } else { None };
+    let mut text = None;
     let m = match target {
         Target::Course(i) if i < config.courses.len() => Match { course: i, score: 0, reason: Reason::Chosen },
         Target::Course(_) => return SortResult::left(path, LeftReason::Error("this module no longer exists".into())),
-        Target::Auto => match choose_course(path, config, origin.as_ref()) {
+        Target::Auto => match choose_course(path, config, origin.as_ref(), &mut text) {
             Some(m) => m,
             None => return SortResult::left(path, LeftReason::NoMatch),
         },
     };
-    let result = place_file(path, config, patience, m, copying, &mut ledger);
+    let result = place_file(path, config, patience, m, copying, &mut ledger, text);
     if let Some(source) = &origin
         && let Outcome::Moved { course, reason, .. } | Outcome::Copied { course, reason, .. } = &result.outcome
         && !matches!(reason, Reason::Origin(_))
@@ -541,6 +603,28 @@ fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration, ta
         origin::remember(config, source, course, *reason == Reason::Chosen);
     }
     result
+}
+
+/// The folder for `path` inside its module: a subfolder for lectures, exercises, … if
+/// that is switched on and the name (or the start of the text) tells the kind.
+fn destination_folder(config: &Config, course_folder: &Path, path: &Path, text: Option<String>) -> PathBuf {
+    let features = &config.features;
+    if !features.subfolders {
+        return course_folder.to_path_buf();
+    }
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let category = categories::classify(&stem, None).or_else(|| {
+        if !config.read_file_contents || suffix(path) == ".zip" {
+            return None;
+        }
+        let text = text.unwrap_or_else(|| extract_text(path));
+        categories::classify(&stem, Some(&text))
+    });
+    let name = category.map(|c| categories::safe_folder_name(&features.subfolder_names[c as usize]));
+    match name {
+        Some(name) if !name.is_empty() => course_folder.join(name),
+        _ => course_folder.to_path_buf(),
+    }
 }
 
 /// Move or copy `path` into the module `m` points to.
@@ -551,15 +635,19 @@ fn place_file(
     m: Match,
     copying: bool,
     ledger: &mut Option<(CopyLedger, &PathBuf)>,
+    text: Option<String>,
 ) -> SortResult {
     let course = &config.courses[m.course];
     let label = course.label();
-    let folder = config.course_folder(course);
+    let course_folder = config.course_folder(course);
+    // Anywhere in the module already (also in one of its subfolders): leave it there.
     if let Some(parent) = path.parent()
-        && same_dir(&folder, parent)
+        && (same_dir(&course_folder, parent)
+            || course_folder.is_dir() && crate::cloud::is_inside(parent, &course_folder))
     {
         return SortResult::left(path, LeftReason::AlreadyInFolder { course: label });
     }
+    let mut folder = destination_folder(config, &course_folder, path, text);
     if let Err(e) = fs::create_dir_all(&folder) {
         return SortResult::left(path, LeftReason::Error(format!("cannot create {}: {e}", folder.display())));
     }
@@ -574,8 +662,10 @@ fn place_file(
 
     // The very same file is already there (downloaded twice, or copied in again):
     // put the download into the Recycle Bin instead of keeping a second copy as "name (1)".
-    let existing = folder.join(file_name(path));
-    if existing.is_file() && same_content(path, &existing) {
+    let same = [folder.join(file_name(path)), course_folder.join(file_name(path))]
+        .into_iter()
+        .find(|existing| existing.is_file() && same_content(path, existing));
+    if let Some(existing) = same {
         if copying {
             remember_copy(ledger, path, &label, &existing);
             return SortResult::left(path, LeftReason::AlreadyCopied { course: label, copy: existing });
@@ -587,9 +677,27 @@ fn place_file(
         };
     }
 
+    // Another version of the file is there: the older one goes into the versions folder.
+    let mut older_versions = Vec::new();
+    if config.features.versions {
+        let versions_name = categories::safe_folder_name(&config.features.versions_folder);
+        let versions_name = if versions_name.is_empty() { "Ältere Versionen".to_string() } else { versions_name };
+        let others = crate::versions::other_versions(&folder, path);
+        if others.iter().any(|other| crate::versions::is_older(path, other)) {
+            // The file that arrives is the older one ("v1" while "v2" is there).
+            folder = folder.join(&versions_name);
+            if let Err(e) = fs::create_dir_all(&folder) {
+                return SortResult::left(path, LeftReason::Error(format!("cannot create {}: {e}", folder.display())));
+            }
+        } else if !others.is_empty() {
+            older_versions = move_older_versions(&others, &folder.join(&versions_name));
+        }
+    }
+
     let target = match reserve_destination(&folder, &file_name(path)) {
         Ok(target) => target,
         Err(e) => {
+            put_back(&older_versions);
             return SortResult::left(path, LeftReason::Error(format!("cannot write to {}: {e}", folder.display())));
         }
     };
@@ -600,21 +708,78 @@ fn place_file(
     };
     if done.is_err() {
         release_placeholder(&target);
+        put_back(&older_versions);
     }
-    match done {
+    let mut result = match done {
         Ok(()) if copying => {
             remember_copy(ledger, path, &label, &target);
             SortResult::new(
                 path.to_path_buf(),
-                Outcome::Copied { course: label, destination: target, reason: m.reason },
+                Outcome::Copied { course: label, destination: target.clone(), reason: m.reason },
             )
         }
-        Ok(()) => {
-            SortResult::new(path.to_path_buf(), Outcome::Moved { course: label, destination: target, reason: m.reason })
+        Ok(()) => SortResult::new(
+            path.to_path_buf(),
+            Outcome::Moved { course: label, destination: target.clone(), reason: m.reason },
+        ),
+        Err(MoveError::InUse(_)) => return SortResult::left(path, LeftReason::InUse { course: label }),
+        Err(MoveError::Failed(e)) => return SortResult::left(path, LeftReason::Error(e.to_string())),
+    };
+    result.extras.older_versions = older_versions;
+    if config.features.unzip && suffix(&target) == ".zip" {
+        match crate::unzip::extract_next_to(&target) {
+            Ok(extracted) => result.extras.extracted = Some(extracted),
+            Err(e) => {
+                log::info!("Could not unpack {}: {e}", target.display());
+                result.extras.unzip_failed = Some(e.to_string());
+            }
         }
-        Err(MoveError::InUse(_)) => SortResult::left(path, LeftReason::InUse { course: label }),
-        Err(MoveError::Failed(e)) => SortResult::left(path, LeftReason::Error(e.to_string())),
     }
+    result
+}
+
+/// Move `others` (older versions of a file that is about to arrive) into `versions`.
+/// One that is open in another program, or can't be moved, stays where it is.
+fn move_older_versions(others: &[PathBuf], versions: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let mut moved = Vec::new();
+    for other in others {
+        if ensure_not_open_elsewhere(other).is_err() || fs::create_dir_all(versions).is_err() {
+            continue;
+        }
+        let Ok(to) = reserve_destination(versions, &file_name(other)) else { continue };
+        match move_file_with_patience(other, &to, Duration::ZERO) {
+            Ok(()) => moved.push((other.clone(), to)),
+            Err(e) => {
+                release_placeholder(&to);
+                log::info!("Could not move the older version {}: {e}", other.display());
+            }
+        }
+    }
+    moved
+}
+
+/// Undo `move_older_versions` (the new file couldn't be sorted after all, or it is undone):
+/// each older version goes back to its old name, or "name (1)" if that is taken now.
+pub(crate) fn put_back(older_versions: &[(PathBuf, PathBuf)]) -> Vec<PathBuf> {
+    let mut stuck = Vec::new();
+    for (from, to) in older_versions {
+        let (Some(dir), true) = (from.parent(), to.is_file()) else {
+            stuck.push(to.clone());
+            continue;
+        };
+        let back = match reserve_destination(dir, &file_name(from)) {
+            Ok(back) => back,
+            Err(_) => {
+                stuck.push(to.clone());
+                continue;
+            }
+        };
+        if move_file_with_patience(to, &back, IN_USE_RETRY).is_err() {
+            release_placeholder(&back);
+            stuck.push(to.clone());
+        }
+    }
+    stuck
 }
 
 fn remember_copy(ledger: &mut Option<(CopyLedger, &PathBuf)>, original: &Path, course: &str, copy: &Path) {
@@ -688,6 +853,13 @@ pub(crate) mod tests {
         fs::write(path, out).unwrap();
     }
 
+    /// Forget the files kept after an undo, so they can be sorted again.
+    pub fn forget_kept(config: &Config) {
+        if let Some(file) = config.state_file(KEPT_LIST) {
+            let _ = fs::remove_file(file);
+        }
+    }
+
     pub fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
     }
@@ -753,14 +925,14 @@ pub(crate) mod tests {
         let source = origin::Source { key: "moodle.uni.ch/course/4711".into(), host: "moodle.uni.ch".into() };
         let file = cfg.watch_path().join("Blatt3.pdf");
         make_pdf(&file, "nothing");
-        assert_eq!(choose_course(&file, &cfg, Some(&source)), None, "nothing learned yet");
+        assert_eq!(choose_course(&file, &cfg, Some(&source), &mut None), None, "nothing learned yet");
         origin::remember(&cfg, &source, "Statistics", true);
-        let m = choose_course(&file, &cfg, Some(&source)).unwrap();
+        let m = choose_course(&file, &cfg, Some(&source), &mut None).unwrap();
         assert_eq!((m.course, m.reason), (2, Reason::Origin("moodle.uni.ch".into())));
         // A clear name still wins.
         let named = cfg.watch_path().join("prog1_Blatt3.pdf");
         make_pdf(&named, "x");
-        assert_eq!(choose_course(&named, &cfg, Some(&source)).unwrap().course, 0);
+        assert_eq!(choose_course(&named, &cfg, Some(&source), &mut None).unwrap().course, 0);
     }
 
     /// The browser's note on where a download came from (only Windows keeps it).

@@ -90,6 +90,7 @@ pub fn undo(result: &SortResult, config: &Config) -> Result<PathBuf, UndoError> 
         }
         Outcome::Left(_) => return Err(UndoError::NotSorted),
     };
+    undo_extras(result);
     keep(&back, config);
     if let (Some(dir), Some(id)) = (&config.state_dir, result.id)
         && let Err(e) = history::record_undo(dir, id)
@@ -98,6 +99,25 @@ pub fn undo(result: &SortResult, config: &Config) -> Result<PathBuf, UndoError> 
     }
     log::info!("Undid sorting {name}: back at {}", back.display());
     Ok(back)
+}
+
+/// Reverse what happened along with sorting: older versions go back, and the unpacked
+/// folder of a ZIP file is removed, but only if nobody changed anything in it.
+fn undo_extras(result: &SortResult) {
+    for stuck in crate::sorter::put_back(&result.extras.older_versions) {
+        log::info!("Could not put the older version {} back", stuck.display());
+    }
+    if let Some(extracted) = &result.extras.extracted
+        && extracted.folder.is_dir()
+    {
+        if crate::unzip::unchanged(extracted) {
+            if let Err(e) = crate::sorter::discard_folder(&extracted.folder) {
+                log::info!("Could not remove the unpacked folder {}: {e}", extracted.folder.display());
+            }
+        } else {
+            log::info!("Kept {}: files in it were changed or added", extracted.folder.display());
+        }
+    }
 }
 
 /// Move a sorted file into another module (`course`, an index into `config.courses`), or
@@ -143,7 +163,7 @@ mod tests {
     use super::*;
     use crate::config::FileAction;
     use crate::sorter::tests::{make_pdf, test_config};
-    use crate::sorter::{LeftReason, sort_existing, sort_file};
+    use crate::sorter::{LeftReason, sort_chosen, sort_existing, sort_file};
 
     fn config(root: &Path) -> Config {
         Config { state_dir: Some(root.join("state")), ..test_config(root) }
@@ -205,6 +225,95 @@ mod tests {
         assert_eq!(undo(&right, &cfg).unwrap(), src);
         assert!(src.exists() && !right.destination().unwrap().exists());
         assert_eq!(reassign(&right, 99, &cfg).map(|r| r.sorted()), Err(UndoError::Missing));
+    }
+
+    #[test]
+    fn subfolders_older_versions_and_undo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = config(tmp.path());
+        cfg.features.subfolders = true;
+        cfg.features.versions = true;
+        let module = tmp.path().join("University").join("Programming Course");
+        // Lecture slides into "Vorlesung", an exercise sheet into "Übungen".
+        let slides = cfg.watch_path().join("prog1_VL03.pdf");
+        make_pdf(&slides, "x");
+        let sorted = sort_file(&slides, &cfg);
+        assert_eq!(sorted.destination().unwrap(), module.join("Vorlesung").join("prog1_VL03.pdf"));
+        let other = cfg.watch_path().join("prog1 Organisation.pdf");
+        make_pdf(&other, "y");
+        assert_eq!(sort_file(&other, &cfg).destination().unwrap(), module.join("prog1 Organisation.pdf"));
+
+        // A new version of the exercise sheet: the old one (with the user's notes) moves aside.
+        let first = cfg.watch_path().join("prog1_Blatt3.pdf");
+        make_pdf(&first, "Blatt 3");
+        let first = sort_file(&first, &cfg).destination().unwrap().to_path_buf();
+        fs::write(&first, "with my notes").unwrap();
+        let second = cfg.watch_path().join("prog1_Blatt3_v2.pdf");
+        make_pdf(&second, "Blatt 3, corrected");
+        let result = sort_file(&second, &cfg);
+        let aside = module.join("Übungen").join("Ältere Versionen").join("prog1_Blatt3.pdf");
+        assert_eq!(result.extras.older_versions, vec![(first.clone(), aside.clone())]);
+        assert_eq!(fs::read_to_string(&aside).unwrap(), "with my notes");
+        assert!(!first.exists());
+        // An even older one arriving later goes straight to the side.
+        let old = cfg.watch_path().join("prog1_Blatt3_v1.pdf");
+        make_pdf(&old, "Blatt 3, very first");
+        let late = sort_file(&old, &cfg);
+        assert_eq!(
+            late.destination().unwrap(),
+            module.join("Übungen").join("Ältere Versionen").join("prog1_Blatt3_v1.pdf")
+        );
+        assert!(late.extras.older_versions.is_empty());
+        // Undo puts the new one back into the downloads folder and the old one where it was.
+        assert_eq!(undo(&result, &cfg).unwrap(), second);
+        assert_eq!(fs::read_to_string(&first).unwrap(), "with my notes");
+        assert!(!aside.exists());
+        // A file already in the module (or one of its subfolders) stays.
+        let inside = sort_chosen(std::slice::from_ref(&first), &cfg);
+        assert!(matches!(inside[0].outcome, Outcome::Left(LeftReason::AlreadyInFolder { .. })));
+    }
+
+    #[test]
+    fn zip_files_are_sorted_by_their_content_unpacked_and_undone() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = config(tmp.path());
+        let zip_path = cfg.watch_path().join("Download.zip");
+        let make = |path: &Path| {
+            let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("stats_uebung/aufgabe1.R", options).unwrap();
+            zip.write_all(b"mean(x)").unwrap();
+            zip.start_file("stats_uebung/daten.csv", options).unwrap();
+            zip.write_all(b"1,2,3").unwrap();
+            zip.finish().unwrap();
+        };
+        make(&zip_path);
+        // Without unpacking it is still sorted by the files in it, but stays packed.
+        let packed = sort_file(&zip_path, &cfg);
+        assert_eq!(packed.course(), Some("Statistics"), "{}", packed.describe());
+        assert!(packed.extras.extracted.is_none());
+        undo(&packed, &cfg).unwrap();
+        crate::sorter::tests::forget_kept(&cfg);
+        cfg.features.unzip = true;
+        cfg.read_file_contents = false;
+        let result = sort_file(&zip_path, &cfg);
+        assert_eq!(result.course(), Some("Statistics"), "{}", result.describe());
+        let extracted = result.extras.extracted.clone().unwrap();
+        let folder = tmp.path().join("University").join("Statistics").join("Download");
+        assert_eq!(extracted.folder, folder);
+        assert_eq!(fs::read_to_string(folder.join("daten.csv")).unwrap(), "1,2,3");
+        assert!(result.destination().unwrap().is_file(), "the ZIP file is kept");
+        // Undo: the ZIP goes back, the unpacked folder away.
+        assert_eq!(undo(&result, &cfg).unwrap(), zip_path);
+        assert!(zip_path.is_file() && !folder.exists());
+
+        // Changed after unpacking: the folder stays.
+        let again = crate::sorter::sort_chosen(std::slice::from_ref(&zip_path), &cfg);
+        let folder = again[0].extras.extracted.as_ref().unwrap().folder.clone();
+        fs::write(folder.join("my notes.txt"), "keep me").unwrap();
+        undo(&again[0], &cfg).unwrap();
+        assert!(folder.join("my notes.txt").exists());
     }
 
     #[test]

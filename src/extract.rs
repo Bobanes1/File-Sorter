@@ -21,12 +21,71 @@ pub fn extract_text(path: &Path) -> String {
     let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     // PDF parsers can panic on unusual files; a bad file must never take the sorter down.
     let result = catch_unwind(AssertUnwindSafe(|| match ext.as_str() {
-        "pdf" => pdf_text(path),
-        "pptx" => pptx_text(path),
-        "docx" => docx_text(path),
+        "pdf" => pdf_text(&fs::read(path).ok()?),
+        "pptx" => pptx_text(fs::File::open(path).ok()?),
+        "docx" => docx_text(fs::File::open(path).ok()?),
         "txt" | "md" => fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).into_owned()),
+        "zip" => Some(zip_text(path)),
         _ => None,
     }));
+    finish(result, path)
+}
+
+/// Text from the start of a document held in memory (`name` gives its type).
+fn extract_bytes(name: &str, data: &[u8]) -> String {
+    let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let result = catch_unwind(AssertUnwindSafe(|| match ext.as_str() {
+        "pdf" => pdf_text(data),
+        "pptx" => pptx_text(std::io::Cursor::new(data)),
+        "docx" => docx_text(std::io::Cursor::new(data)),
+        "txt" | "md" => Some(String::from_utf8_lossy(data).into_owned()),
+        _ => None,
+    }));
+    finish(result, Path::new(name))
+}
+
+/// Documents inside a ZIP file that are read for its text (the first few, not too big).
+const ZIP_DOCUMENTS: usize = 3;
+const ZIP_DOCUMENT_BYTES: u64 = 20 * 1024 * 1024;
+const ZIP_NAMES: usize = 200;
+
+/// The names of the files in a ZIP file.
+pub fn zip_names(path: &Path) -> String {
+    let Ok(file) = fs::File::open(path) else { return String::new() };
+    let Ok(zip) = zip::ZipArchive::new(file) else { return String::new() };
+    zip.file_names().take(ZIP_NAMES).filter_map(|n| n.ok()).collect::<Vec<_>>().join("\n")
+}
+
+/// What a ZIP file says about itself: the names of the files in it, then the text of the
+/// first few documents.
+pub fn zip_text(path: &Path) -> String {
+    let Ok(file) = fs::File::open(path) else { return String::new() };
+    let Ok(mut zip) = zip::ZipArchive::new(file) else { return String::new() };
+    let names: Vec<String> = zip.file_names().take(ZIP_NAMES).filter_map(|n| n.ok()).map(|n| n.into_owned()).collect();
+    let mut text = names.join("\n");
+    text.push('\n');
+    let documents = names.iter().filter(|n| {
+        let lower = n.to_lowercase();
+        !lower.starts_with("__macosx/") && [".pdf", ".pptx", ".docx", ".txt", ".md"].iter().any(|e| lower.ends_with(e))
+    });
+    for name in documents.take(ZIP_DOCUMENTS) {
+        let Ok(mut entry) = zip.by_name(name) else { continue };
+        if entry.encrypted() || entry.size() > ZIP_DOCUMENT_BYTES {
+            continue;
+        }
+        let mut data = Vec::new();
+        if entry.by_ref().take(ZIP_DOCUMENT_BYTES).read_to_end(&mut data).is_ok() {
+            text.push_str(&extract_bytes(name, &data));
+            text.push('\n');
+        }
+        if text.len() > MAX_CHARS * 4 {
+            break;
+        }
+    }
+    text
+}
+
+fn finish(result: std::thread::Result<Option<String>>, path: &Path) -> String {
     match result {
         Ok(Some(text)) => text.chars().take(MAX_CHARS).collect(),
         Ok(None) => String::new(),
@@ -39,17 +98,16 @@ pub fn extract_text(path: &Path) -> String {
 
 /// Load a PDF, tolerating extra bytes after its last `%%EOF` (lopdf only looks
 /// for the trailer near the very end of the file).
-fn load_pdf(path: &Path) -> Option<lopdf::Document> {
-    let data = fs::read(path).ok()?;
-    if let Ok(doc) = lopdf::Document::load_mem(&data) {
+pub(crate) fn load_pdf(data: &[u8]) -> Option<lopdf::Document> {
+    if let Ok(doc) = lopdf::Document::load_mem(data) {
         return Some(doc);
     }
     let end = data.windows(5).rposition(|w| w == b"%%EOF")? + 5;
     lopdf::Document::load_mem(&data[..end]).ok()
 }
 
-fn pdf_text(path: &Path) -> Option<String> {
-    let mut doc = load_pdf(path)?;
+fn pdf_text(data: &[u8]) -> Option<String> {
+    let mut doc = load_pdf(data)?;
     if doc.is_encrypted() && doc.decrypt("").is_err() {
         return None;
     }
@@ -72,8 +130,8 @@ fn pdf_text(path: &Path) -> Option<String> {
     Some(text)
 }
 
-fn pptx_text(path: &Path) -> Option<String> {
-    let mut zip = zip::ZipArchive::new(fs::File::open(path).ok()?).ok()?;
+fn pptx_text<R: Read + Seek>(reader: R) -> Option<String> {
+    let mut zip = zip::ZipArchive::new(reader).ok()?;
     let mut slides: Vec<(u32, String)> = zip
         .file_names()
         .filter_map(|name| {
@@ -93,8 +151,8 @@ fn pptx_text(path: &Path) -> Option<String> {
     Some(text)
 }
 
-fn docx_text(path: &Path) -> Option<String> {
-    let mut zip = zip::ZipArchive::new(fs::File::open(path).ok()?).ok()?;
+fn docx_text<R: Read + Seek>(reader: R) -> Option<String> {
+    let mut zip = zip::ZipArchive::new(reader).ok()?;
     let mut text = core_properties(&mut zip);
     let xml = read_entry(&mut zip, "word/document.xml")?;
     text.push_str(&paragraphs(&xml, MAX_PARAGRAPHS).join("\n"));

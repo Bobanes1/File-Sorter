@@ -291,6 +291,30 @@ impl Lang {
     pub fn stopped_watching(self) -> &'static str {
         self.pick("Stopped watching.", "Überwachung gestoppt.")
     }
+    pub fn older_version_moved(self, count: usize, folder: &str) -> String {
+        match count {
+            1 => self.fmt(
+                format!("older version moved to «{folder}»"),
+                format!("ältere Version nach «{folder}» verschoben"),
+            ),
+            n => self.fmt(
+                format!("{n} older versions moved to «{folder}»"),
+                format!("{n} ältere Versionen nach «{folder}» verschoben"),
+            ),
+        }
+    }
+    pub fn unpacked_into(self, folder: &str, files: usize) -> String {
+        self.fmt(
+            format!("unpacked into «{folder}» ({files} files)"),
+            format!("entpackt in «{folder}» ({files} Dateien)"),
+        )
+    }
+    pub fn not_unpacked(self, error: &str) -> String {
+        self.fmt(format!("not unpacked: {error}"), format!("nicht entpackt: {error}"))
+    }
+    pub fn versions_folder_hint(self) -> &'static str {
+        self.pick("Folder for older versions", "Ordner für ältere Versionen")
+    }
     pub fn assign(self) -> &'static str {
         self.pick("Assign", "Zuordnen")
     }

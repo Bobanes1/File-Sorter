@@ -30,6 +30,17 @@ impl App {
         divider(ui);
         let (title, hint) = (lang.feature_versions(), lang.feature_versions_hint());
         changed |= switch(ui, icon::CLOCK_COUNTER_CLOCKWISE, title, hint, &mut f.versions);
+        if f.versions {
+            ui.horizontal(|ui| {
+                ui.add_space(40.0);
+                ui.label(RichText::new(lang.versions_folder_hint()).color(fx::pal(ui).on_surface_variant));
+                let field = egui::TextEdit::singleline(&mut f.versions_folder)
+                    .desired_width(200.0)
+                    .margin(Margin::symmetric(10, 6));
+                changed |= ui.add(field).changed();
+            });
+            ui.add_space(8.0);
+        }
         divider(ui);
         changed |= switch(ui, icon::MAGNIFYING_GLASS, lang.feature_search(), lang.feature_search_hint(), &mut f.search);
         divider(ui);

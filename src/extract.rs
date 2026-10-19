@@ -85,6 +85,75 @@ pub fn zip_text(path: &Path) -> String {
     text
 }
 
+/// For the search: at most this many pages or slides, this much text per page and per file.
+const INDEX_PAGES: usize = 400;
+const INDEX_PAGE_CHARS: usize = 20_000;
+const INDEX_FILE_CHARS: usize = 400_000;
+
+/// The whole text of a document for the search, one entry per page (PDF) or slide (PowerPoint);
+/// Word and text files are one page. Empty if it can't be read.
+pub fn pages(path: &Path) -> Vec<String> {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let result = catch_unwind(AssertUnwindSafe(|| match ext.as_str() {
+        "pdf" => pdf_pages(&fs::read(path).ok()?),
+        "pptx" => pptx_slides(fs::File::open(path).ok()?),
+        "docx" => {
+            let mut zip = zip::ZipArchive::new(fs::File::open(path).ok()?).ok()?;
+            let xml = read_entry(&mut zip, "word/document.xml")?;
+            Some(vec![paragraphs(&xml, usize::MAX).join("\n")])
+        }
+        "txt" | "md" => fs::read(path).ok().map(|b| vec![String::from_utf8_lossy(&b).into_owned()]),
+        _ => None,
+    }));
+    let mut total = 0;
+    let mut pages = Vec::new();
+    for page in result.ok().flatten().unwrap_or_default().into_iter().take(INDEX_PAGES) {
+        let page: String = page.chars().take(INDEX_PAGE_CHARS).collect();
+        total += page.len();
+        if total > INDEX_FILE_CHARS {
+            break;
+        }
+        pages.push(page);
+    }
+    pages
+}
+
+fn pdf_pages(data: &[u8]) -> Option<Vec<String>> {
+    let mut doc = load_pdf(data)?;
+    if doc.is_encrypted() && doc.decrypt("").is_err() {
+        return None;
+    }
+    let count = doc.get_pages().len().min(INDEX_PAGES) as u32;
+    let mut pages = Vec::new();
+    for page in 1..=count {
+        let mut text = String::new();
+        let mut output = pdf_extract::PlainTextOutput::new(&mut text);
+        // A page that fails to parse shouldn't hide the text of the others.
+        let _ = pdf_extract::output_doc_page(&doc, &mut output, page);
+        pages.push(text);
+    }
+    Some(pages)
+}
+
+fn pptx_slides<R: Read + Seek>(reader: R) -> Option<Vec<String>> {
+    let mut zip = zip::ZipArchive::new(reader).ok()?;
+    let mut slides: Vec<(u32, String)> = zip
+        .file_names()
+        .filter_map(|name| {
+            let name = name.ok()?;
+            let number = name.strip_prefix("ppt/slides/slide")?.strip_suffix(".xml")?.parse().ok()?;
+            Some((number, name.to_string()))
+        })
+        .collect();
+    slides.sort();
+    let mut pages = Vec::new();
+    for (_, name) in slides.into_iter().take(INDEX_PAGES) {
+        let xml = read_entry(&mut zip, &name).unwrap_or_default();
+        pages.push(paragraphs(&xml, usize::MAX).join("\n"));
+    }
+    Some(pages)
+}
+
 fn finish(result: std::thread::Result<Option<String>>, path: &Path) -> String {
     match result {
         Ok(Some(text)) => text.chars().take(MAX_CHARS).collect(),

@@ -11,6 +11,7 @@ mod dialogs;
 mod features;
 mod overview;
 mod settings;
+mod study;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -112,6 +113,7 @@ enum ErrorBox {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Overview,
+    Week,
     Settings,
 }
 
@@ -176,6 +178,8 @@ pub(crate) struct App {
     quit: Arc<AtomicBool>,
     /// The study folder in the cloud: moving it, its copy, shared modules.
     cloud: cloud::CloudState,
+    /// The search, deadlines and this week's files.
+    study: study::Study,
 }
 
 fn known_types() -> impl Iterator<Item = &'static str> {
@@ -202,6 +206,7 @@ impl App {
         let lang = Lang::from_setting(config.language.as_deref());
         let cloud = cloud::CloudState::new(&cc.egui_ctx, config.state_dir.clone(), &config.cloud);
         let shared_window = Arc::new(Mutex::new(None));
+        let study = study::Study::new(config.state_dir.as_deref());
         let mut app = App {
             config_path,
             config,
@@ -245,9 +250,15 @@ impl App {
             tray_state: None,
             quit: Arc::new(AtomicBool::new(false)),
             cloud,
+            study,
         };
         app.saved_config = app.config.clone();
         app.load_history();
+        if app.config.features.deadlines
+            && app.config.state_file(crate::deadlines::DEADLINES_FILE).is_some_and(|f| !f.exists())
+        {
+            app.scan_recent_for_deadlines();
+        }
         if let Some(error) = unreadable {
             let path = app.config_path.display().to_string();
             app.note(Note::ConfigUnreadable { path, error });
@@ -376,6 +387,7 @@ impl App {
                     _ => self.lang.snack_sorted(&name, course, false),
                 });
                 self.cloud_after_sort(&result);
+                self.study_after_sort(&result);
                 let state = FileState::Done(result);
                 let key = if let Some(card) = self.open_file_card(&name) {
                     card.set_state(state, now);
@@ -465,6 +477,13 @@ impl App {
             self.stats.sorted += 1;
         }
         self.cloud_after_sort(&new);
+        self.study_after_sort(&new);
+        if let (Outcome::Moved { destination: from, .. }, Outcome::Moved { destination: to, .. }) =
+            (&old.outcome, &new.outcome)
+        {
+            let (from, to) = (from.clone(), to.clone());
+            self.deadlines_follow(|p| (p == from).then(|| to.clone()));
+        }
         *self.module_counts.entry(course.clone()).or_default() += 1;
         self.glows.insert(course.clone(), now);
         self.snackbar = Some(Snackbar {
@@ -900,7 +919,11 @@ impl App {
             );
             ui.add_space(4.0);
             ui.label(fx::title("File Sorter", 20.0).color(p.on_surface));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.tabs_ui(ui));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.tabs_ui(ui);
+                ui.add_space(12.0);
+                self.search_field(ui);
+            });
         });
     }
 
@@ -910,11 +933,13 @@ impl App {
         let lang = self.lang;
         let mut open_rect = None;
         // Right to left: Settings is drawn first.
-        for (tab, glyph, text) in [
-            (Tab::Settings, icon::GEAR_SIX, lang.tab_settings()),
-            (Tab::Overview, icon::SQUARES_FOUR, lang.tab_overview()),
-        ] {
-            let open = self.tab == tab;
+        let mut tabs = vec![(Tab::Settings, icon::GEAR_SIX, lang.tab_settings())];
+        if self.week_tab_visible() {
+            tabs.push((Tab::Week, icon::CALENDAR_CHECK, lang.tab_week()));
+        }
+        tabs.push((Tab::Overview, icon::SQUARES_FOUR, lang.tab_overview()));
+        for (tab, glyph, text) in tabs {
+            let open = self.tab == tab && !self.study.searching();
             let color = if open { p.primary } else { p.on_surface_variant };
             let galley = ui.painter().layout_no_wrap(format!("{glyph}  {text}"), fx::medium_font(14.0), color);
             let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x + 32.0, 48.0), Sense::click());
@@ -922,6 +947,7 @@ impl App {
             fx::ripple(ui, &response, rect, p.primary);
             ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
             if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.study.query.clear();
                 self.switch_tab(tab);
             }
             if open {
@@ -942,6 +968,7 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.window_logic(ctx, frame);
         self.cloud_logic();
+        self.study_logic();
         while let Ok(event) = self.events_rx.try_recv() {
             self.handle_event(event);
         }
@@ -990,9 +1017,23 @@ impl eframe::App for App {
             .show(ui, |ui| self.top_bar(ui));
         // The opened tab fades in.
         let fade = if fx::motion(ui.ctx()) { fx::ease_out_cubic(((now - self.tab_opened) / 0.25) as f32) } else { 1.0 };
-        match self.tab {
-            Tab::Overview => self.overview_ui(ui, fade),
-            Tab::Settings => {
+        let tab = if self.study.searching() { None } else { Some(self.tab) };
+        match tab {
+            None => {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(p.surface).inner_margin(Margin::symmetric(20, 12)))
+                    .show(ui, |ui| self.search_results_ui(ui));
+            }
+            Some(Tab::Overview) => self.overview_ui(ui, fade),
+            Some(Tab::Week) => {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(p.surface).inner_margin(Margin::symmetric(20, 12)))
+                    .show(ui, |ui| {
+                        ui.set_opacity(fade);
+                        self.week_ui(ui);
+                    });
+            }
+            Some(Tab::Settings) => {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(p.surface).inner_margin(Margin::symmetric(20, 12)))
                     .show(ui, |ui| {

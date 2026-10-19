@@ -486,6 +486,109 @@ impl Lang {
         self.pick("Paused", "Pausiert")
     }
 
+    // ---------- search and this week ----------
+    pub fn tab_week(self) -> &'static str {
+        self.pick("This week", "Diese Woche")
+    }
+    pub fn search_hint(self) -> &'static str {
+        self.pick("Search in files (Ctrl+F)", "In Dateien suchen (Ctrl+F)")
+    }
+    pub fn search_results(self, count: usize) -> String {
+        match count {
+            0 => self.pick("No results", "Keine Treffer").into(),
+            1 => self.pick("1 file", "1 Datei").into(),
+            n => self.fmt(format!("{n} files"), format!("{n} Dateien")),
+        }
+    }
+    pub fn indexing(self, files: usize) -> String {
+        self.fmt(
+            format!("Reading the study folder… {files} files so far"),
+            format!("Studienordner wird gelesen… bisher {files} Dateien"),
+        )
+    }
+    pub fn indexed(self, files: usize) -> String {
+        self.fmt(format!("{files} files searched"), format!("{files} Dateien durchsucht"))
+    }
+    pub fn no_results(self) -> &'static str {
+        self.pick("No file contains all of these words.", "Keine Datei enthält alle diese Wörter.")
+    }
+    pub fn page(self, page: usize) -> String {
+        self.fmt(format!("page {page}"), format!("Seite {page}"))
+    }
+    pub fn show_in_folder(self) -> &'static str {
+        self.pick("Show in folder", "Im Ordner zeigen")
+    }
+    pub fn open_file(self) -> &'static str {
+        self.pick("Open file", "Datei öffnen")
+    }
+    pub fn due(self) -> &'static str {
+        self.pick("Due", "Fällig")
+    }
+    pub fn add_deadline(self) -> &'static str {
+        self.pick("Deadline", "Frist")
+    }
+    pub fn no_deadlines(self) -> &'static str {
+        self.pick(
+            "Nothing due in the next three weeks. Deadlines in exercise sheets are found when they are sorted.",
+            "In den nächsten drei Wochen ist nichts fällig. Abgabetermine in Übungsblättern werden beim Sortieren erkannt.",
+        )
+    }
+    pub fn due_when(self, days: i64, late: bool, time: Option<&str>) -> String {
+        let at = time.map(|t| self.fmt(format!(", {t}"), format!(", {t} Uhr"))).unwrap_or_default();
+        match (late, days) {
+            (true, 0) => self.fmt(format!("was due today{at}"), format!("war heute fällig{at}")),
+            (true, d) => self.fmt(format!("overdue by {} days", -d), format!("seit {} Tagen überfällig", -d)),
+            (false, 0) => self.fmt(format!("due today{at}"), format!("heute fällig{at}")),
+            (false, 1) => self.fmt(format!("due tomorrow{at}"), format!("morgen fällig{at}")),
+            (false, d) => self.fmt(format!("in {d} days{at}"), format!("in {d} Tagen{at}")),
+        }
+    }
+    pub fn to_calendar(self) -> &'static str {
+        self.pick("Add to calendar", "In den Kalender")
+    }
+    pub fn done(self) -> &'static str {
+        self.pick("Done", "Erledigt")
+    }
+    pub fn deadlines_note(self) -> &'static str {
+        self.pick(
+            "Found automatically in the text — please check the date. Wrong ones can be deleted.",
+            "Automatisch im Text erkannt – bitte Datum prüfen. Falsche lassen sich löschen.",
+        )
+    }
+    pub fn deadline_summary(self, title: &str, module: &str) -> String {
+        match module {
+            "" => self.fmt(format!("Due: {title}"), format!("Abgabe: {title}")),
+            m => self.fmt(format!("Due: {title} ({m})"), format!("Abgabe: {title} ({m})")),
+        }
+    }
+    pub fn reminder_tomorrow(self) -> &'static str {
+        self.pick("Due tomorrow", "Morgen fällig")
+    }
+    pub fn what_is_due(self) -> &'static str {
+        self.pick("What is due", "Was ist fällig")
+    }
+    pub fn what_is_due_hint(self) -> &'static str {
+        self.pick("e.g. Exercise sheet 3", "z. B. Übungsblatt 3")
+    }
+    pub fn module_label(self) -> &'static str {
+        self.pick("Module", "Modul")
+    }
+    pub fn no_module(self) -> &'static str {
+        self.pick("No module", "Kein Modul")
+    }
+    pub fn due_date(self) -> &'static str {
+        self.pick("When (date, optionally time)", "Wann (Datum, optional Uhrzeit)")
+    }
+    pub fn date_not_understood(self) -> &'static str {
+        self.pick("Date not understood, e.g. 24.10. 23:59", "Datum nicht verstanden, z. B. 24.10. 23:59")
+    }
+    pub fn new_this_week(self, files: usize) -> String {
+        self.fmt(format!("New this week ({files})"), format!("Neu diese Woche ({files})"))
+    }
+    pub fn nothing_new_this_week(self) -> &'static str {
+        self.pick("No files were sorted in the last 7 days.", "In den letzten 7 Tagen wurden keine Dateien sortiert.")
+    }
+
     // ---------- tabs and settings ----------
     pub fn tab_overview(self) -> &'static str {
         self.pick("Overview", "Übersicht")

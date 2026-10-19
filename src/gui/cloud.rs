@@ -309,6 +309,7 @@ impl App {
 
     /// Entries in the activity list follow their files to the study folder's new place.
     fn relocate_cards(&mut self, from: &Path, to: &Path, renamed: &[(PathBuf, PathBuf)]) {
+        self.deadlines_follow(|path| crate::history::relocated(path, from, to, renamed));
         for card in &mut self.cards {
             if let CardKind::File { state: FileState::Done(result) | FileState::UndoFailed { result, .. }, .. } =
                 &mut card.kind

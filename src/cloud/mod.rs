@@ -18,7 +18,7 @@ pub mod shared;
 pub mod worker;
 
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -213,7 +213,13 @@ pub fn save_json<T: Serialize>(value: &T, file: &Path) -> io::Result<()> {
     }
     let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = file.with_file_name(format!("{name}{TEMP_SUFFIX}"));
-    fs::write(&tmp, serde_json::to_string_pretty(value).map_err(io::Error::other)?)?;
+    let text = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
+    let mut out = fs::File::create(&tmp)?;
+    out.write_all(text.as_bytes())?;
+    // On the disk before the rename: after a power cut the rename may be kept and data that
+    // was still in the cache lost, leaving an empty file that the cloud app then uploads.
+    out.sync_all()?;
+    drop(out);
     fs::rename(&tmp, file)
 }
 

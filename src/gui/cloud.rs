@@ -17,7 +17,7 @@ use super::{App, section_title};
 use crate::cloud::detect::{self, CloudRoot, Provider};
 use crate::cloud::mirror::MirrorReport;
 use crate::cloud::relocate::{self, Plan, Progress};
-use crate::cloud::shared::{self, SHARED_FILE, Shared, Step};
+use crate::cloud::shared::{self, Remote, SHARED_FILE, Shared, Step};
 use crate::cloud::worker::{CloudEvent, Job, Worker};
 use crate::cloud::{CloudMode, CloudSettings, cloud_study_root, computer_name, is_inside, study_folder_name};
 use crate::config::expand_user;
@@ -55,8 +55,16 @@ pub(super) struct CloudState {
     shared_modified: Option<SystemTime>,
     /// What the shared file held when this computer last read or wrote it.
     shared_snapshot: Option<Shared>,
-    /// When the modules here changed without being shared yet (ms since 1970).
+    /// When the modules here last changed without being shared yet (ms since 1970).
     local_changed_at: Option<i64>,
+    /// The modules as they were at `local_changed_at`, to notice the next change.
+    local_edit: Option<Shared>,
+    /// `modified` of a shared file found damaged: replaced only if it stays so until the next check.
+    shared_damaged: Option<SystemTime>,
+    /// No new try before this (window time): after a failed write or an unreadable file.
+    shared_wait_until: f64,
+    /// Writing the shared file failed last time (logged once, not on every try).
+    shared_failing: bool,
     dialog: Option<CloudDialog>,
 }
 
@@ -115,6 +123,10 @@ impl CloudState {
             shared_modified: None,
             shared_snapshot: None,
             local_changed_at: None,
+            local_edit: None,
+            shared_damaged: None,
+            shared_wait_until: f64::NEG_INFINITY,
+            shared_failing: false,
             dialog: None,
         }
     }
@@ -334,6 +346,9 @@ impl App {
             || settings.mode == CloudMode::Off
             || self.cloud.moving.is_some()
             || matches!(self.cloud.dialog, Some(CloudDialog::Shared(_)))
+            // The module dialogs hold a module's place in the list, which taking over changes.
+            || self.dialog.is_some()
+            || self.confirm_delete.is_some()
         {
             return;
         }
@@ -344,9 +359,25 @@ impl App {
         let now = self.now();
         let now_ms = chrono::Local::now().timestamp_millis();
         if self.cloud.shared_snapshot.as_ref().is_some_and(|s| !s.matches(&self.config)) {
-            self.cloud.local_changed_at.get_or_insert(now_ms);
+            let current = Shared::from_config(&self.config, 0, "");
+            if self.cloud.local_edit.as_ref() != Some(&current) {
+                self.cloud.local_changed_at = Some(now_ms);
+                self.cloud.local_edit = Some(current);
+            }
         }
-        let local_due = self.cloud.local_changed_at.is_some_and(|t| now_ms - t >= SHARED_SETTLE_MS);
+        if now < self.cloud.shared_wait_until {
+            return;
+        }
+        // Edits are shared once they have rested, and nothing is taken over while the user is
+        // still typing (a clock set back counts as rested).
+        let local_due = match self.cloud.local_changed_at {
+            Some(t) if (0..SHARED_SETTLE_MS).contains(&(now_ms - t)) => {
+                self.ctx.request_repaint_after(Duration::from_millis(SHARED_SETTLE_MS.unsigned_abs()));
+                return;
+            }
+            Some(_) => true,
+            None => false,
+        };
         if !local_due && now - self.cloud.shared_checked < SHARED_CHECK_SECS {
             return;
         }
@@ -357,25 +388,49 @@ impl App {
         if !first && !local_due && modified == self.cloud.shared_modified {
             return; // nothing new on either side
         }
+        let remote = match shared::load(&file) {
+            Remote::Ok(remote) => Some(remote),
+            Remote::Missing => None,
+            Remote::NewerFormat => {
+                self.cloud.shared_modified = modified; // left alone until it changes
+                return;
+            }
+            // May hold another computer's change: tried again later, never overwritten.
+            Remote::Unreadable => {
+                self.cloud.shared_wait_until = now + SHARED_CHECK_SECS;
+                return;
+            }
+            // Maybe still being replaced by the cloud app: only a file that stays damaged
+            // until the next check is replaced (`shared::write` keeps a copy of it).
+            Remote::Damaged if modified.is_none() || self.cloud.shared_damaged != modified => {
+                self.cloud.shared_damaged = modified;
+                self.cloud.shared_wait_until = now + SHARED_CHECK_SECS;
+                return;
+            }
+            Remote::Damaged => None,
+        };
+        // Only now: a file that couldn't be read is looked at again at the next check.
         self.cloud.shared_modified = modified;
-        let remote = shared::read(&file);
-        if modified.is_some() && remote.is_none() {
-            return; // written by a newer File Sorter, or damaged: leave it alone
-        }
         let seen = self.config.cloud.shared_seen;
-        match shared::decide(&self.config, seen, self.cloud.local_changed_at, remote.as_ref()) {
+        let base = self.cloud.shared_snapshot.as_ref();
+        match shared::decide(&self.config, seen, base, self.cloud.local_changed_at, remote.as_ref()) {
             Step::Nothing => {
                 if let Some(remote) = remote {
                     self.config.cloud.shared_seen = remote.updated_at;
                     self.cloud.shared_snapshot = Some(remote);
                 }
                 self.cloud.local_changed_at = None;
+                self.cloud.local_edit = None;
             }
             // Two different sets of modules meet for the first time: ask which to keep.
             Step::Apply(remote) if first && seen == 0 && !self.config.courses.is_empty() => {
                 self.cloud.dialog = Some(CloudDialog::Shared(remote));
             }
             Step::Apply(remote) => self.take_shared(remote),
+            Step::Merge(merged) => {
+                self.take_shared(merged);
+                self.write_shared(&file, now_ms);
+            }
             Step::Write => self.write_shared(&file, now_ms),
         }
     }
@@ -385,6 +440,7 @@ impl App {
         self.sort_courses();
         self.config.cloud.shared_seen = remote.updated_at;
         self.cloud.local_changed_at = None;
+        self.cloud.local_edit = None;
         if changed && remote.updated_by != self.cloud.computer {
             let text = self.lang.snack_shared_from(&remote.updated_by);
             self.snackbar = Some(Snackbar { card: 0, text, can_undo: false, shown: self.now() });
@@ -392,16 +448,37 @@ impl App {
         self.cloud.shared_snapshot = Some(remote);
     }
 
+    /// Write ours over the shared file last seen (`shared_seen`).
     fn write_shared(&mut self, file: &Path, now_ms: i64) {
-        let ours = Shared::from_config(&self.config, now_ms, &self.cloud.computer);
+        let seen = self.config.cloud.shared_seen;
+        // `updated_at` also tells the files apart: never the same as the one replaced.
+        let now_ms = if now_ms == seen { now_ms + 1 } else { now_ms };
+        let ours = Shared { based_on: seen, ..Shared::from_config(&self.config, now_ms, &self.cloud.computer) };
         match shared::write(file, &ours) {
             Ok(()) => {
+                if self.cloud.shared_failing {
+                    log::info!("Sharing the modules works again");
+                }
+                self.cloud.shared_failing = false;
                 self.config.cloud.shared_seen = now_ms;
                 self.cloud.shared_modified = shared::modified(file);
                 self.cloud.shared_snapshot = Some(ours);
                 self.cloud.local_changed_at = None;
+                self.cloud.local_edit = None;
             }
-            Err(e) => log::info!("Could not share the modules in {}: {e}", file.display()),
+            Err(e) => {
+                if !self.cloud.shared_failing {
+                    log::info!(
+                        "Could not share the modules in {} (tried again every few seconds): {e}",
+                        file.display()
+                    );
+                }
+                self.cloud.shared_failing = true;
+                // Not on every frame: each try puts a temporary file into the synced folder.
+                self.cloud.shared_wait_until = self.now() + SHARED_CHECK_SECS;
+                // Still to be shared, also when it was a merge just taken over.
+                self.cloud.local_changed_at.get_or_insert(now_ms);
+            }
         }
     }
 
@@ -841,9 +918,10 @@ impl App {
                 }
                 Some(CloudDialog::Shared(remote)) if button == 0 => self.take_shared(remote),
                 Some(CloudDialog::Shared(remote)) => {
-                    // Ours win: written as newer than theirs.
+                    // Ours win: written as replacing theirs.
                     let file = cloud_study_root(&self.config).map(|root| root.join(SHARED_FILE));
                     if let Some(file) = file {
+                        self.config.cloud.shared_seen = remote.updated_at;
                         let now_ms = chrono::Local::now().timestamp_millis().max(remote.updated_at + 1);
                         self.write_shared(&file, now_ms);
                     }

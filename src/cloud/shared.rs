@@ -8,11 +8,14 @@
 //! - Modules are cleaned like `Config::clean` (trimmed, nameless ones dropped) whenever they
 //!   are written, read or compared, so what one computer writes reads back as equal and
 //!   never causes an endless round of rewrites.
-//! - [`decide`] picks the step: the newest change wins.
+//! - [`decide`] picks the step. It goes by which file a computer has seen (`updated_at` as an
+//!   id, `based_on` for what the writer had seen), never by comparing clocks of two computers:
+//!   a clock running ahead must not make another computer's change look old. Only when both
+//!   changed the same module does the newer change of that module win.
 //! - A file written by a newer File Sorter is neither read nor overwritten, so an older
 //!   computer can't throw away what the newer format holds.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -22,19 +25,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::cloud::{TEMP_SUFFIX, save_json};
 use crate::config::{Config, Course, normalise_ext};
+use crate::sorter::{release_placeholder, reserve_destination};
 
 /// The file in the cloud study folder.
 pub const SHARED_FILE: &str = ".file-sorter.json";
+/// Where a damaged shared file is kept before it is replaced (it may be a hand edit with a typo).
+pub const DAMAGED_FILE: &str = ".file-sorter.damaged.json";
 /// Version of the format written; files from newer versions are not touched.
 pub const VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Shared {
     pub version: u32,
-    /// Milliseconds since 1970.
+    /// Milliseconds since 1970 on the writer's clock; also tells one written file from another.
     pub updated_at: i64,
     /// The computer that wrote it.
     pub updated_by: String,
+    /// `updated_at` of the file the writer had last read or written (0: none), so a reader can
+    /// tell a change built on what it knows from one made without having seen its own.
+    #[serde(default)]
+    pub based_on: i64,
     pub courses: Vec<Course>,
     pub extensions: Vec<String>,
     pub read_file_contents: bool,
@@ -46,6 +56,7 @@ impl Shared {
             version: VERSION,
             updated_at,
             updated_by: updated_by.to_string(),
+            based_on: 0,
             courses: shared_courses(&config.courses),
             extensions: shared_extensions(&config.extensions),
             read_file_contents: config.read_file_contents,
@@ -54,13 +65,18 @@ impl Shared {
 
     /// Same modules (in any order), keywords, file types and content reading as `config`.
     pub fn matches(&self, config: &Config) -> bool {
-        self.read_file_contents == config.read_file_contents
-            && comparable_courses(&self.courses) == comparable_courses(&config.courses)
-            && comparable_extensions(&self.extensions) == comparable_extensions(&config.extensions)
+        self.same_as(&config.courses, &config.extensions, config.read_file_contents)
+    }
+
+    fn same_as(&self, courses: &[Course], extensions: &[String], read_file_contents: bool) -> bool {
+        self.read_file_contents == read_file_contents
+            && comparable_courses(&self.courses) == comparable_courses(courses)
+            && comparable_extensions(&self.extensions) == comparable_extensions(extensions)
     }
 
     /// Take over modules, keywords and file types; a module keeps its custom folder on this
-    /// computer. Returns whether anything changed.
+    /// computer (also when it was renamed elsewhere, if that can be told). Returns whether
+    /// anything changed.
     pub fn apply_to(&self, config: &mut Config) -> bool {
         if self.matches(config) {
             return false;
@@ -69,7 +85,7 @@ impl Shared {
         for course in config.courses.iter().filter(|c| !c.folder.trim().is_empty()) {
             folders.entry(course_key(course)).or_insert(&course.folder);
         }
-        let courses: Vec<Course> = shared_courses(&self.courses)
+        let mut courses: Vec<Course> = shared_courses(&self.courses)
             .into_iter()
             .map(|mut course| {
                 if let Some(folder) = folders.get(&course_key(&course)) {
@@ -79,8 +95,28 @@ impl Shared {
             })
             .collect();
 
-        // Logged so a module that disappeared can be traced back to the computer that removed it.
+        // A module renamed (or moved to another subject) elsewhere would otherwise lose its
+        // folder here, and its new files would land apart from the old ones.
+        let local: HashSet<(String, String)> = config.courses.iter().map(course_key).collect();
         let kept: HashSet<(String, String)> = courses.iter().map(course_key).collect();
+        for old in config.courses.iter().filter(|c| !c.folder.trim().is_empty() && !kept.contains(&course_key(c))) {
+            let renamed: Vec<usize> = (0..courses.len())
+                .filter(|&i| courses[i].folder.is_empty() && !local.contains(&course_key(&courses[i])))
+                .filter(|&i| renamed_from(old, &courses[i]))
+                .collect();
+            if let [i] = renamed[..] {
+                log::info!("{} is now {}: it keeps the folder {}", old.label(), courses[i].label(), old.folder);
+                courses[i].folder = old.folder.clone();
+            } else {
+                log::info!(
+                    "The folder {} is no longer used: {} is gone from the shared modules",
+                    old.folder,
+                    old.label()
+                );
+            }
+        }
+
+        // Logged so a module that disappeared can be traced back to the computer that removed it.
         let removed: Vec<String> = config
             .courses
             .iter()
@@ -99,6 +135,15 @@ impl Shared {
         config.read_file_contents = self.read_file_contents;
         true
     }
+}
+
+/// `new` looks like `old` renamed: the same name in another subject, or the same keywords.
+fn renamed_from(old: &Course, new: &Course) -> bool {
+    let keywords = |c: &Course| -> BTreeSet<String> {
+        c.keywords.iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect()
+    };
+    old.name.trim().to_lowercase() == new.name.trim().to_lowercase()
+        || (!keywords(old).is_empty() && keywords(old) == keywords(new))
 }
 
 /// A module as it is shared: trimmed like `Config::clean`, without its custom folder;
@@ -142,31 +187,84 @@ fn comparable_extensions(extensions: &[String]) -> Vec<String> {
     extensions
 }
 
-/// The shared settings in `file`; `None` if missing, unreadable or from a newer version.
-pub fn read(file: &Path) -> Option<Shared> {
-    let text = fs::read_to_string(file).ok()?;
-    // A byte-order mark may come from editing the file by hand (Notepad, PowerShell).
-    let mut shared: Shared = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
-    if shared.version > VERSION {
-        return None;
+/// What the shared file holds right now.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Remote {
+    Missing,
+    Ok(Shared),
+    /// Written by a newer File Sorter: neither read nor overwritten.
+    NewerFormat,
+    /// Not a valid shared file: cut off, damaged, or a typo from editing it by hand.
+    Damaged,
+    /// Couldn't be read (a cloud-only file while offline, locked, a folder of that name). It
+    /// may hold another computer's change, so it is neither taken nor overwritten.
+    Unreadable,
+}
+
+/// Read the shared file; reading a cloud-only file makes the cloud app download it.
+pub fn load(file: &Path) -> Remote {
+    match fs::read(file) {
+        Ok(bytes) => parse(&bytes),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Remote::Missing,
+        Err(_) => Remote::Unreadable,
     }
-    shared.courses = shared_courses(&shared.courses);
-    shared.extensions = shared_extensions(&shared.extensions);
-    Some(shared)
+}
+
+fn parse(bytes: &[u8]) -> Remote {
+    #[derive(Deserialize)]
+    struct Header {
+        version: u64,
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else { return Remote::Damaged };
+    // A byte-order mark may come from editing the file by hand (Notepad, PowerShell).
+    let text = text.trim_start_matches('\u{feff}');
+    if serde_json::from_str::<Header>(text).is_ok_and(|h| h.version > u64::from(VERSION)) {
+        return Remote::NewerFormat;
+    }
+    match serde_json::from_str::<Shared>(text) {
+        Ok(mut shared) => {
+            shared.courses = shared_courses(&shared.courses);
+            shared.extensions = shared_extensions(&shared.extensions);
+            Remote::Ok(shared)
+        }
+        Err(_) => Remote::Damaged,
+    }
+}
+
+/// The shared settings in `file`; `None` if missing, unreadable, damaged or from a newer version.
+#[cfg(test)]
+fn read(file: &Path) -> Option<Shared> {
+    match load(file) {
+        Remote::Ok(shared) => Some(shared),
+        _ => None,
+    }
 }
 
 /// Write `shared` to `file` (through a temporary file).
 ///
-/// Refuses to replace a file written by a newer File Sorter: its format may hold more than
-/// this version knows, and the computers using it would take over the poorer copy.
+/// Refuses to replace a file written by a newer File Sorter (its format may hold more than
+/// this version knows, and the computers using it would take over the poorer copy) or one
+/// that can't be read (it may hold a change not seen yet). A damaged one is kept as
+/// [`DAMAGED_FILE`] first, unless it is empty.
 pub fn write(file: &Path, shared: &Shared) -> io::Result<()> {
-    if let Some(version) = written_version(file)
-        && version > u64::from(VERSION)
-    {
-        return Err(io::Error::other(format!(
-            "{} is from a newer File Sorter (format {version}); it is left as it is",
-            file.display()
-        )));
+    match fs::read(file) {
+        Ok(bytes) => match parse(&bytes) {
+            Remote::NewerFormat => {
+                return Err(io::Error::other(format!(
+                    "{} is from a newer File Sorter; it is left as it is",
+                    file.display()
+                )));
+            }
+            Remote::Damaged if !bytes.iter().all(|b| b.is_ascii_whitespace() || *b == 0) => keep_damaged(file, &bytes)?,
+            _ => {}
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(io::Error::new(
+                e.kind(),
+                format!("{} can't be read ({e}); it is left as it is", file.display()),
+            ));
+        }
     }
     if let Err(e) = save_json(shared, file) {
         // The cloud app would otherwise upload the leftover to every computer.
@@ -178,14 +276,15 @@ pub fn write(file: &Path, shared: &Shared) -> io::Result<()> {
     Ok(())
 }
 
-/// The format version of an existing shared file, even one this version can't read.
-fn written_version(file: &Path) -> Option<u64> {
-    #[derive(Deserialize)]
-    struct Header {
-        version: u64,
+/// Copy a damaged shared file next to it under a name of its own (never replacing an earlier copy).
+fn keep_damaged(file: &Path, bytes: &[u8]) -> io::Result<()> {
+    let copy = reserve_destination(file.parent().unwrap_or(Path::new(".")), DAMAGED_FILE)?;
+    if let Err(e) = fs::write(&copy, bytes) {
+        release_placeholder(&copy);
+        return Err(e);
     }
-    let text = fs::read_to_string(file).ok()?;
-    serde_json::from_str::<Header>(text.trim_start_matches('\u{feff}')).ok().map(|h| h.version)
+    log::info!("{} could not be read; it is kept as {} and replaced", file.display(), copy.display());
+    Ok(())
 }
 
 /// When `file` last changed, to check for news cheaply.
@@ -197,34 +296,146 @@ pub fn modified(file: &Path) -> Option<SystemTime> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     Nothing,
-    /// Another computer changed them more recently: take theirs.
+    /// Another computer changed them and this one didn't: take theirs.
     Apply(Shared),
+    /// Both changed them: take this combination of the two, then write it.
+    Merge(Shared),
     /// This computer has changes (or there is no shared file yet): write ours.
     Write,
 }
 
-/// - `seen`: `updated_at` of the shared file this computer last read or wrote.
+/// - `seen`: `updated_at` of the shared file this computer last read or wrote (0: never).
+/// - `base`: what that file held, if known.
 /// - `local_changed_at`: when the modules here were last changed (ms), if not shared yet.
 /// - No shared file → `Write` if there are modules, else `Nothing`.
-/// - Shared file equal to ours → `Nothing`.
-/// - Written elsewhere since `seen` → `Apply`, unless our unshared change is newer → `Write`.
-/// - Otherwise (ours differ, theirs not newer) → `Write`.
+/// - Shared file equal to ours → `Nothing`; still the one we've seen → `Write` (ours changed).
+/// - Written elsewhere: `Apply` if nothing changed here (or never shared here: the window
+///   asks which to keep), else `Merge`.
+///
+/// A file written elsewhere without having seen ours (both wrote at about the same time, the
+/// cloud app kept the other one of two copies) is merged without a base, so nothing either
+/// side has is lost; at worst a module removed on one of them comes back.
 ///
 /// A computer without modules never starts the file: before the cloud app has brought down
-/// another computer's file, an empty one written here would be newer and wipe theirs.
-pub fn decide(config: &Config, seen: i64, local_changed_at: Option<i64>, remote: Option<&Shared>) -> Step {
+/// another computer's file, an empty one written here would replace theirs.
+pub fn decide(
+    config: &Config,
+    seen: i64,
+    base: Option<&Shared>,
+    local_changed_at: Option<i64>,
+    remote: Option<&Shared>,
+) -> Step {
     let Some(remote) = remote else {
         let has_modules = config.courses.iter().any(|c| !c.name.trim().is_empty());
         return if has_modules { Step::Write } else { Step::Nothing };
     };
-    let ours_newer = local_changed_at.is_some_and(|at| at > remote.updated_at);
     if remote.matches(config) {
-        Step::Nothing
-    } else if remote.updated_at > seen && !ours_newer {
+        return Step::Nothing;
+    }
+    if remote.updated_at == seen {
+        return Step::Write;
+    }
+    let built_on_ours = remote.based_on == seen;
+    if seen == 0 || (built_on_ours && local_changed_at.is_none()) {
+        return Step::Apply(remote.clone());
+    }
+    let base = base.filter(|b| built_on_ours && b.updated_at == seen);
+    // Their clock may differ from ours: this only settles a module both changed.
+    let ours_newer = local_changed_at.is_some_and(|at| at > remote.updated_at);
+    let merged = merge(base, config, remote, ours_newer);
+    if merged.same_as(&remote.courses, &remote.extensions, remote.read_file_contents) {
         Step::Apply(remote.clone())
     } else {
-        Step::Write
+        Step::Merge(merged)
     }
+}
+
+/// Our changes and theirs since `base`, module by module (`None`: unknown, so nothing is
+/// dropped). A module removed on one side stays if the other changed it. When both changed
+/// one, the newer change gives its name, and keywords added on either side are kept.
+fn merge(base: Option<&Shared>, ours: &Config, theirs: &Shared, ours_newer: bool) -> Shared {
+    let empty = Vec::new();
+    let base_courses = base.map(|b| shared_courses(&b.courses)).unwrap_or_default();
+    let ours_courses = shared_courses(&ours.courses);
+    let theirs_courses = shared_courses(&theirs.courses);
+    let (b, o, t) = (keyed(&base_courses), keyed(&ours_courses), keyed(&theirs_courses));
+    let base_map: HashMap<_, _> = b.into_iter().collect();
+    let theirs_map: HashMap<_, _> = t.iter().cloned().collect();
+    let ours_map: HashMap<_, _> = o.iter().cloned().collect();
+
+    let mut courses = Vec::new();
+    for (key, ours) in &o {
+        let base = base_map.get(key).copied();
+        match theirs_map.get(key) {
+            Some(theirs) => courses.push(merge_course(base, ours, theirs, ours_newer)),
+            // Removed there: gone here too, unless changed here since.
+            None if base == Some(*ours) => {}
+            None => courses.push((*ours).clone()),
+        }
+    }
+    for (key, theirs) in &t {
+        if !ours_map.contains_key(key) && base_map.get(key).copied() != Some(*theirs) {
+            courses.push((*theirs).clone());
+        }
+    }
+
+    let base_ext = base.map_or(&empty, |b| &b.extensions);
+    let ours_ext = shared_extensions(&ours.extensions);
+    let set = |e: &[String]| comparable_extensions(e);
+    let extensions = if base.is_some() && set(&ours_ext) == set(base_ext) {
+        theirs.extensions.clone()
+    } else if base.is_some() && set(&theirs.extensions) == set(base_ext) {
+        ours_ext
+    } else {
+        merge_words(base_ext, &ours_ext, &theirs.extensions)
+    };
+    let read_file_contents = match base {
+        Some(base) if base.read_file_contents != ours.read_file_contents => ours.read_file_contents,
+        Some(_) => theirs.read_file_contents,
+        None if ours_newer => ours.read_file_contents,
+        None => theirs.read_file_contents,
+    };
+    Shared { courses, extensions, read_file_contents, ..theirs.clone() }
+}
+
+/// Each module under its key; a second module with the same key gets the next number.
+fn keyed(courses: &[Course]) -> Vec<((String, String, usize), &Course)> {
+    let mut count: HashMap<(String, String), usize> = HashMap::new();
+    courses
+        .iter()
+        .map(|c| {
+            let (subject, name) = course_key(c);
+            let n = count.entry((subject.clone(), name.clone())).or_default();
+            *n += 1;
+            ((subject, name, *n), c)
+        })
+        .collect()
+}
+
+fn merge_course(base: Option<&Course>, ours: &Course, theirs: &Course, ours_newer: bool) -> Course {
+    if ours == theirs || base == Some(theirs) {
+        return ours.clone();
+    }
+    if base == Some(ours) {
+        return theirs.clone();
+    }
+    let (newer, older) = if ours_newer { (ours, theirs) } else { (theirs, ours) };
+    let base_keywords = base.map_or(&[][..], |b| &b.keywords[..]);
+    Course { keywords: merge_words(base_keywords, &newer.keywords, &older.keywords), ..newer.clone() }
+}
+
+/// Words in `first` or `second`, without those one side removed since `base` (ignoring case).
+fn merge_words(base: &[String], first: &[String], second: &[String]) -> Vec<String> {
+    let set = |words: &[String]| -> HashSet<String> { words.iter().map(|w| w.to_lowercase()).collect() };
+    let (base, in_first, in_second) = (set(base), set(first), set(second));
+    let mut taken = HashSet::new();
+    first
+        .iter()
+        .filter(|w| in_second.contains(&w.to_lowercase()) || !base.contains(&w.to_lowercase()))
+        .chain(second.iter().filter(|w| !in_first.contains(&w.to_lowercase()) && !base.contains(&w.to_lowercase())))
+        .filter(|w| taken.insert(w.to_lowercase()))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -330,8 +541,6 @@ mod tests {
 
     #[test]
     fn newer_format_is_not_overwritten() {
-        let tmp = tempfile::tempdir().unwrap();
-        let file = tmp.path().join(SHARED_FILE);
         let ours = Shared::from_config(&sample(), 9, "OLD-PC");
         for (existing, overwritten) in [
             ("{\"version\": 2, \"everything\": \"different\"}", false),
@@ -340,12 +549,35 @@ mod tests {
             ("{\"version\": 0}", true),
             ("garbage", true),
         ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let file = tmp.path().join(SHARED_FILE);
             fs::write(&file, existing).unwrap();
             assert_eq!(write(&file, &ours).is_ok(), overwritten, "{existing}");
             let now = fs::read_to_string(&file).unwrap();
             assert_eq!(now == existing, !overwritten, "{existing}");
-            assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1, "no temporary file is left");
+            let damaged = fs::read_to_string(tmp.path().join(DAMAGED_FILE)).ok();
+            assert_eq!(damaged.as_deref(), overwritten.then_some(existing), "a damaged file is kept: {existing}");
+            assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1 + usize::from(overwritten), "no temporary file");
         }
+    }
+
+    /// A damaged shared file (a hand edit with a typo, cut off by a power cut) is kept aside
+    /// before it is replaced, without replacing a copy kept earlier; an empty one is not kept.
+    #[test]
+    fn damaged_file_is_kept_before_it_is_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(SHARED_FILE);
+        let ours = Shared::from_config(&sample(), 9, "PC");
+        fs::write(&file, "{\"version\": 1, \"courses\": [ typo").unwrap();
+        write(&file, &ours).unwrap();
+        fs::write(&file, "second typo").unwrap();
+        write(&file, &ours).unwrap();
+        fs::write(&file, [0u8; 32]).unwrap();
+        write(&file, &ours).unwrap();
+        assert_eq!(read(&file), Some(ours));
+        assert_eq!(fs::read_to_string(tmp.path().join(DAMAGED_FILE)).unwrap(), "{\"version\": 1, \"courses\": [ typo");
+        assert_eq!(fs::read_to_string(tmp.path().join(".file-sorter.damaged (1).json")).unwrap(), "second typo");
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 3);
     }
 
     #[test]
@@ -431,34 +663,202 @@ mod tests {
         let half_typed = config(vec![course("Mathe", " ", &[], "")]);
         let mut theirs_config = sample();
         theirs_config.courses[1].keywords.push("java".into());
-        let theirs = |at: i64| Shared::from_config(&theirs_config, at, "OTHER");
+        let theirs = |at: i64, based_on: i64| Shared { based_on, ..Shared::from_config(&theirs_config, at, "OTHER") };
         let equal = |at: i64| Shared::from_config(&ours, at, "OTHER");
-        let apply = |at: i64| Step::Apply(theirs(at));
-
+        let apply = |at: i64, based_on: i64| Step::Apply(theirs(at, based_on));
+        // Each computer stamps with its own clock: "older" stamps from elsewhere are still news.
         #[rustfmt::skip]
         let cases = vec![
-            // what                            config       seen changed    remote             expected
-            ("no file, modules here",           &ours,       0,   None,      None,              Step::Write),
-            ("no file, no modules",             &none,       0,   None,      None,              Step::Nothing),
-            ("no file, no modules, a change",   &none,       0,   Some(5),   None,              Step::Nothing),
-            ("no file, only a nameless module", &half_typed, 0,   None,      None,              Step::Nothing),
-            ("equal",                           &ours,       100, None,      Some(equal(100)),  Step::Nothing),
-            ("equal, written elsewhere",        &ours,       100, Some(300), Some(equal(200)),  Step::Nothing),
-            ("equal, older",                    &ours,       100, None,      Some(equal(50)),   Step::Nothing),
-            ("theirs newer, no change here",    &ours,       100, None,      Some(theirs(200)), apply(200)),
-            ("theirs newer, never seen",        &ours,       0,   None,      Some(theirs(200)), apply(200)),
-            ("theirs newer, no modules here",   &none,       0,   None,      Some(theirs(200)), apply(200)),
-            ("theirs newer than our change",    &ours,       100, Some(150), Some(theirs(200)), apply(200)),
-            ("our change at the same time",     &ours,       100, Some(200), Some(theirs(200)), apply(200)),
-            ("our change newer than theirs",    &ours,       100, Some(250), Some(theirs(200)), Step::Write),
-            ("theirs older and different",      &ours,       100, None,      Some(theirs(50)),  Step::Write),
-            ("theirs older, our change",        &ours,       100, Some(120), Some(theirs(50)),  Step::Write),
-            ("seen and different",              &ours,       100, None,      Some(theirs(100)), Step::Write),
-            ("seen, our change",                &ours,       100, Some(150), Some(theirs(100)), Step::Write),
+            // what                              config       seen changed    remote                  expected
+            ("no file, modules here",             &ours,       0,   None,      None,                   Step::Write),
+            ("no file, no modules",               &none,       0,   None,      None,                   Step::Nothing),
+            ("no file, no modules, a change",     &none,       0,   Some(5),   None,                   Step::Nothing),
+            ("no file, only a nameless module",   &half_typed, 0,   None,      None,                   Step::Nothing),
+            ("equal",                             &ours,       100, None,      Some(equal(100)),       Step::Nothing),
+            ("equal, written elsewhere",          &ours,       100, Some(300), Some(equal(200)),       Step::Nothing),
+            ("equal, older",                      &ours,       100, None,      Some(equal(50)),        Step::Nothing),
+            ("theirs newer, no change here",      &ours,       100, None,      Some(theirs(200, 100)), apply(200, 100)),
+            ("theirs never seen here",            &ours,       0,   None,      Some(theirs(200, 0)),   apply(200, 0)),
+            ("never seen, no modules here",       &none,       0,   None,      Some(theirs(200, 7)),   apply(200, 7)),
+            ("their clock behind ours",           &ours,       100, None,      Some(theirs(50, 100)),  apply(50, 100)),
+            ("their clock behind, same stamp",    &ours,       100, None,      Some(theirs(100, 100)), Step::Write),
+            ("still the file seen: ours changed", &ours,       100, Some(150), Some(theirs(100, 0)),   Step::Write),
         ];
         for (what, config, seen, changed, remote, expected) in cases {
-            assert_eq!(decide(config, seen, changed, remote.as_ref()), expected, "{what}");
+            assert_eq!(decide(config, seen, None, changed, remote.as_ref()), expected, "{what}");
         }
+    }
+
+    /// Changes made on both computers before they meet again are combined, never replaced.
+    #[test]
+    fn both_changed_are_merged() {
+        let base = Shared::from_config(&sample(), 100, "HERE");
+        // Here: a keyword for Analysis, and Statistik added.
+        let mut ours = sample();
+        ours.courses[0].keywords.push("hörsaal".into());
+        ours.courses.push(course("Mathematik", "Statistik", &["stats"], "D:\\Stats"));
+        // There: Programmierung removed, Physik added, a file type.
+        let mut theirs_config = config(vec![
+            course("Mathematik", "Analysis II", &["ana2", "analysis"], ""),
+            course("Physik", "Mechanik", &["mech"], ""),
+        ]);
+        theirs_config.extensions.push(".zip".into());
+        let theirs = Shared { based_on: 100, ..Shared::from_config(&theirs_config, 200, "THERE") };
+
+        // Their clock may be far behind (or ahead): the outcome is the same.
+        for changed in [Some(150), Some(250), Some(50)] {
+            let Step::Merge(merged) = decide(&ours, 100, Some(&base), changed, Some(&theirs)) else {
+                panic!("should merge");
+            };
+            assert_eq!((merged.updated_at, merged.updated_by.as_str()), (200, "THERE"));
+            let mut here = ours.clone();
+            assert!(merged.apply_to(&mut here));
+            assert_eq!(
+                here.courses,
+                vec![
+                    course("Mathematik", "Analysis II", &["ana2", "analysis", "hörsaal"], "D:\\Ana"),
+                    course("Mathematik", "Statistik", &["stats"], "D:\\Stats"),
+                    course("Physik", "Mechanik", &["mech"], ""),
+                ],
+                "{changed:?}"
+            );
+            assert_eq!(here.extensions, vec![".pdf", ".pptx", ".zip"]);
+        }
+
+        // Removed there but changed here: kept. Changed there but removed here: kept.
+        let mut ours = sample();
+        ours.courses[1].keywords.push("java".into());
+        ours.courses.remove(0);
+        let mut theirs_config = sample();
+        theirs_config.courses.remove(1);
+        theirs_config.courses[0].keywords.push("neu".into());
+        let theirs = Shared { based_on: 100, ..Shared::from_config(&theirs_config, 200, "THERE") };
+        let Step::Merge(merged) = decide(&ours, 100, Some(&base), Some(150), Some(&theirs)) else { panic!() };
+        assert_eq!(merged.courses.len(), 2, "{merged:?}");
+
+        // Both removed different modules: both gone.
+        let mut ours = sample();
+        ours.courses.remove(0);
+        let mut theirs_config = sample();
+        theirs_config.courses.remove(1);
+        let theirs = Shared { based_on: 100, ..Shared::from_config(&theirs_config, 200, "THERE") };
+        let Step::Merge(merged) = decide(&ours, 100, Some(&base), Some(150), Some(&theirs)) else { panic!() };
+        assert!(merged.courses.is_empty());
+    }
+
+    /// The same module's keywords changed on both: the newer change wins where they disagree,
+    /// keywords added on either side are kept, and those removed on one side stay removed.
+    #[test]
+    fn both_changed_one_module() {
+        let base = Shared::from_config(&sample(), 100, "HERE");
+        let mut ours = sample();
+        ours.courses[0].keywords = vec!["ana2".into(), "mine".into()]; // removed "analysis"
+        let mut theirs_config = sample();
+        theirs_config.courses[0].keywords.push("theirs".into());
+        theirs_config.courses[0].name = "analysis ii".into();
+        let theirs = Shared { based_on: 100, ..Shared::from_config(&theirs_config, 200, "THERE") };
+
+        let Step::Merge(merged) = decide(&ours, 100, Some(&base), Some(300), Some(&theirs)) else { panic!() };
+        assert_eq!(merged.courses[0], course("Mathematik", "Analysis II", &["ana2", "mine", "theirs"], ""));
+        let Step::Merge(merged) = decide(&ours, 100, Some(&base), Some(150), Some(&theirs)) else { panic!() };
+        assert_eq!(merged.courses[0], course("Mathematik", "analysis ii", &["ana2", "theirs", "mine"], ""));
+    }
+
+    /// Two computers that each wrote the file before seeing the other's (the cloud app kept
+    /// one of the two): both sets of modules survive, on both computers.
+    #[test]
+    fn first_meeting_race_keeps_both() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(SHARED_FILE);
+        let desktop = config(vec![course("Mathematik", "Analysis II", &["ana2"], "")]);
+        let mut laptop = config(vec![course("Informatik", "Programmierung 1", &["prog1"], "")]);
+
+        // The laptop's clock is ahead: its file looks newer than the desktop's.
+        let laptop_file = Shared::from_config(&laptop, 9_000, "LAPTOP");
+        assert_eq!(decide(&laptop, 0, None, None, None), Step::Write);
+        let laptop_seen = laptop_file.updated_at;
+        // The cloud app replaces it with the desktop's file, written without seeing the laptop's.
+        write(&file, &Shared::from_config(&desktop, 1_000, "DESKTOP")).unwrap();
+        let Step::Merge(merged) = decide(&laptop, laptop_seen, Some(&laptop_file), None, read(&file).as_ref()) else {
+            panic!("should merge")
+        };
+        assert!(merged.apply_to(&mut laptop));
+        assert_eq!(laptop.courses.len(), 2);
+        let written = Shared { based_on: merged.updated_at, ..Shared::from_config(&laptop, 9_100, "LAPTOP") };
+        write(&file, &written).unwrap();
+
+        // The desktop takes the combination over: nothing to ask, nothing lost.
+        let mut desktop_now = desktop.clone();
+        let desktop_base = Shared::from_config(&desktop, 1_000, "DESKTOP");
+        let Step::Apply(shared) = decide(&desktop_now, 1_000, Some(&desktop_base), None, read(&file).as_ref()) else {
+            panic!("should apply")
+        };
+        assert!(shared.apply_to(&mut desktop_now));
+        assert!(shared.matches(&laptop) && shared.matches(&desktop_now));
+    }
+
+    #[test]
+    fn renamed_module_keeps_its_folder() {
+        let mut local = sample();
+        local.courses.push(course("Physik", "Mechanik", &["mech"], "/home/a/mech"));
+        local.courses.push(course("Physik", "Optik", &["optik"], "/home/a/optik"));
+        let mut remote_config = sample();
+        remote_config.courses[0].name = "Analysis 2".into(); // renamed, same keywords
+        remote_config.courses.push(course("Mechanik", "Mechanik", &["mech", "kraft"], "")); // other subject
+        let remote = Shared::from_config(&remote_config, 5, "OTHER"); // Optik removed
+        assert!(remote.apply_to(&mut local));
+        assert_eq!(local.courses[0], course("Mathematik", "Analysis 2", &["ana2", "analysis"], "D:\\Ana"));
+        assert_eq!(local.courses[2], course("Mechanik", "Mechanik", &["mech", "kraft"], "/home/a/mech"));
+        assert_eq!(local.courses.len(), 3);
+
+        // Two candidates: which one is meant can't be told, so neither gets it.
+        let mut local = config(vec![course("A", "Statistik", &[], "/stats")]);
+        let remote = Shared::from_config(
+            &config(vec![course("B", "Statistik", &[], ""), course("C", "Statistik", &[], "")]),
+            6,
+            "OTHER",
+        );
+        assert!(remote.apply_to(&mut local));
+        assert!(local.courses.iter().all(|c| c.folder.is_empty()));
+    }
+
+    #[test]
+    fn load_tells_why() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(SHARED_FILE);
+        assert_eq!(load(&file), Remote::Missing);
+        fs::write(&file, "{\"version\": 1, \"updated_at\": 7").unwrap();
+        assert_eq!(load(&file), Remote::Damaged);
+        fs::write(&file, [0u8; 64]).unwrap();
+        assert_eq!(load(&file), Remote::Damaged, "zero-filled after a power cut");
+        fs::write(&file, "{\"version\": 5, \"anything\": 1}").unwrap();
+        assert_eq!(load(&file), Remote::NewerFormat);
+        let shared = Shared::from_config(&sample(), 1, "PC");
+        fs::remove_file(&file).unwrap();
+        write(&file, &shared).unwrap();
+        assert_eq!(load(&file), Remote::Ok(shared));
+        fs::remove_file(&file).unwrap();
+        fs::create_dir(&file).unwrap();
+        assert_eq!(load(&file), Remote::Unreadable);
+    }
+
+    /// A file that can't be read may hold a change not taken over yet: never replaced.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_is_not_overwritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(SHARED_FILE);
+        let theirs = Shared::from_config(&sample(), 1, "OTHER");
+        write(&file, &theirs).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&file).is_ok() {
+            return; // running as root: the file can't be made unreadable
+        }
+        assert_eq!(load(&file), Remote::Unreadable);
+        assert!(write(&file, &Shared::from_config(&Config::default(), 2, "HERE")).is_err());
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(read(&file), Some(theirs));
     }
 
     /// Writing, reading back and applying always settle: no endless rewrites between computers.
@@ -470,15 +870,33 @@ mod tests {
         laptop.courses.push(course(" Physik ", "Mechanik ", &[" mech", ""], ""));
         laptop.courses.push(course("Physik", "", &["half typed"], ""));
         laptop.extensions.push("PDF".into());
-        assert_eq!(decide(&laptop, 0, Some(10), read(&file).as_ref()), Step::Write);
+        assert_eq!(decide(&laptop, 0, None, Some(10), read(&file).as_ref()), Step::Write);
         write(&file, &Shared::from_config(&laptop, 20, "LAPTOP")).unwrap();
-        assert_eq!(decide(&laptop, 20, None, read(&file).as_ref()), Step::Nothing);
+        let written = read(&file);
+        assert_eq!(decide(&laptop, 20, written.as_ref(), None, written.as_ref()), Step::Nothing);
 
         let mut desktop = Config::default();
-        let Step::Apply(shared) = decide(&desktop, 0, None, read(&file).as_ref()) else { panic!("should apply") };
+        let Step::Apply(shared) = decide(&desktop, 0, None, None, read(&file).as_ref()) else { panic!("should apply") };
         assert!(shared.apply_to(&mut desktop));
-        assert_eq!(decide(&desktop, shared.updated_at, None, read(&file).as_ref()), Step::Nothing);
-        let back = Shared::from_config(&desktop, 30, "DESKTOP");
-        assert_eq!(decide(&laptop, 20, None, Some(&back)), Step::Nothing);
+        assert_eq!(decide(&desktop, shared.updated_at, Some(&shared), None, read(&file).as_ref()), Step::Nothing);
+        let back = Shared { based_on: 20, ..Shared::from_config(&desktop, 30, "DESKTOP") };
+        assert_eq!(decide(&laptop, 20, written.as_ref(), None, Some(&back)), Step::Nothing);
+
+        // A merge written back is taken over as it is by the other computer, and settles.
+        let mut desktop_change = desktop.clone();
+        desktop_change.courses[0].keywords.push("desk".into());
+        let mut laptop_change = laptop.clone();
+        laptop_change.courses[1].keywords.push("lap".into());
+        let theirs = Shared { based_on: 20, ..Shared::from_config(&desktop_change, 40, "DESKTOP") };
+        let Step::Merge(merged) = decide(&laptop_change, 20, written.as_ref(), Some(45), Some(&theirs)) else {
+            panic!("should merge")
+        };
+        assert!(merged.apply_to(&mut laptop_change));
+        let laptop_wrote = Shared { based_on: 40, ..Shared::from_config(&laptop_change, 50, "LAPTOP") };
+        let Step::Apply(back) = decide(&desktop_change, 40, Some(&theirs), None, Some(&laptop_wrote)) else {
+            panic!("should apply")
+        };
+        assert!(back.apply_to(&mut desktop_change));
+        assert_eq!(decide(&desktop_change, 50, Some(&back), None, Some(&laptop_wrote)), Step::Nothing);
     }
 }

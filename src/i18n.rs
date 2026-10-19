@@ -941,8 +941,8 @@ impl Lang {
         let mut parts = Vec::new();
         if duplicates > 0 {
             parts.push(self.fmt(
-                format!("{duplicates} identical ones were there already"),
-                format!("{duplicates} gleiche lagen schon dort"),
+                format!("{duplicates} already there (identical)"),
+                format!("{duplicates} schon vorhanden (identisch)"),
             ));
         }
         if renamed > 0 {
@@ -976,7 +976,10 @@ impl Lang {
     }
     pub fn size(self, bytes: u64) -> String {
         let (value, unit) = match bytes {
-            0..1_000_000 => (bytes as f64 / 1e3, "KB"),
+            0 => return "0 KB".into(),
+            // Tiny files would read "0.0 KB".
+            1..100 => (0.1, "KB"),
+            100..1_000_000 => (bytes as f64 / 1e3, "KB"),
             1_000_000..1_000_000_000 => (bytes as f64 / 1e6, "MB"),
             _ => (bytes as f64 / 1e9, "GB"),
         };
@@ -1015,6 +1018,7 @@ mod tests {
         assert_eq!(Lang::En.size(340_000_000), "340 MB");
         assert_eq!(Lang::De.size(1_234_000_000), "1,2 GB");
         assert_eq!(Lang::De.size(2_500), "2,5 KB");
+        assert_eq!(Lang::De.size(25), "0,1 KB");
         assert_eq!(Lang::De.ago(5), "gerade eben");
         assert_eq!(Lang::De.ago(150), "vor 2 Min.");
         assert_eq!(Lang::En.provider_label(Provider::OneDriveBusiness, Some("Contoso"), ""), "OneDrive – Contoso");

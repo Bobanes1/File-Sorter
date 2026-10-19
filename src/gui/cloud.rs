@@ -244,7 +244,8 @@ impl App {
                 match result {
                     Ok(report) => {
                         self.relocate_cards(&from, &to, &report.renamed);
-                        let files = report.moved + report.duplicates + report.renamed.len() as u64;
+                        // `moved` includes the renamed ones.
+                        let files = report.moved + report.duplicates;
                         let title =
                             if back { lang.relocated_back(files) } else { lang.relocated(&self.cloud_name(), files) };
                         let details = lang.relocate_details(report.duplicates, report.renamed.len(), report.left.len());
@@ -385,7 +386,6 @@ impl App {
         self.cloud.local_changed_at = None;
         if changed && remote.updated_by != self.cloud.computer {
             let text = self.lang.snack_shared_from(&remote.updated_by);
-            log::info!("Took over the modules saved by {}", remote.updated_by);
             self.snackbar = Some(Snackbar { card: 0, text, can_undo: false, shown: self.now() });
         }
         self.cloud.shared_snapshot = Some(remote);
@@ -601,15 +601,11 @@ impl App {
                 self.cloud.pick = Some(CloudRoot { provider, path, account: None });
             }
         });
-        if let Some(pick) = &self.cloud.pick {
-            let target = match (self.cloud.choice, self.config.cloud.mode) {
-                (CloudMode::Move, CloudMode::Move)
-                    if same_folder(&pick.path, &expand_user(&self.config.cloud.folder)) =>
-                {
-                    self.study_root()
-                }
-                _ => pick.path.join(self.study_name()),
-            };
+        let configured = expand_user(self.config.cloud.folder.trim());
+        let settled = self.cloud.choice == self.config.cloud.mode
+            && self.cloud.pick.as_ref().is_some_and(|p| same_folder(&p.path, &configured));
+        if let Some(pick) = self.cloud.pick.as_ref().filter(|_| !settled) {
+            let target = pick.path.join(self.study_name());
             ui.add_space(4.0);
             ui.label(
                 RichText::new(format!("{}  {}", icon::ARROW_RIGHT, lang.cloud_target(&target.display().to_string())))

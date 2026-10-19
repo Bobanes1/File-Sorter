@@ -100,6 +100,33 @@ pub fn undo(result: &SortResult, config: &Config) -> Result<PathBuf, UndoError> 
     Ok(back)
 }
 
+/// Move a sorted file into another module (`course`, an index into `config.courses`), or
+/// put a file that stayed in the downloads folder into one. Returns the new result.
+///
+/// A sorted file is first put back (as undo does) and then sorted into the chosen module,
+/// so both steps are as safe as sorting and undoing are on their own. If the second step
+/// fails, the file stays in the downloads folder and is left alone there.
+pub fn reassign(result: &SortResult, course: usize, config: &Config) -> Result<SortResult, UndoError> {
+    let path = if result.sorted() {
+        // Undo leaves the file alone in the downloads folder, so the watcher doesn't grab it
+        // before it is sorted into the chosen module.
+        let back = undo(result, config)?;
+        if let Some(source) = crate::origin::source_of(&back)
+            && let Some(old) = result.sorted_course()
+        {
+            crate::origin::forget(config, &source, old);
+        }
+        back
+    } else {
+        result.source.clone()
+    };
+    let new = crate::sorter::sort_into(&path, course, config);
+    if !new.sorted() && path.exists() {
+        keep(&path, config);
+    }
+    Ok(new)
+}
+
 /// Leave this file where it is from now on.
 fn keep(path: &Path, config: &Config) {
     if let Some(file) = config.state_file(KEPT_LIST) {
@@ -145,6 +172,51 @@ mod tests {
         // Sorting it explicitly (right-click) still works.
         let chosen = crate::sorter::sort_chosen(std::slice::from_ref(&src), &cfg);
         assert!(chosen[0].sorted(), "{}", chosen[0].describe());
+    }
+
+    #[test]
+    fn assign_an_unmatched_file_and_move_a_sorted_one_elsewhere() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = config(tmp.path());
+        let lost = cfg.watch_path().join("Blatt 3.pdf");
+        make_pdf(&lost, "nothing to see");
+        let left = sort_file(&lost, &cfg);
+        assert_eq!(left.outcome, Outcome::Left(LeftReason::NoMatch));
+        let assigned = reassign(&left, 2, &cfg).unwrap();
+        assert!(
+            matches!(&assigned.outcome, Outcome::Moved { course, reason: crate::matcher::Reason::Chosen, .. }
+            if course == "Statistics"),
+            "{}",
+            assigned.describe()
+        );
+        assert!(!lost.exists() && assigned.destination().unwrap().exists() && assigned.id.is_some());
+
+        // Sorted into the wrong module: move it into another one, then undo that.
+        let src = cfg.watch_path().join("prog1_woche2.pdf");
+        make_pdf(&src, "x");
+        let wrong = sort_file(&src, &cfg);
+        assert_eq!(wrong.course(), Some("Programming Course"));
+        let right = reassign(&wrong, 1, &cfg).unwrap();
+        assert_eq!(right.course(), Some("Linear Algebra"));
+        assert!(!wrong.destination().unwrap().exists() && right.destination().unwrap().exists());
+        assert!(!src.exists(), "not left in the downloads folder");
+        let entries = history::recent(cfg.state_dir.as_ref().unwrap(), 10);
+        assert!(entries.iter().any(|e| e.result.id == wrong.id && e.undone));
+        assert_eq!(undo(&right, &cfg).unwrap(), src);
+        assert!(src.exists() && !right.destination().unwrap().exists());
+        assert_eq!(reassign(&right, 99, &cfg).map(|r| r.sorted()), Err(UndoError::Missing));
+    }
+
+    #[test]
+    fn assign_keeps_a_file_that_cannot_move_now() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = config(tmp.path());
+        let lost = cfg.watch_path().join("Blatt 4.pdf");
+        make_pdf(&lost, "x");
+        let left = sort_file(&lost, &cfg);
+        let failed = reassign(&left, 99, &cfg).unwrap();
+        assert!(!failed.sorted() && lost.exists());
+        assert_eq!(sort_file(&lost, &cfg).outcome, Outcome::Left(LeftReason::Kept), "left alone");
     }
 
     #[test]

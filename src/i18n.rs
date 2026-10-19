@@ -246,6 +246,11 @@ impl Lang {
                 self.fmt(format!("file name contains «{words}»"), format!("Dateiname enthält «{words}»"))
             }
             Reason::Content(_) => self.fmt(format!("content mentions «{words}»"), format!("Inhalt erwähnt «{words}»")),
+            Reason::Chosen => self.pick("assigned by you", "von dir zugeordnet").into(),
+            Reason::Origin(host) => self.fmt(
+                format!("from {host}, like earlier files of this module"),
+                format!("von {host}, wie frühere Dateien dieses Moduls"),
+            ),
         }
     }
     pub fn left_reason(self, reason: &LeftReason) -> String {
@@ -285,6 +290,33 @@ impl Lang {
     }
     pub fn stopped_watching(self) -> &'static str {
         self.pick("Stopped watching.", "Überwachung gestoppt.")
+    }
+    pub fn assign(self) -> &'static str {
+        self.pick("Assign", "Zuordnen")
+    }
+    pub fn other_module(self) -> &'static str {
+        self.pick("Other module", "Anderes Modul")
+    }
+    pub fn assign_hint(self) -> &'static str {
+        self.pick("Put this file into a module of your choice", "Diese Datei in ein Modul deiner Wahl legen")
+    }
+    pub fn assign_title(self) -> &'static str {
+        self.pick("Move into", "Verschieben nach")
+    }
+    pub fn assigning(self) -> &'static str {
+        self.pick("Moving…", "Wird verschoben…")
+    }
+    pub fn learned(self, module: &str, count: usize, undone: bool) -> String {
+        match (undone, count) {
+            (true, _) => self
+                .fmt(format!("Keywords for {module} taken back"), format!("Stichwörter für {module} zurückgenommen")),
+            (false, 1) => {
+                self.fmt(format!("Learned a keyword for {module}"), format!("Neues Stichwort für {module} gelernt"))
+            }
+            (false, _) => {
+                self.fmt(format!("Learned keywords for {module}"), format!("Neue Stichwörter für {module} gelernt"))
+            }
+        }
     }
     pub fn sorting_existing(self, days: Option<u32>) -> String {
         match days {

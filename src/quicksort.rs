@@ -21,10 +21,10 @@ use egui_phosphor::regular as icon;
 use crate::config::{Config, load_config};
 use crate::fx;
 use crate::fx::ButtonStyle;
-use crate::gui::{Card, CardKind, FileState, RowAction, activity_row, app_icon};
+use crate::gui::{Card, CardKind, FileState, Finished, RowAction, activity_row, app_icon};
 use crate::i18n::Lang;
 use crate::sorter::{SortResult, sort_chosen};
-use crate::undo::{UndoError, undo};
+use crate::undo::undo;
 
 /// How long a follower waits for a leader to pick up its file before taking over.
 const FOLLOWER_PATIENCE: Duration = Duration::from_secs(20);
@@ -221,8 +221,9 @@ struct ResultsWindow {
     /// When the countdown to closing (re)started.
     countdown_from: f64,
     keep_open: bool,
-    undo_tx: Sender<(u64, Result<PathBuf, UndoError>)>,
-    undo_rx: Receiver<(u64, Result<PathBuf, UndoError>)>,
+    /// Finished undos and assignments, with the entry's key.
+    undo_tx: Sender<(u64, Finished)>,
+    undo_rx: Receiver<(u64, Finished)>,
 }
 
 impl ResultsWindow {
@@ -248,7 +249,20 @@ impl ResultsWindow {
         card.set_state(FileState::Undoing(result.clone()), now);
         let (tx, config, ctx) = (self.undo_tx.clone(), self.config.clone(), ctx.clone());
         thread::spawn(move || {
-            let _ = tx.send((key, undo(&result, &config)));
+            let _ = tx.send((key, Finished::Undo(undo(&result, &config))));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Put an entry's file into module `course`. (Keywords are only learned in the main window,
+    /// which owns the settings.)
+    fn start_assign(&mut self, key: u64, course: usize, ctx: &egui::Context, now: f64) {
+        let Some(card) = self.cards.iter_mut().find(|c| c.key == key) else { return };
+        let Some(result) = card.assignable().cloned() else { return };
+        card.set_state(FileState::Assigning(result.clone()), now);
+        let (tx, config, ctx) = (self.undo_tx.clone(), self.config.clone(), ctx.clone());
+        thread::spawn(move || {
+            let _ = tx.send((key, Finished::Assigned(crate::undo::reassign(&result, course, &config))));
             ctx.request_repaint();
         });
     }
@@ -270,24 +284,36 @@ impl eframe::App for ResultsWindow {
             }
             self.countdown_from = now;
         }
-        while let Ok((key, outcome)) = self.undo_rx.try_recv() {
+        while let Ok((key, finished)) = self.undo_rx.try_recv() {
             if let Some(card) = self.cards.iter_mut().find(|c| c.key == key)
-                && let CardKind::File { state: FileState::Undoing(result), .. } = &card.kind
+                && let CardKind::File { state: FileState::Undoing(result) | FileState::Assigning(result), .. } =
+                    &card.kind
             {
                 let result = result.clone();
-                let state = match outcome {
-                    Ok(back) => {
+                let state = match finished {
+                    Finished::Undo(Ok(back)) => {
                         self.sorted = self.sorted.saturating_sub(1);
                         FileState::Undone { back }
                     }
-                    Err(error) => FileState::UndoFailed { result, error },
+                    Finished::Assigned(Ok(new)) => {
+                        if new.sorted() && !result.sorted() {
+                            self.sorted += 1;
+                        }
+                        FileState::Done(new)
+                    }
+                    Finished::Undo(Err(error)) | Finished::Assigned(Err(error)) => {
+                        FileState::UndoFailed { result, error }
+                    }
                 };
                 card.set_state(state, now);
             }
             self.countdown_from = now;
         }
         // The countdown waits while the mouse is over the window or a file is being put back.
-        let busy = self.cards.iter().any(|c| matches!(c.kind, CardKind::File { state: FileState::Undoing(_), .. }));
+        let busy = self
+            .cards
+            .iter()
+            .any(|c| matches!(c.kind, CardKind::File { state: FileState::Undoing(_) | FileState::Assigning(_), .. }));
         let hovered = ctx.input(|i| i.pointer.hover_pos().is_some());
         if hovered || busy {
             self.countdown_from = now;
@@ -366,8 +392,9 @@ impl eframe::App for ResultsWindow {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
+                    let modules: Vec<String> = self.config.courses.iter().map(|c| c.label()).collect();
                     for card in self.cards.iter().rev() {
-                        match activity_row(ui, lang, card, now) {
+                        match activity_row(ui, lang, card, now, &modules) {
                             RowAction::None => {}
                             action => actions.push((card.key, action)),
                         }
@@ -378,6 +405,7 @@ impl eframe::App for ResultsWindow {
             match action {
                 RowAction::Open(path) => crate::desktop::reveal(&path),
                 RowAction::Undo => self.start_undo(key, &ctx, now),
+                RowAction::Assign(course) => self.start_assign(key, course, &ctx, now),
                 RowAction::None => {}
             }
         }

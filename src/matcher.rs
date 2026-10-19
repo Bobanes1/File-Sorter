@@ -16,12 +16,17 @@ const MAX_CONTENT_HITS_PER_KEYWORD: usize = 5;
 pub enum Reason {
     FileName(Vec<String>),
     Content(Vec<String>),
+    /// The user chose the module.
+    Chosen,
+    /// Downloaded from the same place (server named) as earlier files of the module.
+    Origin(String),
 }
 
 impl Reason {
     pub fn keywords(&self) -> &[String] {
         match self {
             Reason::FileName(k) | Reason::Content(k) => k,
+            Reason::Chosen | Reason::Origin(_) => &[],
         }
     }
 
@@ -30,6 +35,8 @@ impl Reason {
         match self {
             Reason::FileName(k) => format!("filename contains {}", k.join(", ")),
             Reason::Content(k) => format!("content mentions {}", k.join(", ")),
+            Reason::Chosen => "chosen by hand".to_string(),
+            Reason::Origin(host) => format!("downloaded from {host} like earlier files of this module"),
         }
     }
 }

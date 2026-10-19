@@ -425,9 +425,10 @@ impl App {
                 return;
             }
             let now = self.now();
+            let modules: Vec<String> = self.config.courses.iter().map(|c| c.label()).collect();
             ui.spacing_mut().item_spacing.y = 2.0;
             for card in self.cards.iter().rev() {
-                match cards::activity_row(ui, lang, card, now) {
+                match cards::activity_row(ui, lang, card, now, &modules) {
                     RowAction::None => {}
                     action => actions.push((card.key, action)),
                 }
@@ -436,7 +437,8 @@ impl App {
         for (key, action) in actions {
             match action {
                 RowAction::Open(path) => crate::desktop::reveal(&path),
-                RowAction::Undo => self.start_undo(key),
+                RowAction::Undo => self.undo_entry(key),
+                RowAction::Assign(course) => self.start_assign(key, course),
                 RowAction::None => {}
             }
         }
@@ -519,10 +521,16 @@ fn scope_menu_row(ui: &mut egui::Ui, selected: bool, title: &str, hint: &str) ->
         .horizontal(|ui| {
             ui.set_min_height(52.0);
             ui.add_space(8.0);
-            let glyph = if selected { icon::CHECK } else { "" };
-            ui.allocate_ui_with_layout(vec2(20.0, 20.0), Layout::left_to_right(Align::Center), |ui| {
-                ui.label(RichText::new(glyph).size(16.0).color(p.primary));
-            });
+            let (check, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
+            if selected {
+                ui.painter().text(
+                    check.center(),
+                    Align2::CENTER_CENTER,
+                    icon::CHECK,
+                    FontId::proportional(16.0),
+                    p.primary,
+                );
+            }
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;

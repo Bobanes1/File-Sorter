@@ -22,7 +22,7 @@ use std::time::Duration;
 use eframe::egui::{self, Id, Margin, Rect, RichText, Sense, vec2};
 use egui_phosphor::regular as icon;
 
-pub(crate) use cards::{Card, CardKind, FileState, RowAction, activity_row};
+pub(crate) use cards::{Card, CardKind, FileState, Finished, RowAction, activity_row};
 use cards::{Note, SNACKBAR_SECS, Snackbar};
 
 use crate::config::{
@@ -32,7 +32,7 @@ use crate::config::{
 use crate::fx;
 use crate::i18n::Lang;
 use crate::keywords::{Suggestion, suggest_keywords};
-use crate::sorter::{LeftReason, Outcome};
+use crate::sorter::{LeftReason, Outcome, SortResult};
 use crate::tray::{self, Tray};
 use crate::undo::{UndoError, undo};
 use crate::watcher::{FolderWatcher, Sink, StartError, WatchEvent};
@@ -135,9 +135,9 @@ pub(crate) struct App {
     keyword_preview: Option<KeywordPreview>,
 
     cards: Vec<Card>,
-    /// Finished undos: the entry's key and where the file is now.
-    undo_tx: Sender<(u64, Result<PathBuf, UndoError>)>,
-    undo_rx: Receiver<(u64, Result<PathBuf, UndoError>)>,
+    /// Finished undos and assignments, with the entry's key.
+    undo_tx: Sender<(u64, Finished)>,
+    undo_rx: Receiver<(u64, Finished)>,
     snackbar: Option<Snackbar>,
     flights: Vec<Flight>,
     glows: HashMap<String, f64>,
@@ -400,12 +400,102 @@ impl App {
         card.set_state(FileState::Undoing(result.clone()), now);
         let (tx, config, ctx) = (self.undo_tx.clone(), self.config.clone(), self.ctx.clone());
         std::thread::spawn(move || {
-            let _ = tx.send((key, undo(&result, &config)));
+            let _ = tx.send((key, Finished::Undo(undo(&result, &config))));
             ctx.request_repaint();
         });
         if self.snackbar.as_ref().is_some_and(|s| s.card == key) {
             self.snackbar = None;
         }
+    }
+
+    /// «Undo» on an entry: put a file back, or take back keywords learned from one.
+    fn undo_entry(&mut self, key: u64) {
+        let learned = self.cards.iter_mut().find(|c| c.key == key).and_then(|card| match &mut card.kind {
+            CardKind::Note(Note::Learned { module, words, undone: undone @ false }) => {
+                *undone = true;
+                Some((module.clone(), words.clone()))
+            }
+            _ => None,
+        });
+        match learned {
+            Some((module, words)) => self.forget_keywords(&module, &words),
+            None => self.start_undo(key),
+        }
+    }
+
+    /// Put an entry's file into module `course` (chosen by the user).
+    fn start_assign(&mut self, key: u64, course: usize) {
+        let now = self.now();
+        let Some(card) = self.cards.iter_mut().find(|c| c.key == key) else { return };
+        let Some(result) = card.assignable().cloned() else { return };
+        card.set_state(FileState::Assigning(result.clone()), now);
+        let (tx, config, ctx) = (self.undo_tx.clone(), self.config.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send((key, Finished::Assigned(crate::undo::reassign(&result, course, &config))));
+            ctx.request_repaint();
+        });
+        if self.snackbar.as_ref().is_some_and(|s| s.card == key) {
+            self.snackbar = None;
+        }
+    }
+
+    fn finish_assign(&mut self, key: u64, outcome: Result<SortResult, UndoError>) {
+        let now = self.now();
+        let Some(card) = self.cards.iter_mut().find(|c| c.key == key) else { return };
+        let CardKind::File { name, state: FileState::Assigning(old) } = &card.kind else { return };
+        let (name, old) = (name.clone(), old.clone());
+        let new = match outcome {
+            Ok(new) => new,
+            Err(error) => {
+                card.set_state(FileState::UndoFailed { result: old, error }, now);
+                return;
+            }
+        };
+        card.set_state(FileState::Done(new.clone()), now);
+        if old.sorted() {
+            self.cloud_after_undo(&old);
+            if let Some(count) = old.sorted_course().and_then(|c| self.module_counts.get_mut(c)) {
+                *count = count.saturating_sub(1);
+            }
+        } else if old.outcome == Outcome::Left(LeftReason::NoMatch) {
+            self.stats.unmatched = self.stats.unmatched.saturating_sub(1);
+        }
+        let Some(course) = new.sorted_course().map(str::to_string) else { return };
+        if !old.sorted() {
+            self.stats.sorted += 1;
+        }
+        self.cloud_after_sort(&new);
+        *self.module_counts.entry(course.clone()).or_default() += 1;
+        self.glows.insert(course.clone(), now);
+        self.snackbar = Some(Snackbar {
+            card: key,
+            text: self.lang.snack_sorted(&name, &course, matches!(new.outcome, Outcome::Copied { .. })),
+            can_undo: true,
+            shown: now,
+        });
+        if self.config.features.learn
+            && let Some(i) = self.config.courses.iter().position(|c| c.label() == course)
+        {
+            let words = crate::keywords::learn_from_name(&self.config, i, &new.source);
+            if !words.is_empty() {
+                self.config.courses[i].keywords.extend(words.iter().cloned());
+                if self.selected == Some(i) {
+                    self.keywords_text = self.config.courses[i].keywords.join("\n");
+                }
+                self.note(Note::Learned { module: course, words, undone: false });
+                self.save_quietly();
+            }
+        }
+    }
+
+    /// Take back keywords learned from an assigned file.
+    fn forget_keywords(&mut self, module: &str, words: &[String]) {
+        let Some(i) = self.config.courses.iter().position(|c| c.label() == module) else { return };
+        self.config.courses[i].keywords.retain(|k| !words.contains(k));
+        if self.selected == Some(i) {
+            self.keywords_text = self.config.courses[i].keywords.join("\n");
+        }
+        self.save_quietly();
     }
 
     fn finish_undo(&mut self, key: u64, outcome: Result<PathBuf, UndoError>) {
@@ -855,8 +945,11 @@ impl eframe::App for App {
         while let Ok(event) = self.events_rx.try_recv() {
             self.handle_event(event);
         }
-        while let Ok((key, outcome)) = self.undo_rx.try_recv() {
-            self.finish_undo(key, outcome);
+        while let Ok((key, finished)) = self.undo_rx.try_recv() {
+            match finished {
+                Finished::Undo(outcome) => self.finish_undo(key, outcome),
+                Finished::Assigned(outcome) => self.finish_assign(key, outcome),
+            }
         }
         if let Some((course, rx)) = &self.keyword_scan {
             match rx.try_recv() {

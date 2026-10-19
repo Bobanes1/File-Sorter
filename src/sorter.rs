@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::{Config, ExistingScope, FileAction};
 use crate::extract::extract_text;
 use crate::ledger::{COPIED_LIST, CopyLedger, KEPT_LIST, KeptFiles};
-use crate::matcher::{Reason, match_file};
+use crate::matcher::{Match, Reason, match_file};
+use crate::origin;
 
 /// Partial downloads written by browsers before the file is complete.
 pub const TEMP_SUFFIXES: &[&str] = &[".crdownload", ".part", ".partial", ".download", ".tmp", ".temp", ".opdownload"];
@@ -94,6 +95,16 @@ impl SortResult {
     /// True when the file is now in its module folder (moved, copied, or was there already as a duplicate).
     pub fn sorted(&self) -> bool {
         !matches!(self.outcome, Outcome::Left(_))
+    }
+
+    /// The module the file went into (`None` while it stayed where it was).
+    pub fn sorted_course(&self) -> Option<&str> {
+        match &self.outcome {
+            Outcome::Moved { course, .. }
+            | Outcome::Copied { course, .. }
+            | Outcome::DuplicateRemoved { course, .. } => Some(course),
+            Outcome::Left(_) => None,
+        }
     }
 
     #[cfg(test)]
@@ -403,7 +414,26 @@ pub fn sort_file_with_patience(path: &Path, config: &Config, patience: Duration)
     if is_kept(path, config) {
         return SortResult::left(path, LeftReason::Kept);
     }
-    sort_any_file(path, config, patience)
+    sort_any_file(path, config, patience, Target::Auto)
+}
+
+/// Which module a file goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// The one its name, content or origin points to.
+    Auto,
+    /// This one (index into `config.courses`), chosen by the user.
+    Course(usize),
+}
+
+/// Put a file into the module the user chose («Assign»), recorded in the history like any sort.
+pub fn sort_into(path: &Path, course: usize, config: &Config) -> SortResult {
+    stop_keeping(path, config);
+    let mut result = sort_any_file(path, config, IN_USE_RETRY, Target::Course(course));
+    if let Outcome::Left(LeftReason::InUse { course }) = &result.outcome {
+        result.outcome = Outcome::Left(LeftReason::StillOpen { course: course.clone() });
+    }
+    result
 }
 
 /// True if the user undid sorting this file, so it stays where it is.
@@ -441,7 +471,7 @@ pub fn sort_chosen(paths: &[PathBuf], config: &Config) -> Vec<SortResult> {
                 SortResult::left(path, LeftReason::NotDocument)
             } else {
                 stop_keeping(path, config);
-                sort_any_file(path, config, IN_USE_RETRY)
+                sort_any_file(path, config, IN_USE_RETRY, Target::Auto)
             });
         }
     }
@@ -454,8 +484,8 @@ pub fn sort_chosen(paths: &[PathBuf], config: &Config) -> Vec<SortResult> {
     results
 }
 
-fn sort_any_file(path: &Path, config: &Config, patience: Duration) -> SortResult {
-    let mut result = sort_any_file_unrecorded(path, config, patience);
+fn sort_any_file(path: &Path, config: &Config, patience: Duration, target: Target) -> SortResult {
+    let mut result = sort_any_file_unrecorded(path, config, patience, target);
     if result.sorted()
         && let Some(dir) = &config.state_dir
     {
@@ -467,7 +497,18 @@ fn sort_any_file(path: &Path, config: &Config, patience: Duration) -> SortResult
     result
 }
 
-fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration) -> SortResult {
+/// The module for `path` and why, or `None` if it isn't clear.
+fn choose_course(path: &Path, config: &Config, origin: Option<&origin::Source>) -> Option<Match> {
+    if let Some(m) = match_file(path, &config.courses, config.read_file_contents, extract_text) {
+        return Some(m);
+    }
+    // Nothing (or a tie) by name and content: files from the same course page go together.
+    let source = origin?;
+    let course = origin::lookup(config, source)?;
+    Some(Match { course, score: 0, reason: Reason::Origin(source.host.clone()) })
+}
+
+fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration, target: Target) -> SortResult {
     if !path.is_file() {
         return SortResult::left(path, LeftReason::Gone);
     }
@@ -477,12 +518,40 @@ fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration) ->
         (Some(file), true) => Some((CopyLedger::load(file), file)),
         _ => None,
     };
-    if let Some(earlier) = ledger.as_ref().and_then(|(l, _)| l.earlier_copy(path)) {
+    if target == Target::Auto
+        && let Some(earlier) = ledger.as_ref().and_then(|(l, _)| l.earlier_copy(path))
+    {
         return SortResult::left(path, LeftReason::AlreadyCopied { course: earlier.course, copy: earlier.copy });
     }
-    let Some(m) = match_file(path, &config.courses, config.read_file_contents, extract_text) else {
-        return SortResult::left(path, LeftReason::NoMatch);
+    // Read before the file moves (the note stays with the file, but only on the same drive).
+    let origin = if config.features.origin { origin::source_of(path) } else { None };
+    let m = match target {
+        Target::Course(i) if i < config.courses.len() => Match { course: i, score: 0, reason: Reason::Chosen },
+        Target::Course(_) => return SortResult::left(path, LeftReason::Error("this module no longer exists".into())),
+        Target::Auto => match choose_course(path, config, origin.as_ref()) {
+            Some(m) => m,
+            None => return SortResult::left(path, LeftReason::NoMatch),
+        },
     };
+    let result = place_file(path, config, patience, m, copying, &mut ledger);
+    if let Some(source) = &origin
+        && let Outcome::Moved { course, reason, .. } | Outcome::Copied { course, reason, .. } = &result.outcome
+        && !matches!(reason, Reason::Origin(_))
+    {
+        origin::remember(config, source, course, *reason == Reason::Chosen);
+    }
+    result
+}
+
+/// Move or copy `path` into the module `m` points to.
+fn place_file(
+    path: &Path,
+    config: &Config,
+    patience: Duration,
+    m: Match,
+    copying: bool,
+    ledger: &mut Option<(CopyLedger, &PathBuf)>,
+) -> SortResult {
     let course = &config.courses[m.course];
     let label = course.label();
     let folder = config.course_folder(course);
@@ -508,7 +577,7 @@ fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration) ->
     let existing = folder.join(file_name(path));
     if existing.is_file() && same_content(path, &existing) {
         if copying {
-            remember_copy(&mut ledger, path, &label, &existing);
+            remember_copy(ledger, path, &label, &existing);
             return SortResult::left(path, LeftReason::AlreadyCopied { course: label, copy: existing });
         }
         return match retry_while_in_use(patience, || discard(path)) {
@@ -534,7 +603,7 @@ fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration) ->
     }
     match done {
         Ok(()) if copying => {
-            remember_copy(&mut ledger, path, &label, &target);
+            remember_copy(ledger, path, &label, &target);
             SortResult::new(
                 path.to_path_buf(),
                 Outcome::Copied { course: label, destination: target, reason: m.reason },
@@ -674,6 +743,63 @@ pub(crate) mod tests {
         }
         let all = sort_existing(&cfg, ExistingScope::All);
         assert!(all.iter().all(|r| r.sorted()) && !old.exists());
+    }
+
+    #[test]
+    fn origin_decides_when_name_and_content_do_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(tmp.path());
+        cfg.state_dir = Some(tmp.path().join("state"));
+        let source = origin::Source { key: "moodle.uni.ch/course/4711".into(), host: "moodle.uni.ch".into() };
+        let file = cfg.watch_path().join("Blatt3.pdf");
+        make_pdf(&file, "nothing");
+        assert_eq!(choose_course(&file, &cfg, Some(&source)), None, "nothing learned yet");
+        origin::remember(&cfg, &source, "Statistics", true);
+        let m = choose_course(&file, &cfg, Some(&source)).unwrap();
+        assert_eq!((m.course, m.reason), (2, Reason::Origin("moodle.uni.ch".into())));
+        // A clear name still wins.
+        let named = cfg.watch_path().join("prog1_Blatt3.pdf");
+        make_pdf(&named, "x");
+        assert_eq!(choose_course(&named, &cfg, Some(&source)).unwrap().course, 0);
+    }
+
+    /// The browser's note on where a download came from (only Windows keeps it).
+    #[cfg(windows)]
+    #[test]
+    fn files_from_the_same_course_page_go_together() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(tmp.path());
+        cfg.state_dir = Some(tmp.path().join("state"));
+        let mark = |path: &Path| {
+            let mut stream = path.as_os_str().to_os_string();
+            stream.push(":Zone.Identifier");
+            fs::write(
+                stream,
+                "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://moodle.uni.ch/course/view.php?id=4711\r\n\
+                               HostUrl=https://moodle.uni.ch/pluginfile.php/9/x.pdf\r\n",
+            )
+            .unwrap();
+        };
+        let first = cfg.watch_path().join("stats_intro.pdf");
+        make_pdf(&first, "x");
+        mark(&first);
+        assert_eq!(sort_file(&first, &cfg).course(), Some("Statistics"));
+        let second = cfg.watch_path().join("Blatt3.pdf");
+        make_pdf(&second, "nothing");
+        mark(&second);
+        let result = sort_file(&second, &cfg);
+        assert!(
+            matches!(&result.outcome, Outcome::Moved { course, reason: Reason::Origin(host), .. }
+            if course == "Statistics" && host == "moodle.uni.ch"),
+            "{}",
+            result.describe()
+        );
+        // Switched off: left alone.
+        cfg.features.origin = false;
+        let third = cfg.watch_path().join("Blatt4.pdf");
+        make_pdf(&third, "nothing");
+        mark(&third);
+        assert_eq!(sort_file(&third, &cfg).outcome, Outcome::Left(LeftReason::NoMatch));
     }
 
     #[test]

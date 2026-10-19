@@ -16,6 +16,14 @@ use crate::undo::UndoError;
 pub(crate) const CARD_APPEAR_SECS: f64 = 0.35;
 pub(crate) const CARD_FLASH_SECS: f64 = 0.9;
 
+/// A background step for an entry has finished.
+pub(crate) enum Finished {
+    /// Undo: where the file is now.
+    Undo(Result<PathBuf, UndoError>),
+    /// Assigned to a module by hand: the new result.
+    Assigned(Result<SortResult, UndoError>),
+}
+
 /// Things worth telling the user that aren't about a single file.
 #[derive(Debug, Clone)]
 pub(crate) enum Note {
@@ -40,6 +48,12 @@ pub(crate) enum Note {
         folder: String,
     },
     ScanFailed,
+    /// Keywords learned from a file the user assigned by hand (`undone` once taken back).
+    Learned {
+        module: String,
+        words: Vec<String>,
+        undone: bool,
+    },
     ConfigUnreadable {
         path: String,
         error: String,
@@ -58,8 +72,15 @@ pub(crate) enum FileState {
     Vanished,
     Done(SortResult),
     Undoing(SortResult),
-    Undone { back: PathBuf },
-    UndoFailed { result: SortResult, error: UndoError },
+    /// Being moved into the module the user chose.
+    Assigning(SortResult),
+    Undone {
+        back: PathBuf,
+    },
+    UndoFailed {
+        result: SortResult,
+        error: UndoError,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -112,18 +133,36 @@ impl Card {
         }
     }
 
+    /// The file's result while it can be put into a(nother) module by hand: sorted, or left
+    /// because no module fit (or it was open, or it stayed after an undo).
+    pub(crate) fn assignable(&self) -> Option<&SortResult> {
+        match &self.kind {
+            CardKind::File { state: FileState::Done(result), .. }
+                if result.sorted()
+                    || matches!(
+                        result.outcome,
+                        Outcome::Left(LeftReason::NoMatch | LeftReason::StillOpen { .. } | LeftReason::Kept)
+                    ) =>
+            {
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+
     /// Where this entry's file is now, for "show in folder".
     pub(crate) fn location(&self) -> Option<&Path> {
         let CardKind::File { state, .. } = &self.kind else { return None };
         match state {
-            FileState::Done(result) | FileState::Undoing(result) | FileState::UndoFailed { result, .. } => {
-                match &result.outcome {
-                    Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } => Some(destination),
-                    Outcome::DuplicateRemoved { existing, .. } => Some(existing),
-                    Outcome::Left(LeftReason::AlreadyCopied { copy, .. }) => Some(copy),
-                    Outcome::Left(_) => None,
-                }
-            }
+            FileState::Done(result)
+            | FileState::Undoing(result)
+            | FileState::Assigning(result)
+            | FileState::UndoFailed { result, .. } => match &result.outcome {
+                Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } => Some(destination),
+                Outcome::DuplicateRemoved { existing, .. } => Some(existing),
+                Outcome::Left(LeftReason::AlreadyCopied { copy, .. }) => Some(copy),
+                Outcome::Left(_) => None,
+            },
             FileState::Undone { back, .. } => Some(back),
             _ => None,
         }
@@ -154,6 +193,7 @@ pub(crate) fn note_title(lang: Lang, note: &Note) -> String {
         Note::NoNewKeywords { module, files } => lang.no_new_keywords(module, *files),
         Note::NoFilesToScan { module, .. } => lang.no_files_to_scan(module),
         Note::ScanFailed => lang.scan_failed().into(),
+        Note::Learned { module, words, undone } => lang.learned(module, words.len(), *undone),
         Note::ConfigUnreadable { path, error } => lang.config_unreadable(path, error),
         Note::Cloud { title, .. } => title.clone(),
     }
@@ -185,6 +225,7 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
                 FileState::Waiting => make("", blue, name, Some(lang.waiting_for_download().into()), None),
                 FileState::Vanished => make(icon::X_CIRCLE, neutral, name, Some(lang.vanished().into()), None),
                 FileState::Undoing(_) => make("", neutral, name, Some(lang.undoing().into()), None),
+                FileState::Assigning(_) => make("", blue, name, Some(lang.assigning().into()), None),
                 FileState::Undone { back, .. } => {
                     make(icon::ARROW_U_UP_LEFT, neutral, name, Some(lang.undone(&folder_name(back))), None)
                 }
@@ -236,6 +277,10 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
                     make(icon::FOLDER_OPEN, warn, title, Some(lang.folder_empty(folder)), None)
                 }
                 Note::ScanFailed | Note::ConfigUnreadable { .. } => make(icon::X, bad, title, None, None),
+                Note::Learned { words, undone, .. } => {
+                    let words = words.iter().map(|w| format!("«{w}»")).collect::<Vec<_>>().join(" · ");
+                    make(icon::BRAIN, if *undone { neutral } else { blue }, title, Some(words), None)
+                }
                 Note::Cloud { details, warn, .. } => {
                     let details = (!details.is_empty()).then(|| details.clone());
                     if *warn {
@@ -254,11 +299,14 @@ pub(crate) enum RowAction {
     None,
     Open(PathBuf),
     Undo,
+    /// Put the file into this module (index into the module list).
+    Assign(usize),
 }
 
 /// One entry as a Material list item: icon in a tinted circle, title, status, details,
-/// time and an undo button. Slides in when new and flashes when its state changes.
-pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64) -> RowAction {
+/// time, an undo button and a menu to put the file into a(nother) module (`modules`, by
+/// label; empty for none). Slides in when new and flashes when its state changes.
+pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64, modules: &[String]) -> RowAction {
     let p = fx::pal(ui);
     let look = look(&p, lang, card);
     let motion = fx::motion(ui.ctx());
@@ -304,10 +352,16 @@ pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64)
                             vec2(ui.available_width(), 20.0),
                             Layout::right_to_left(Align::Center),
                             |ui| {
-                                if card.undoable().is_some()
+                                let learned = matches!(card.kind, CardKind::Note(Note::Learned { undone: false, .. }));
+                                if (card.undoable().is_some() || learned)
                                     && fx::button(ui, ButtonStyle::Text, icon::ARROW_U_UP_LEFT, lang.undo()).clicked()
                                 {
                                     action = RowAction::Undo;
+                                }
+                                if let Some(result) = card.assignable().filter(|_| !modules.is_empty())
+                                    && let Some(i) = assign_menu(ui, lang, result, modules)
+                                {
+                                    action = RowAction::Assign(i);
                                 }
                                 ui.label(RichText::new(&card.clock).small().color(p.on_surface_variant));
                                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -334,11 +388,41 @@ pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64)
     if let Some((location, response)) = row {
         fx::state_layer(ui, &response, rect, 12, p.on_surface);
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(lang.open_folder_hint());
-        if response.clicked() && !matches!(action, RowAction::Undo) {
+        if response.clicked() && matches!(action, RowAction::None) {
             action = RowAction::Open(location.to_path_buf());
         }
     }
     action
+}
+
+/// «Assign ▾» (or «Other module ▾» for a sorted file) with the list of modules.
+fn assign_menu(ui: &mut egui::Ui, lang: Lang, result: &SortResult, modules: &[String]) -> Option<usize> {
+    let p = fx::pal(ui);
+    let text = if result.sorted() { lang.other_module() } else { lang.assign() };
+    let button = fx::button(ui, ButtonStyle::Text, icon::CARET_DOWN, text);
+    let button = button.on_hover_text(lang.assign_hint());
+    let current = match &result.outcome {
+        Outcome::Moved { course, .. } | Outcome::Copied { course, .. } | Outcome::DuplicateRemoved { course, .. } => {
+            Some(course.as_str())
+        }
+        Outcome::Left(_) => None,
+    };
+    let mut chosen = None;
+    egui::Popup::menu(&button).width(280.0).show(|ui| {
+        ui.set_min_width(260.0);
+        ui.label(RichText::new(lang.assign_title()).small().color(p.on_surface_variant));
+        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+            for (i, label) in modules.iter().enumerate() {
+                let here = current == Some(label.as_str());
+                let row = ui.add_enabled(!here, egui::Button::selectable(here, label).truncate());
+                if row.clicked() {
+                    chosen = Some(i);
+                    ui.close();
+                }
+            }
+        });
+    });
+    chosen
 }
 
 /// The snackbar at the bottom: a short message and, after a sort, "Undo".

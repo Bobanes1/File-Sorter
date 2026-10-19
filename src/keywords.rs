@@ -451,6 +451,59 @@ fn count<'a>(sets: impl Iterator<Item = &'a HashSet<String>>) -> HashMap<String,
     counts
 }
 
+/// At most this many keywords are learned from one file.
+const MAX_LEARNED: usize = 2;
+
+/// Keywords to learn when the user puts `file` into `config.courses[index]` by hand: up to
+/// two terms of its name (a module code first, then the longest words) that aren't
+/// everyday words, aren't a keyword of any module yet, and don't appear in the names of
+/// other modules' files (they would only cause ties).
+pub fn learn_from_name(config: &Config, index: usize, file: &Path) -> Vec<String> {
+    let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut terms = FileTerms::default();
+    terms.add(&normalise(&stem), usize::MAX);
+    let known: HashSet<String> = config.courses.iter().flat_map(course_terms).collect();
+    let mut candidates: Vec<String> = terms
+        .all
+        .into_iter()
+        .filter(|t| (terms.codes.contains(t) || !t.contains(' ')) && !known.contains(t))
+        .filter(|t| !known.iter().any(|k| count_hits(t, k) > 0))
+        .collect();
+    // Module codes first, then longer (more specific) words.
+    candidates.sort_by_key(|t| (!terms.codes.contains(t), std::cmp::Reverse(t.chars().count()), t.clone()));
+    let other_names: Vec<String> = config
+        .courses
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != index)
+        .flat_map(|(_, c)| module_files(&config.course_folder(c), config, MAX_OWN_FILES))
+        .filter_map(|p| p.file_stem().map(|s| normalise(&s.to_string_lossy())))
+        .collect();
+    let mut learned: Vec<String> = Vec::new();
+    for term in candidates {
+        if learned.len() == MAX_LEARNED {
+            break;
+        }
+        if other_names.iter().any(|n| count_hits(n, &term) > 0) || learned.iter().any(|l| l.contains(&term)) {
+            continue;
+        }
+        learned.push(term);
+    }
+    learned.into_iter().map(|t| readable(&t, &stem, terms.codes.contains(&t))).collect()
+}
+
+/// A learned term as the user would write it: a code in capitals ("INF 101"), a word as it
+/// is spelled in the file name (with its accents), in lowercase.
+fn readable(term: &str, stem: &str, code: bool) -> String {
+    if code {
+        return term.to_uppercase();
+    }
+    stem.split(|c: char| !c.is_alphanumeric())
+        .find(|raw| normalise(raw) == term)
+        .map(str::to_lowercase)
+        .unwrap_or_else(|| term.to_string())
+}
+
 /// Suggest new keywords for `config.courses[index]` from the files in its folder.
 ///
 /// A good keyword is specific to this module: it appears in many of the module's files
@@ -606,6 +659,21 @@ mod tests {
             ..Config::default()
         };
         Tree { _tmp: tmp, config }
+    }
+
+    #[test]
+    fn learns_codes_and_rare_words_from_the_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = crate::sorter::tests::test_config(tmp.path());
+        let stats = config.course_folder(&config.courses[2]);
+        fs::create_dir_all(&stats).unwrap();
+        fs::write(stats.join("Bayes Übersicht.pdf"), "x").unwrap();
+        let learn = |name: &str| learn_from_name(&config, 0, &config.watch_path().join(name));
+        assert_eq!(learn("INF101_Übungsblatt_3_Rekursion.pdf"), vec!["INF 101", "rekursion"]);
+        assert_eq!(learn("Blatt 3.pdf"), Vec::<String>::new(), "only everyday words");
+        assert_eq!(learn("Bayes Rekursion.pdf"), vec!["rekursion"], "bayes is in another module's files");
+        assert_eq!(learn("python Schleifen Iteratoren.pdf"), vec!["iteratoren", "schleifen"], "python is known");
+        assert_eq!(learn("Größenordnung.pdf"), vec!["größenordnung"]);
     }
 
     #[test]

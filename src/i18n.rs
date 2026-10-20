@@ -260,6 +260,9 @@ impl Lang {
     pub fn snack_undone(self, name: &str) -> String {
         self.fmt(format!("«{name}» put back"), format!("«{name}» zurückgelegt"))
     }
+    pub fn move_to(self, module: &str) -> String {
+        self.fmt(format!("Move to {module}"), format!("Nach {module} verschieben"))
+    }
     pub fn reason(self, reason: &Reason) -> String {
         let words = reason.keywords().join(", ");
         match reason {
@@ -271,6 +274,13 @@ impl Lang {
             Reason::Origin(host) => self.fmt(
                 format!("from {host}, like earlier files of this module"),
                 format!("von {host}, wie frühere Dateien dieses Moduls"),
+            ),
+            Reason::Learned(_) if words.is_empty() => {
+                self.pick("like the module's other files", "ähnlich wie die anderen Dateien des Moduls").into()
+            }
+            Reason::Learned(_) => self.fmt(
+                format!("like the module's other files («{words}»)"),
+                format!("ähnlich wie die anderen Dateien des Moduls («{words}»)"),
             ),
         }
     }
@@ -301,6 +311,13 @@ impl Lang {
                 self.pick("Stays here (sorting was undone)", "Bleibt hier (Sortieren rückgängig gemacht)").into()
             }
             LeftReason::Error(e) => self.fmt(format!("Error: {e}"), format!("Fehler: {e}")),
+            LeftReason::Unsure { candidates } => {
+                let names: Vec<&str> = candidates.iter().map(|c| c.rsplit(" › ").next().unwrap_or(c)).collect();
+                self.fmt(
+                    format!("Unsure: {}? Choose the module", names.join(" or ")),
+                    format!("Unsicher: {}? Bitte Modul wählen", names.join(" oder ")),
+                )
+            }
         }
     }
     pub fn started(self, folder: &str) -> String {
@@ -952,6 +969,24 @@ impl Lang {
         self.pick(
             "Remember which Moodle, ILIAS or OLAT course a file came from and sort the next one from there the same way.",
             "Merken, aus welchem Moodle-, ILIAS- oder OLAT-Kurs eine Datei kam, und weitere von dort gleich einsortieren.",
+        )
+    }
+    pub fn feature_classifier(self) -> &'static str {
+        self.pick("Learn the modules from their files", "Module aus ihren Dateien lernen")
+    }
+    pub fn feature_classifier_hint(self) -> &'static str {
+        self.pick(
+            "When the keywords don't decide, compare a file with the files already in each module and sort it only if one is clearly more alike.",
+            "Wenn die Stichwörter nicht entscheiden, eine Datei mit den Dateien vergleichen, die schon in den Modulen liegen, und nur einsortieren, wenn eines klar ähnlicher ist.",
+        )
+    }
+    pub fn feature_ask_unsure(self) -> &'static str {
+        self.pick("Ask when unsure", "Bei Unsicherheit nachfragen")
+    }
+    pub fn feature_ask_unsure_hint(self) -> &'static str {
+        self.pick(
+            "When two modules fit about equally well, the file stays and Activity asks which one is right.",
+            "Passen zwei Module etwa gleich gut, bleibt die Datei liegen und die Aktivität fragt, welches stimmt.",
         )
     }
     pub fn feature_subfolders(self) -> &'static str {

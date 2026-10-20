@@ -12,7 +12,7 @@ use crate::categories;
 use crate::config::{Config, ExistingScope, FileAction};
 use crate::extract::extract_text;
 use crate::ledger::{COPIED_LIST, CopyLedger, KEPT_LIST, KeptFiles};
-use crate::matcher::{Match, Reason, match_file};
+use crate::matcher::{Decision, Match, Reason};
 use crate::origin;
 use crate::unzip::Extracted;
 
@@ -59,6 +59,10 @@ pub enum LeftReason {
     },
     /// The user undid sorting this file, so it stays where it is.
     Kept,
+    /// Several modules fit about equally well (best first): the user decides.
+    Unsure {
+        candidates: Vec<String>,
+    },
     Error(String),
 }
 
@@ -193,6 +197,7 @@ impl SortResult {
                     LeftReason::Gone => "file no longer exists".to_string(),
                     LeftReason::NotDocument => "not a course file type".to_string(),
                     LeftReason::NoMatch => "no matching module".to_string(),
+                    LeftReason::Unsure { candidates } => format!("unsure: {}", candidates.join(" or ")),
                     LeftReason::AlreadyInFolder { .. } => "already in module folder".to_string(),
                     LeftReason::InUse { course } => {
                         format!("still open in another program, will retry (belongs to {course})")
@@ -551,14 +556,14 @@ fn sort_any_file(path: &Path, config: &Config, patience: Duration, target: Targe
     result
 }
 
-/// The module for `path` and why, or `None` if it isn't clear. The text read from the file
-/// (if it was read) is left in `text`.
+/// The module for `path` and why, or why it stays: no module fits, or several fit about
+/// equally well. The text read from the file (if it was read) is left in `text`.
 fn choose_course(
     path: &Path,
     config: &Config,
     origin: Option<&origin::Source>,
     text: &mut Option<String>,
-) -> Option<Match> {
+) -> Result<Match, LeftReason> {
     // A ZIP file's list of files is like a name, so it is always read.
     let zip = suffix(path) == ".zip";
     let read = |p: &Path| {
@@ -566,13 +571,36 @@ fn choose_course(
         *text = Some(t.clone());
         t
     };
-    if let Some(m) = match_file(path, &config.courses, config.read_file_contents || zip, read) {
-        return Some(m);
+    let features = &config.features;
+    let margin = if features.ask_when_unsure { crate::matcher::UNSURE_MARGIN } else { 0 };
+    let candidates = match crate::matcher::decide(path, &config.courses, config.read_file_contents || zip, margin, read)
+    {
+        Decision::Clear(m) => return Ok(m),
+        Decision::Unsure(c) => c,
+        Decision::Nothing => Vec::new(),
+    };
+    let labels: Vec<String> = candidates.iter().map(|(i, _)| config.courses[*i].label()).collect();
+    // The modules' other files: only among the candidates when there are some.
+    if features.classifier {
+        let allowed = (labels.len() >= 2).then_some(labels.as_slice());
+        if let Some((label, words)) = crate::classifier::guess(config, path, text.as_deref(), allowed)
+            && let Some(course) = config.courses.iter().position(|c| c.label() == label)
+        {
+            return Ok(Match { course, score: 0, reason: Reason::Learned(words) });
+        }
     }
-    // Nothing (or a tie) by name and content: files from the same course page go together.
-    let source = origin?;
-    let course = origin::lookup(config, source)?;
-    Some(Match { course, score: 0, reason: Reason::Origin(source.host.clone()) })
+    // Files from the same course page go together.
+    if let Some(source) = origin
+        && let Some(course) = origin::lookup(config, source)
+        && (labels.is_empty() || labels.contains(&config.courses[course].label()))
+    {
+        return Ok(Match { course, score: 0, reason: Reason::Origin(source.host.clone()) });
+    }
+    // Several about equally likely (without asking: only an exact tie gets here).
+    if labels.len() >= 2 && features.ask_when_unsure {
+        return Err(LeftReason::Unsure { candidates: labels.into_iter().take(3).collect() });
+    }
+    Err(LeftReason::NoMatch)
 }
 
 fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration, target: Target) -> SortResult {
@@ -597,8 +625,8 @@ fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration, ta
         Target::Course(i) if i < config.courses.len() => Match { course: i, score: 0, reason: Reason::Chosen },
         Target::Course(_) => return SortResult::left(path, LeftReason::Error("this module no longer exists".into())),
         Target::Auto => match choose_course(path, config, origin.as_ref(), &mut text) {
-            Some(m) => m,
-            None => return SortResult::left(path, LeftReason::NoMatch),
+            Ok(m) => m,
+            Err(reason) => return SortResult::left(path, reason),
         },
     };
     let result = place_file(path, config, patience, m, copying, &mut ledger, text);
@@ -955,7 +983,11 @@ pub(crate) mod tests {
         let source = origin::Source { key: "moodle.uni.ch/course/4711".into(), host: "moodle.uni.ch".into() };
         let file = cfg.watch_path().join("Blatt3.pdf");
         make_pdf(&file, "nothing");
-        assert_eq!(choose_course(&file, &cfg, Some(&source), &mut None), None, "nothing learned yet");
+        assert_eq!(
+            choose_course(&file, &cfg, Some(&source), &mut None),
+            Err(LeftReason::NoMatch),
+            "nothing learned yet"
+        );
         origin::remember(&cfg, &source, "Statistics", true);
         let m = choose_course(&file, &cfg, Some(&source), &mut None).unwrap();
         assert_eq!((m.course, m.reason), (2, Reason::Origin("moodle.uni.ch".into())));
@@ -963,6 +995,43 @@ pub(crate) mod tests {
         let named = cfg.watch_path().join("prog1_Blatt3.pdf");
         make_pdf(&named, "x");
         assert_eq!(choose_course(&named, &cfg, Some(&source), &mut None).unwrap().course, 0);
+    }
+
+    #[test]
+    fn close_calls_are_asked_about_and_the_learned_model_decides_ties() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(tmp.path());
+        cfg.state_dir = Some(tmp.path().join("state"));
+        cfg.read_file_contents = false;
+        // «python» (Programming) and «matrix» (Linear Algebra): equally likely.
+        let file = cfg.watch_path().join("python matrix.pdf");
+        make_pdf(&file, "x");
+        let unsure = choose_course(&file, &cfg, None, &mut None);
+        assert_eq!(
+            unsure,
+            Err(LeftReason::Unsure { candidates: vec![cfg.courses[0].label(), cfg.courses[1].label()] })
+        );
+        let result = sort_file(&file, &cfg);
+        assert!(matches!(result.outcome, Outcome::Left(LeftReason::Unsure { .. })), "stays where it is");
+        assert!(file.is_file());
+        // Asking switched off: an exact tie still stays, but no question.
+        cfg.features.ask_when_unsure = false;
+        assert_eq!(choose_course(&file, &cfg, None, &mut None), Err(LeftReason::NoMatch));
+        cfg.features.ask_when_unsure = true;
+        // The modules' own files: Linear Algebra has many files about matrices and python.
+        let la = cfg.course_folder(&cfg.courses[1]);
+        let prog = cfg.course_folder(&cfg.courses[0]);
+        fs::create_dir_all(&la).unwrap();
+        fs::create_dir_all(&prog).unwrap();
+        for i in 0..6 {
+            make_pdf(&la.join(format!("Numerik python matrix {i}.pdf")), "x");
+            make_pdf(&prog.join(format!("Schleifen Objekte {i}.pdf")), "x");
+        }
+        let model = crate::classifier::Model::train(&cfg, &std::collections::HashMap::new());
+        model.save(&cfg.state_file(crate::classifier::MODEL_FILE).unwrap()).unwrap();
+        let m = choose_course(&file, &cfg, None, &mut None).unwrap();
+        assert_eq!(m.course, 1);
+        assert!(matches!(m.reason, Reason::Learned(_)));
     }
 
     /// The browser's note on where a download came from (only Windows keeps it).

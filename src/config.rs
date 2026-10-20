@@ -271,6 +271,10 @@ pub struct Features {
     /// Look for new versions of File Sorter.
     pub update_check: bool,
     pub update_install: UpdateMode,
+    /// When two modules fit about equally well, leave the file and ask.
+    pub ask_when_unsure: bool,
+    /// Learn the modules from the files already in them, for files the keywords don't decide.
+    pub classifier: bool,
 }
 
 impl Default for Features {
@@ -291,6 +295,8 @@ impl Default for Features {
             weekly: true,
             update_check: true,
             update_install: UpdateMode::Ask,
+            ask_when_unsure: true,
+            classifier: true,
         }
     }
 }

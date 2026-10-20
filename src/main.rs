@@ -7,6 +7,7 @@
 
 mod archive;
 mod categories;
+mod classifier;
 mod cloud;
 mod common_words;
 mod config;

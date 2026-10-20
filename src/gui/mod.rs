@@ -395,7 +395,7 @@ impl App {
                     Outcome::Moved { course, .. }
                     | Outcome::Copied { course, .. }
                     | Outcome::DuplicateRemoved { course, .. } => Some(course.clone()),
-                    Outcome::Left(LeftReason::NoMatch) => {
+                    Outcome::Left(LeftReason::NoMatch | LeftReason::Unsure { .. }) => {
                         self.stats.unmatched += 1;
                         None
                     }

@@ -111,6 +111,9 @@ pub(super) struct Study {
     week_shown: Option<u64>,
     /// Entries added after this (Unix seconds) are marked new during this visit.
     new_since: i64,
+    /// When the module model (learned from the modules' files) is built next.
+    model_at: f64,
+    training: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Study {
@@ -136,6 +139,8 @@ impl Study {
             checked: None,
             week_shown: None,
             new_since: 0,
+            model_at: 30.0,
+            training: Default::default(),
         }
     }
 
@@ -192,10 +197,41 @@ impl App {
         if changed {
             self.save_deadlines();
         }
+        self.train_model();
         // Search as you type, once the index answers.
         if self.study.query != self.study.searched {
             self.run_search();
         }
+    }
+
+    /// Now and then (and a little after the start): learn the modules from their files again,
+    /// for files the keywords don't decide.
+    fn train_model(&mut self) {
+        use std::sync::atomic::Ordering;
+        let now = self.now();
+        if !self.config.features.classifier
+            || self.config.courses.is_empty()
+            || now < self.study.model_at
+            || self.study.training.load(Ordering::Relaxed)
+            || self.study.indexer.as_ref().is_some_and(|i| i.busy())
+        {
+            return;
+        }
+        self.study.model_at = now + 60.0 * 60.0;
+        let Some(file) = self.config.state_file(crate::classifier::MODEL_FILE) else { return };
+        let config = self.config.clone();
+        let index = self.study.indexer.as_ref().map(|i| i.index.clone());
+        let flag = self.study.training.clone();
+        flag.store(true, Ordering::Relaxed);
+        std::thread::spawn(move || {
+            let starts =
+                index.and_then(|i| i.read().ok().map(|i| i.starts(crate::classifier::TEXT_WORDS))).unwrap_or_default();
+            let model = crate::classifier::Model::train(&config, &starts);
+            if let Err(e) = model.save(&file) {
+                log::info!("Could not save the module model: {e}");
+            }
+            flag.store(false, Ordering::Relaxed);
+        });
     }
 
     fn run_search(&mut self) {

@@ -20,12 +20,14 @@ pub enum Reason {
     Chosen,
     /// Downloaded from the same place (server named) as earlier files of the module.
     Origin(String),
+    /// The keywords didn't decide; the module's other files have these words.
+    Learned(Vec<String>),
 }
 
 impl Reason {
     pub fn keywords(&self) -> &[String] {
         match self {
-            Reason::FileName(k) | Reason::Content(k) => k,
+            Reason::FileName(k) | Reason::Content(k) | Reason::Learned(k) => k,
             Reason::Chosen | Reason::Origin(_) => &[],
         }
     }
@@ -37,6 +39,7 @@ impl Reason {
             Reason::Content(k) => format!("content mentions {}", k.join(", ")),
             Reason::Chosen => "chosen by hand".to_string(),
             Reason::Origin(host) => format!("downloaded from {host} like earlier files of this module"),
+            Reason::Learned(k) => format!("like the module's other files ({})", k.join(", ")),
         }
     }
 }
@@ -115,6 +118,146 @@ fn terms(course: &Course) -> Vec<(String, String)> {
     out
 }
 
+/// Short forms of a module name that people write in file names: the starts of its words
+/// ("Lineare Algebra" → "linalg", "la"), the first word cut short with its number
+/// ("Programmieren 1" → "prog 1").
+fn abbreviations(name: &str) -> Vec<String> {
+    let words: Vec<String> = normalise(name)
+        .split(' ')
+        .filter(|w| !w.is_empty() && !crate::config::STOPWORDS.contains(w) && !crate::config::FILLER_WORDS.contains(w))
+        .map(str::to_string)
+        .collect();
+    let letters: Vec<&String> = words.iter().filter(|w| w.chars().all(char::is_alphabetic)).collect();
+    let number = words.iter().find(|w| w.chars().all(|c| c.is_ascii_digit() || "iv".contains(c)) && w.len() <= 3);
+    let mut out = Vec::new();
+    if letters.len() >= 2 {
+        let starts: String = letters.iter().map(|w| w.chars().take(3).collect::<String>()).collect();
+        out.push(starts);
+        let initials: String = letters.iter().filter_map(|w| w.chars().next()).collect();
+        if initials.len() >= 2 {
+            out.push(initials);
+        }
+    }
+    if let Some(first) = letters.first().filter(|w| w.chars().count() > 5) {
+        let short: String = first.chars().take(4).collect();
+        out.push(match number {
+            Some(n) => format!("{short} {n}"),
+            None => short,
+        });
+    }
+    out.retain(|a| a.chars().count() >= 2 && !crate::common_words::is_common(a));
+    out.dedup();
+    out
+}
+
+/// Whether `a` and `b` differ by one typo: a letter more, less, different, or two swapped.
+fn one_typo(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    if a == b || a.len().abs_diff(b.len()) > 1 {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len().min(b.len()) && a[i] == b[i] {
+        i += 1;
+    }
+    let rest = |x: &[char], y: &[char]| x == y;
+    match a.len().cmp(&b.len()) {
+        std::cmp::Ordering::Equal => {
+            rest(&a[i + 1..], &b[i + 1..])
+                || (i + 1 < a.len() && a[i] == b[i + 1] && a[i + 1] == b[i] && rest(&a[i + 2..], &b[i + 2..]))
+        }
+        std::cmp::Ordering::Greater => rest(&a[i + 1..], &b[i..]),
+        std::cmp::Ordering::Less => rest(&a[i..], &b[i + 1..]),
+    }
+}
+
+/// How much each module's words count: a word several modules share counts less, and short
+/// forms and typos count half. Built once per decision.
+pub struct Weights {
+    /// Per module: (word as written, normalised, weight in tenths).
+    terms: Vec<Vec<(String, String, usize)>>,
+    /// Per module: short forms of its name only it has.
+    short: Vec<Vec<String>>,
+}
+
+/// Full weight of one hit.
+const FULL: usize = 10;
+/// A typo or a short form counts half.
+const HALF: usize = 5;
+/// Content hits within this many words of the start (the title page) count double.
+const TITLE_WORDS: usize = 60;
+
+impl Weights {
+    pub fn new(courses: &[Course]) -> Weights {
+        let all: Vec<Vec<(String, String)>> = courses.iter().map(terms).collect();
+        let shared = |key: &str| all.iter().filter(|t| t.iter().any(|(_, k)| k == key)).count().max(1);
+        let terms = all
+            .iter()
+            .map(|t| t.iter().map(|(term, key)| (term.clone(), key.clone(), FULL / shared(key))).collect())
+            .collect();
+        let names: Vec<Vec<String>> = courses.iter().map(|c| abbreviations(&c.name)).collect();
+        let keys: Vec<String> = all.iter().flatten().map(|(_, k)| k.clone()).collect();
+        let short = names
+            .iter()
+            .map(|mine| {
+                mine.iter()
+                    .filter(|a| names.iter().filter(|n| n.contains(a)).count() == 1 && !keys.contains(a))
+                    .cloned()
+                    .collect()
+            })
+            .collect();
+        Weights { terms, short }
+    }
+
+    /// Weighted hits of module `i` in a file name: whole keywords, short forms of the module
+    /// name and keywords with one typo. Returns (score, matched words).
+    pub fn score_name(&self, name: &str, i: usize) -> (usize, Vec<String>) {
+        let norm = normalise(name);
+        let tokens: Vec<&str> = norm.split(' ').collect();
+        let mut total = 0;
+        let mut matched = Vec::new();
+        for (term, key, weight) in &self.terms[i] {
+            let hits = count_hits(&norm, key);
+            if hits > 0 {
+                total += hits * weight;
+                matched.push(term.clone());
+            } else if !key.contains(' ')
+                && key.chars().count() >= 6
+                && tokens.iter().any(|t| t.chars().count() >= 5 && one_typo(t, key))
+            {
+                total += weight * HALF / FULL;
+                matched.push(term.clone());
+            }
+        }
+        for short in &self.short[i] {
+            if count_hits(&norm, short) > 0 {
+                total += HALF;
+                matched.push(short.clone());
+            }
+        }
+        (total, matched)
+    }
+
+    /// Weighted hits of module `i` in a text, each word at most `cap` times; hits on the title
+    /// page count double.
+    pub fn score_text(&self, text: &str, i: usize, cap: usize) -> (usize, Vec<String>) {
+        let norm = normalise(text);
+        let title_end = norm.match_indices(' ').nth(TITLE_WORDS).map_or(norm.len(), |(p, _)| p);
+        let title = &norm[..title_end];
+        let mut total = 0;
+        let mut matched = Vec::new();
+        for (term, key, weight) in &self.terms[i] {
+            let hits = count_hits(&norm, key).min(cap);
+            if hits > 0 {
+                let on_title = count_hits(title, key).min(hits);
+                total += (hits + on_title) * weight;
+                matched.push(term.clone());
+            }
+        }
+        (total, matched)
+    }
+}
+
 /// Keyword hits for one module in `text`. Returns (hits, matched keywords).
 pub fn score_text(text: &str, course: &Course, cap: Option<usize>) -> (usize, Vec<String>) {
     let norm = normalise(text);
@@ -133,15 +276,21 @@ pub fn score_text(text: &str, course: &Course, cap: Option<usize>) -> (usize, Ve
     (total, matched)
 }
 
-/// Index and score of the single best module, or None if nothing matched or there is a tie.
-fn best(scores: &[(usize, Vec<String>)]) -> Option<(usize, usize)> {
+/// The modules with any score, best first: (index, score).
+fn ranked(scores: &[(usize, Vec<String>)]) -> Vec<(usize, usize)> {
     let mut ranked: Vec<(usize, usize)> =
-        scores.iter().enumerate().filter(|(_, (s, _))| *s > 0).map(|(i, (s, _))| (*s, i)).collect();
-    ranked.sort_by(|a, b| b.cmp(a));
-    match ranked.as_slice() {
+        scores.iter().enumerate().filter(|(_, (s, _))| *s > 0).map(|(i, (s, _))| (i, *s)).collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    ranked
+}
+
+/// The best module, if it is ahead of the second by at least `margin` percent.
+fn clear_winner(ranked: &[(usize, usize)], margin: usize) -> Option<(usize, usize)> {
+    match ranked {
         [] => None,
-        [first, second, ..] if first.0 == second.0 => None,
-        [first, ..] => Some((first.1, first.0)),
+        [first] => Some(*first),
+        [first, second, ..] if first.1 * 100 >= second.1 * (100 + margin) && first.1 > second.1 => Some(*first),
+        _ => None,
     }
 }
 
@@ -155,44 +304,84 @@ fn dedup(items: &[String]) -> Vec<String> {
     out
 }
 
+/// What the name and content say about a file's module.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Decision {
+    /// One module is clearly ahead.
+    Clear(Match),
+    /// Several modules are about as likely: (index, score), best first.
+    Unsure(Vec<(usize, usize)>),
+    /// No module's words are in it.
+    Nothing,
+}
+
+/// How far ahead (percent) the best module must be to count as clear when the user wants to
+/// be asked otherwise; without asking, any lead counts.
+pub const UNSURE_MARGIN: usize = 25;
+
 /// Return the module the file belongs to, or None to leave it where it is.
 ///
 /// The filename is checked first. File contents are only read (via `extract`)
 /// when the filename alone doesn't give one clear winner.
+#[cfg(test)]
 pub fn match_file(
     path: &Path,
     courses: &[Course],
     read_contents: bool,
     extract: impl FnOnce(&Path) -> String,
 ) -> Option<Match> {
+    match decide(path, courses, read_contents, 0, extract) {
+        Decision::Clear(m) => Some(m),
+        _ => None,
+    }
+}
+
+/// The module of a file by its name, then (if the name gives no clear winner) its content.
+/// `margin` is how far ahead (percent) the best module must be to be clear.
+pub fn decide(
+    path: &Path,
+    courses: &[Course],
+    read_contents: bool,
+    margin: usize,
+    extract: impl FnOnce(&Path) -> String,
+) -> Decision {
     if courses.is_empty() {
-        return None;
+        return Decision::Nothing;
     }
+    let weights = Weights::new(courses);
     let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let name_scores: Vec<_> = courses.iter().map(|c| score_text(&name, c, None)).collect();
-    if let Some((idx, _)) = best(&name_scores) {
-        let (hits, kw) = &name_scores[idx];
-        return Some(Match { course: idx, score: hits * FILENAME_WEIGHT, reason: Reason::FileName(kw.clone()) });
+    let name_scores: Vec<_> = (0..courses.len()).map(|i| weights.score_name(&name, i)).collect();
+    let by_name = ranked(&name_scores);
+    if let Some((idx, score)) = clear_winner(&by_name, margin) {
+        let kw = &name_scores[idx].1;
+        return Decision::Clear(Match {
+            course: idx,
+            score: score * FILENAME_WEIGHT,
+            reason: Reason::FileName(kw.clone()),
+        });
     }
-    if !read_contents {
-        return None;
-    }
-    let text = extract(path);
+    let text = if read_contents { extract(path) } else { String::new() };
     if text.trim().is_empty() {
-        return None;
+        return if by_name.is_empty() { Decision::Nothing } else { Decision::Unsure(by_name) };
     }
-    let combined: Vec<_> = courses
+    let combined: Vec<_> = name_scores
         .iter()
-        .zip(&name_scores)
-        .map(|(course, (name_hits, name_kw))| {
-            let (content_hits, content_kw) = score_text(&text, course, Some(MAX_CONTENT_HITS_PER_KEYWORD));
+        .enumerate()
+        .map(|(i, (name_hits, name_kw))| {
+            let (content_hits, content_kw) = weights.score_text(&text, i, MAX_CONTENT_HITS_PER_KEYWORD);
             let mut kw = name_kw.clone();
             kw.extend(content_kw);
             (name_hits * FILENAME_WEIGHT + content_hits, kw)
         })
         .collect();
-    let (idx, score) = best(&combined)?;
-    Some(Match { course: idx, score, reason: Reason::Content(dedup(&combined[idx].1)) })
+    let all = ranked(&combined);
+    match clear_winner(&all, margin) {
+        Some((idx, score)) => {
+            Decision::Clear(Match { course: idx, score, reason: Reason::Content(dedup(&combined[idx].1)) })
+        }
+        None if all.is_empty() => Decision::Nothing,
+        None => Decision::Unsure(all),
+    }
 }
 
 #[cfg(test)]
@@ -306,6 +495,57 @@ mod tests {
         let text = format!("{}beta gamma delta beta gamma delta", "alpha ".repeat(50));
         let m = match_file(Path::new("notes.pdf"), &c, true, |_| text).unwrap();
         assert_eq!(c[m.course].name, "B");
+    }
+
+    #[test]
+    fn shared_keywords_count_less_and_the_title_page_more() {
+        let c = vec![
+            Course::new("Programmieren", &["informatik", "java"]),
+            Course::new("Datenbanken", &["informatik", "sql"]),
+        ];
+        // «informatik» is in both modules, «java» only in one: java decides.
+        let text = format!("Informatik Informatik Informatik {} java", "wort ".repeat(80));
+        let m = match_file(Path::new("x.pdf"), &c, true, |_| text).unwrap();
+        assert_eq!(m.course, 0);
+        // The same word on the title page counts more than further in.
+        let text = format!("SQL Einführung {} java", "wort ".repeat(80));
+        assert_eq!(match_file(Path::new("x.pdf"), &c, true, |_| text).unwrap().course, 1);
+    }
+
+    #[test]
+    fn typos_and_short_forms_of_the_module_name() {
+        let c = vec![
+            Course::new("Lineare Algebra", &["eigenwerte"]),
+            Course::new("Programmieren 1", &["java"]),
+            Course::new("Statistik", &["regression"]),
+        ];
+        let module = |name: &str| match_file(Path::new(name), &c, false, no_content).map(|m| c[m.course].name.clone());
+        assert_eq!(module("LinAlg_Blatt3.pdf").as_deref(), Some("Lineare Algebra"));
+        assert_eq!(module("LA Serie 2.pdf").as_deref(), Some("Lineare Algebra"));
+        assert_eq!(module("Prog1_Woche4.pdf").as_deref(), Some("Programmieren 1"));
+        assert_eq!(module("Statisitk_Uebung.pdf").as_deref(), Some("Statistik"), "one typo");
+        assert_eq!(module("Regresion.pdf").as_deref(), Some("Statistik"));
+        assert_eq!(module("Stat_Kap2.pdf").as_deref(), Some("Statistik"), "the start of the name");
+        assert_eq!(module("St.pdf"), None, "too short for a typo or a short form");
+        assert!(one_typo("statistik", "statisitk") && one_typo("eigenwerte", "eigenwert") && !one_typo("abc", "abc"));
+        assert!(!one_typo("statistik", "stochastik"));
+    }
+
+    #[test]
+    fn a_small_lead_is_unsure() {
+        let c = courses();
+        // python (programming) twice, matrix (linear algebra) once in the content: a lead, but small.
+        let text = "python python matrix";
+        match decide(Path::new("notes.pdf"), &c, true, UNSURE_MARGIN, |_| text.into()) {
+            Decision::Clear(m) => assert_eq!(m.course, 0),
+            other => panic!("expected a clear winner, got {other:?}"),
+        }
+        let text = "python matrix";
+        assert!(matches!(
+            decide(Path::new("notes.pdf"), &c, true, UNSURE_MARGIN, |_| text.into()),
+            Decision::Unsure(_)
+        ));
+        assert_eq!(decide(Path::new("holiday.pdf"), &c, true, UNSURE_MARGIN, |_| "sun".into()), Decision::Nothing);
     }
 
     #[test]

@@ -17,6 +17,12 @@ impl App {
         let mut changed = false;
         changed |= switch(ui, icon::BRAIN, lang.feature_learn(), lang.feature_learn_hint(), &mut f.learn);
         divider(ui);
+        let (title, hint) = (lang.feature_classifier(), lang.feature_classifier_hint());
+        changed |= switch(ui, icon::GRAPH, title, hint, &mut f.classifier);
+        divider(ui);
+        let (title, hint) = (lang.feature_ask_unsure(), lang.feature_ask_unsure_hint());
+        changed |= switch(ui, icon::SEAL_QUESTION, title, hint, &mut f.ask_when_unsure);
+        divider(ui);
         changed |= switch(ui, icon::GLOBE, lang.feature_origin(), lang.feature_origin_hint(), &mut f.origin);
         divider(ui);
         let (title, hint) = (lang.feature_subfolders(), lang.feature_subfolders_hint());

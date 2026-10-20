@@ -161,7 +161,12 @@ impl Card {
                 if result.sorted()
                     || matches!(
                         result.outcome,
-                        Outcome::Left(LeftReason::NoMatch | LeftReason::StillOpen { .. } | LeftReason::Kept)
+                        Outcome::Left(
+                            LeftReason::NoMatch
+                                | LeftReason::Unsure { .. }
+                                | LeftReason::StillOpen { .. }
+                                | LeftReason::Kept
+                        )
                     ) =>
             {
                 Some(result)
@@ -289,7 +294,7 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
                         }
                         Outcome::Left(reason) => {
                             let (glyph, colors) = match reason {
-                                LeftReason::NoMatch => (icon::QUESTION, warn),
+                                LeftReason::NoMatch | LeftReason::Unsure { .. } => (icon::QUESTION, warn),
                                 LeftReason::InUse { .. } | LeftReason::StillOpen { .. } => {
                                     (icon::HOURGLASS_MEDIUM, warn)
                                 }
@@ -435,10 +440,21 @@ pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64,
                                 {
                                     action = RowAction::Undo;
                                 }
-                                if let Some(result) = card.assignable().filter(|_| !modules.is_empty())
-                                    && let Some(i) = assign_menu(ui, lang, result, modules)
-                                {
-                                    action = RowAction::Assign(i);
+                                if let Some(result) = card.assignable().filter(|_| !modules.is_empty()) {
+                                    if let Some(i) = assign_menu(ui, lang, result, modules) {
+                                        action = RowAction::Assign(i);
+                                    }
+                                    // Unsure: one button per module in question (right to left).
+                                    if let Outcome::Left(LeftReason::Unsure { candidates }) = &result.outcome {
+                                        for label in candidates.iter().rev() {
+                                            let Some(i) = modules.iter().position(|m| m == label) else { continue };
+                                            let short = label.rsplit(" › ").next().unwrap_or(label);
+                                            let button = fx::button(ui, ButtonStyle::Tonal, icon::ARROW_RIGHT, short);
+                                            if button.on_hover_text(lang.move_to(label)).clicked() {
+                                                action = RowAction::Assign(i);
+                                            }
+                                        }
+                                    }
                                 }
                                 if let Some(location) = card.location() {
                                     if fx::icon_button(ui, icon::FOLDER_OPEN)

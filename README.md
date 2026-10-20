@@ -34,6 +34,12 @@ To start it automatically when you sign in to Windows, turn on **Settings → St
 
 The window is drawn with the graphics card (DirectX 12 or Vulkan). On PCs without one, Windows' built-in software renderer takes over automatically.
 
+## Linux: the ready-made download
+
+On the **Releases** page download **FileSorter-linux-x86_64.tar.gz**, unpack it and start `./file-sorter` in the unpacked `FileSorter` folder. For a menu entry, copy `file-sorter` to `~/.local/bin/`, `icon.png` to `~/.local/share/icons/file-sorter.png` and `file-sorter.desktop` to `~/.local/share/applications/`.
+
+Text recognition for scans uses tesseract: `sudo apt install tesseract-ocr tesseract-ocr-deu poppler-utils` (Debian/Ubuntu). Reminders use `notify-send`, which most desktops have. Updates are announced in the window with a link; on Linux they are not installed by themselves.
+
 ## Build from source (any OS)
 
 You need [Rust](https://rustup.rs) (stable).
@@ -87,17 +93,30 @@ With **Learn from assigning** on (default), File Sorter then takes up to two ter
 
 ## Search, deadlines and «This week»
 
-- **Search** (`Ctrl+F`): finds every file in the study folder whose name or text contains all the words you type – PDFs page by page, PowerPoints slide by slide, Word and text files – with the passage and page number. Click a result to open it. The text is read in the background and kept in `search-index.json`, so later only new and changed files are read; files that are only in the cloud (OneDrive «online only») are found by name but not downloaded.
+- **Search** (`Ctrl+F`): finds every file in the study folder whose name or text has all the words you type – PDFs page by page, PowerPoints slide by slide, Word and text files, scans (text recognition) and the notes of your modules – with the passage and page number (and the other pages with hits).
+  - The start of a word is enough (`rekurs` finds «Rekursion»), `"exact phrase"` in quotes, `-word` leaves out; when nothing is found, one typo in a longer word is allowed.
+  - The best files come first: rare words count more than common ones, the name and the title page more than the rest, newer files first when equal.
+  - Filters below the field: module, kind (lecture, exercise, solution, exam), file type and period (last 7 days, month, semester).
+  - `↑`/`↓` choose a result, `Enter` opens it, `Ctrl+Enter` shows it in its folder; the last searches are offered when the field is empty.
+  - The text is read in the background and kept in `search-index.json`. The study folder is watched, so new and changed files are in the search within seconds; files that are only in the cloud (OneDrive «online only») are found by name but not downloaded.
 - **Deadlines and exam dates**: File Sorter reads the documents in the study folder (the first pages of those changed in the last five months – also files sorted with the right-click menu or copied in by hand, and also with *Search* switched off) and finds
   - hand-ins: «Abgabe: 24.10.2026, 23:59 Uhr», «Abgabe: 3.11 bis 10 Uhr», «bis zum 7.11. abzugeben», «müssen bis Freitag, den 7. November um 14 Uhr über Ilias abgegeben werden», «Bitte bis 12 Uhr am 28.10. in den Briefkasten einwerfen», «Projektabgabe», «Einreichungsfrist», «Fällig: Montag, 3. November 2026, 23:59» (Moodle), «Bearbeitungszeitraum: 27.10. – 10.11.», «due Oct 24th, 11:59 PM», «Due: 24/10/2026», «Deadline: 2026-11-05»;
   - a semester plan with «Blatt | Ausgabe | Abgabe» columns: one deadline per row, named after the row («Blatt 3»);
-  - only a weekday («Abgabe: Montag, 10:15 Uhr»): the next such day after the file came, marked **date estimated** («jeweils Montag» or «every Friday» is no deadline);
+  - only a weekday («Abgabe: Montag, 10:15 Uhr») or a relative date («morgen», «übermorgen», «in zwei Wochen», «nächste Woche Freitag», «KW 45» – its Friday): counted from when the file came, marked **date estimated** («jeweils Montag» or «every Friday» is no deadline);
   - exams and other dates: «Klausur: 20.01.2027, 14:00», «Klausurtermin», «Zwischenprüfung am 25.11.», «Semesterendprüfung», «Sessionsprüfung», «Leistungskontrolle 1», «Zwischentest», «Testat», «Präsentation», «midterm».
 
   Only a date in the same sentence (or table column) counts; numbers like «Aufgabe 3.2.» and dates like «Stand: 20.10.» or «Abgabebeginn: …» don't. Each entry is named after what is due when the text says it («Serie 5», «Übungsblatt 3», «Teil A», «Projektabgabe»), else after the file.
 
   *This week* shows the week as a strip (today marked, a dot per deadline) and the deadlines in groups – **Overdue**, **This week**, **Next week**, **Later** (closed). Entries found since your last visit are marked **new**. Each has **Done**, open the file, open its folder, **Correct** (fix a date or title that was read wrong), **Add to calendar** (an `.ics` file that Outlook, Google and Apple calendars import, with a reminder the day before) and **Delete**; hover over the title for the passage it was found in. **Done** entries of the last two weeks can be opened again. **+ Deadline** adds one by hand, **Check a file…** picks one document and shows right away what is found in it (nothing found: *Add by hand* with the file and module filled in), **Look again** reads all documents again; the line below says how many documents were read. Finding dates in free text can still go wrong; a deleted or corrected entry isn't found again in the same file.
+- **Reminders**: a notification before each deadline and exam – by default a day before and three hours before (also «the morning of the day» and «an hour before»), also while File Sorter runs in the background. Windows shows them like other apps' notifications (a click opens File Sorter); on Linux `notify-send` is used. Each is sent once; after a time away only one comes.
+- **Today** at the top of *This week*: today's lessons from the timetable.
 - **New this week**: the files sorted in the last 7 days, per module.
+
+## Semester: timetable, grades, notes
+
+- **Timetable** (tab *Semester*): *Import calendar…* reads a calendar file (`.ics`) exported from the university portal, Outlook or Google; *Calendar link…* subscribes to the portal's timetable link (iCal/webcal), read again every day; *+ Lesson* adds one by hand. Weekly series (also every two weeks), single dates that repeat weekly, cancelled and moved dates are understood; the module of each lesson is guessed from its name and can be changed in the preview. The week grid shows the lessons in the module's colour, the running one marked and cancelled ones greyed; a click edits a lesson, cancels it for that one week or opens the module folder.
+- **Grades & ECTS**: per module the semester, ECTS and grade (or *passed*/*failed* for modules without a grade) – on the Swiss scale 1–6 (4 and up passed) or the German 1.0–5.0 (up to 4.0 passed), switchable. Below: the ECTS-weighted average, the ECTS earned towards your target (default 180) and the average per semester.
+- **Notes** per module: the third view next to *Keywords* and *Subfolders* at the selected module, saved as you type and found by the search.
 
 ## Subfolders
 
@@ -158,12 +177,18 @@ The entry is added when you open File Sorter, and it follows the exe if you move
 1. Only document types are considered (`.pdf .pptx .ppt .docx .doc .key .odp .odt .txt .md .zip .ipynb .xlsx`). Unfinished downloads (`.crdownload`, `.part`, …) are ignored until the browser finishes them.
 2. **File name first:** the module name and each keyword are looked for as whole words (`ai` doesn't match `maintain`; `algorithm` matches `algorithms`; case, accents, `_`, `-` and `.` don't matter, and `INF101`, `INF-101` and `INF 101` are all the same).
 3. **Then the content:** if the file name doesn't point to exactly one module, the text of the first pages of PDFs, the first slides of PowerPoints, or the start of Word documents is read and scored the same way.
-4. The module with the most hits wins. With no hits, or a tie between two modules, the file is left where it is – unless **Download source** knows better: on Windows, browsers note the page a file was downloaded from (Edge and Chrome always; Firefox too). For Moodle, ILIAS and OLAT that page names the course, so once files from one course went into a module, the next file from there goes there too, even if its name says nothing (`Blatt3.pdf`). The activity list then says «from moodle.uni.ch, like earlier files of this module».
+4. **How much a hit counts:** a keyword several modules share counts less (shared by two modules: half), and hits on the title page (the first ~60 words) count double. Keywords of six letters or more also match with **one typo** («Statisitk»), and **short forms of the module name** count when only one module has them («LinAlg» and «LA» for *Lineare Algebra*, «Prog1» for *Programmieren 1*, «Stat» for *Statistik*) – both at half weight.
+5. The module with the most points wins. **When two modules fit about equally well** (less than 25 % apart) and *Ask when unsure* is on, the file stays where it is and *Activity* asks «Unsicher: Statistik oder Programmieren?» with a button for each. Before asking, File Sorter tries three more things:
+   - **Learned from the modules' files** (*Learn the modules from their files*): a small naive Bayes model knows each module by the names and first words of the files already in its folder, and answers only when it is clearly sure (80 % and twice as likely as the next).
+   - **The timetable** (*Use the timetable for ties*): if one of the modules in question had its lesson when the file came (15 minutes before to 15 after), that one wins. It never decides against what the file says and never sorts a file nothing else fits – during a lesson you may well be working on something else.
+   - **Download source**, below.
+6. With no hits, or a tie between two modules, the file is left where it is – unless **Download source** knows better: on Windows, browsers note the page a file was downloaded from (Edge and Chrome always; Firefox too). For Moodle, ILIAS and OLAT that page names the course, so once files from one course went into a module, the next file from there goes there too, even if its name says nothing (`Blatt3.pdf`). The activity list then says «from moodle.uni.ch, like earlier files of this module».
    A **ZIP file** is matched by the names of the files in it (and the text of the first documents); with *Unpack ZIP files* on, it is unpacked next to itself into a new folder in the module (the ZIP is kept).
-5. Files are **moved** (unless you choose *Copy* in the settings): after sorting, a file exists only in its module folder.
-6. A file that is **still open** in another program (a PDF viewer you write notes in, Word, the browser) is left alone until that program closes it, so your notes are saved into the file before it is moved. The activity list says so while it waits.
-7. **Nothing is ever overwritten.** If a *different* file with the same name is already in the module folder (e.g. updated slides, or your annotated copy), the new one is saved as `name (1).pdf`, and the activity list says so. If the **very same file** is there (downloaded twice), the download goes to the **Recycle Bin**, where you can still get it back.
-8. Only one File Sorter watches at a time; starting a second one with `--headless` shows a message instead of both sorting the same files.
+7. Files are **moved** (unless you choose *Copy* in the settings): after sorting, a file exists only in its module folder.
+8. A file that is **still open** in another program (a PDF viewer you write notes in, Word, the browser) is left alone until that program closes it, so your notes are saved into the file before it is moved. The activity list says so while it waits.
+9. **Nothing is ever overwritten.** If a *different* file with the same name is already in the module folder (e.g. updated slides, or your annotated copy), the new one is saved as `name (1).pdf`, and the activity list says so. If the **very same file** is there (downloaded twice), the download goes to the **Recycle Bin**, where you can still get it back.
+10. **Scans** (PDFs whose pages are pictures) and photos of pages are read with **text recognition**: on Windows with the one built into Windows (no download), on Linux with tesseract if installed. Only pages without text are recognised, what was recognised is remembered by the file's content, and it is used for sorting, search and deadlines alike (*Recognise text in scans*).
+11. Only one File Sorter watches at a time; starting a second one with `--headless` shows a message instead of both sorting the same files.
 
 **Tips for good keywords:** module codes (`INF-101`, `MA1`), short names used in file names (`prog1`, `linalg`), and the exact module title as it appears on the slides work best. Avoid generic words like `lecture` or `exercise` that appear in every module.
 
@@ -185,11 +210,15 @@ Everything on the **Settings** tab is saved as soon as you change it (a green *S
 | **Start when I sign in** | File Sorter opens minimised in the taskbar and starts watching right away (Windows and Linux). |
 | **Start watching right away** | Begin watching as soon as you open the window. |
 | **Keep running in the background** (Windows) | Closing the window while it watches keeps File Sorter running in the notification area (next to the clock); click the icon to open it again, right-click it → *Quit* to end it. With *Start when I sign in*, it then starts there too. |
-| **Features** | Each can be switched on or off: **Learn from assigning**, **Download source**, **Subfolders** (off by default – see [Subfolders](#subfolders); with **Learn from existing files by itself**, off by default), **Unpack ZIP files** (off by default), **Keep older versions apart** (off by default: when «Skript_v2.pdf» arrives, «Skript.pdf» – with your notes in it – moves into `Ältere Versionen`; an older version arriving later goes straight there), **Search in files**, **Deadlines**, **New this week**, **Updates** (*Ask first* or *Install automatically*). Undo also reverses subfolders, older versions and unpacking (an unpacked folder is only removed if nothing in it was changed). |
+| **Features** | Each can be switched on or off: **Learn from assigning**, **Learn the modules from their files**, **Ask when unsure**, **Use the timetable for ties**, **Download source**, **Subfolders** (off by default – see [Subfolders](#subfolders); with **Learn from existing files by itself**, off by default), **Unpack ZIP files** (off by default), **Keep older versions apart** (off by default: when «Skript_v2.pdf» arrives, «Skript.pdf» – with your notes in it – moves into `Ältere Versionen`; an older version arriving later goes straight there), **Recognise text in scans**, **Search in files**, **Deadlines** (with **Reminders** and their times), **New this week**, **Updates** (*Ask first* or *Install automatically*). Undo also reverses subfolders, older versions and unpacking (an unpacked folder is only removed if nothing in it was changed). |
 | **Semester** | Finish a semester (archive modules) and restore archived ones – see [above](#finish-a-semester). |
 | **Cloud** | Keep the study folder in OneDrive, Dropbox, Google Drive, … (moved there, or a copy), and share modules with your other computers – see [above](#your-study-folder-in-onedrive-dropbox-or-google-drive). |
 | **Right-click menu** (Windows) | Show or hide «Sort with File Sorter», and whether the results window appears afterwards. |
 | **About** | Version, and buttons to open the log file and the settings folder. |
+
+## Save resources in the background
+
+*Settings → Save resources in the background* (off by default) makes File Sorter lighter while its window is closed (running next to the clock) or minimised: the search index leaves memory (it is on disk), files are read by name and first page only – without text recognition, the learned model or comparing versions by content – and learning, calendar links and the update check wait. Watching, sorting, undo and reminders go on. When the window is shown again, everything runs in full and what changed meanwhile is read. With 1600 documents of 22 pages in the study folder: about 460 MB with the window open, about 155 MB in the background with this setting on.
 
 ## Run it without a window / start automatically
 
@@ -248,7 +277,7 @@ X-GNOME-Autostart-enabled=true
 
 It's plain JSON, so you can also edit it by hand. Settings from the earlier Python versions (v0.1/v0.2) keep working. Use `--config path/to/config.json` to use a different file. A module can have an optional `"folder"` entry to send its files somewhere else entirely.
 
-Next to it are File Sorter's own lists: `history.jsonl` (for undo), `kept.json`, `copied.json`, `cloud-mirror.json` (what the copy in the cloud holds), `origins.json` (which download page goes to which module), `search-index.json` (text for the search; can be deleted, it is rebuilt) and `deadlines.json`.
+Next to it are File Sorter's own lists: `history.jsonl` (for undo), `kept.json`, `copied.json`, `cloud-mirror.json` (what the copy in the cloud holds), `origins.json` (which download page goes to which module), `search-index.json` (text for the search; can be deleted, it is rebuilt), `deadlines.json`, `timetable.json`, `notes.json`, `module-model.json` (learned from the modules' files; rebuilt), `ocr-cache.json` (recognised text of scans; can be deleted) and `recent-searches.json`.
 
 A log of everything the sorter did is written to `file-sorter.log` in the same folder. If something doesn't get sorted, that's the place to look.
 

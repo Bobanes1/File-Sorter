@@ -16,7 +16,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const LATEST: &str = "https://api.github.com/repos/Bobanes1/File-Sorter/releases/latest";
+#[cfg(windows)]
 const ASSET: &str = "FileSorter.exe";
+#[cfg(not(windows))]
+const ASSET: &str = "FileSorter-linux-x86_64.tar.gz";
 /// Name of the previous exe after an update, removed at the next start.
 const OLD_EXE: &str = "FileSorter.old.exe";
 /// The new exe while it is put next to the running one.
@@ -267,15 +270,21 @@ mod tests {
 
     #[test]
     fn reads_the_release_and_its_checksum() {
+        // The download for this system (the exe on Windows, the archive on Linux).
         let json = r#"{"tag_name":"v0.10","html_url":"https://github.com/Bobanes1/File-Sorter/releases/tag/v0.10",
-            "assets":[{"name":"FileSorter.exe","browser_download_url":"https://x/FileSorter.exe","size":5,
-            "digest":"sha256:2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824"}]}"#;
+            "assets":[{"name":"ASSET","browser_download_url":"https://x/ASSET","size":5,
+            "digest":"sha256:2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824"},
+            {"name":"other.zip","browser_download_url":"https://x/other.zip","size":9}]}"#
+            .replace("ASSET", ASSET);
+        let json = json.as_str();
         let release = parse_release(json).unwrap();
         assert_eq!(release.version, "0.10");
         let download = release.download.unwrap();
         assert_eq!(download.sha256, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
-        let without = r#"{"tag_name":"v0.10","html_url":"u","assets":[{"name":"FileSorter.exe","browser_download_url":"x","size":5}]}"#;
-        assert_eq!(parse_release(without).unwrap().download, None, "no checksum, no install");
+        let without =
+            r#"{"tag_name":"v0.10","html_url":"u","assets":[{"name":"ASSET","browser_download_url":"x","size":5}]}"#
+                .replace("ASSET", ASSET);
+        assert_eq!(parse_release(&without).unwrap().download, None, "no checksum, no install");
         assert!(parse_release(r#"{"tag_name":"v1","html_url":"u","prerelease":true}"#).is_err());
 
         let tmp = tempfile::tempdir().unwrap();

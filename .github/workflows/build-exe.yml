@@ -501,6 +501,79 @@ jobs:
           name: File Sorter ${{ inputs.release_tag || github.ref_name }}
           files: dist/FileSorter.exe
           body: |
-            Download **FileSorter.exe** below and double-click it – nothing else to install.
+            **Windows:** download **FileSorter.exe** below and double-click it – nothing else to install.
             Windows SmartScreen may warn because the exe isn't signed: click *More info → Run anyway*.
+
+            **Linux:** download **FileSorter-linux-x86_64.tar.gz**, unpack it and run `./file-sorter`
+            (see the README for the menu entry and text recognition with tesseract).
+
+            See the README for setup and autostart instructions.
+
+  linux:
+    # After the Windows build, which creates the release this attaches to.
+    needs: build
+    # An older system, so the program also runs on older distributions.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libgtk-3-dev libxdo-dev \
+            tesseract-ocr tesseract-ocr-deu poppler-utils
+
+      - name: Run tests
+        run: cargo test --release
+
+      - name: Build file-sorter for Linux
+        run: |
+          cargo build --release
+          mkdir -p dist/FileSorter
+          cp target/release/file-sorter dist/FileSorter/
+          cp README.md assets/icon.png assets/file-sorter.desktop dist/FileSorter/
+          tar -C dist -czf dist/FileSorter-linux-x86_64.tar.gz FileSorter
+          ls -la dist
+
+      - name: Smoke-test sorting and text recognition
+        run: |
+          root=$RUNNER_TEMP/smoke
+          mkdir -p "$root/Downloads"
+          cp tests/fixtures/programming.pptx "$root/Downloads/week1.pptx"
+          cp tests/fixtures/scan_serie5.pdf "$root/Downloads/scan_0042.pdf"
+          cat > "$root/config.json" <<JSON
+          {"watch_folder": "$root/Downloads", "destination_root": "$root/Studium",
+           "courses": [{"name": "Programmierung 1", "subject": "Informatik", "keywords": ["programming"]},
+                       {"name": "Analysis I", "subject": "Mathematik", "keywords": ["analysis i"]}]}
+          JSON
+          dist/FileSorter/file-sorter --sort-now --config "$root/config.json"
+          cat "$root/file-sorter.log"
+          test -f "$root/Studium/Informatik/Programmierung 1/week1.pptx"
+          test -f "$root/Studium/Mathematik/Analysis I/scan_0042.pdf"
+          echo "sorted on Linux, the scan by its recognised text"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FileSorter-linux
+          path: dist/FileSorter-linux-x86_64.tar.gz
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: File Sorter ${{ inputs.release_tag || github.ref_name }}
+          files: dist/FileSorter-linux-x86_64.tar.gz
+          body: |
+            **Windows:** download **FileSorter.exe** below and double-click it – nothing else to install.
+            Windows SmartScreen may warn because the exe isn't signed: click *More info → Run anyway*.
+
+            **Linux:** download **FileSorter-linux-x86_64.tar.gz**, unpack it and run `./file-sorter`
+            (see the README for the menu entry and text recognition with tesseract).
+
             See the README for setup and autostart instructions.

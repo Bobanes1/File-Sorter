@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=File Sorter
+Comment=Sorts downloaded course files into module folders
+Exec=file-sorter
+Icon=file-sorter
+Terminal=false
+Categories=Office;Education;Utility;

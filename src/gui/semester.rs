@@ -931,7 +931,7 @@ fn number_field(
         .desired_width(64.0)
         .margin(Margin::symmetric(8, 4))
         .text_color_opt((!valid).then_some(p.error));
-    let response = ui.add(field);
+    let response = ui.add_sized([64.0, 26.0], field);
     let mut changed = false;
     if response.changed() {
         let new = text.trim().replace(',', ".").parse::<f32>().ok().filter(|v| (low..=high).contains(v));

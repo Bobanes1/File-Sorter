@@ -79,7 +79,8 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(icon::FOLDER).color(p.primary));
                         ui.label(RichText::new(step.course.label()).color(p.on_surface));
-                        ui.label(RichText::new(format!("→  {to}")).color(p.on_surface_variant));
+                        ui.label(RichText::new(icon::ARROW_RIGHT).color(p.on_surface_variant));
+                        ui.label(RichText::new(to).color(p.on_surface_variant));
                     });
                 }
                 if !dialog.kept.is_empty() {
@@ -139,7 +140,11 @@ impl App {
                 .into_iter()
                 .rev()
                 .map(|d| {
-                    let result = flatten::move_back(&d.to, &d.from);
+                    let result = if d.moved {
+                        flatten::move_back(&d.to, &d.from)
+                    } else {
+                        Ok(Moved { from: d.to.clone(), to: d.from.clone(), report: None, files: Vec::new() })
+                    };
                     (d, result)
                 })
                 .collect();
@@ -174,6 +179,7 @@ impl App {
                                 subject: step.course.subject.clone(),
                                 from: step.from,
                                 to: step.to,
+                                moved: moved.report.is_some(),
                             });
                         }
                         Err(e) => problems.push(format!("{}: {e}", step.course.label())),

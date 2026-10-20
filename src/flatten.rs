@@ -57,6 +57,9 @@ pub struct Done {
     pub subject: String,
     pub from: PathBuf,
     pub to: PathBuf,
+    /// Its folder was moved (a module without one only lost its program; a folder that was
+    /// up there already is not taken down on «Undo»).
+    pub moved: bool,
 }
 
 /// Move one module's folder up; its program's folder goes once it is empty.

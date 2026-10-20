@@ -197,7 +197,7 @@ impl App {
             let target = root.path.join(&name);
             let chosen = expand_user(&self.config.destination_root) == target;
             let label = lang.provider_label(root.provider, root.account.as_deref(), &target.display().to_string());
-            let label = format!("{label}  →  {}", target.display());
+            let label = format!("{label}  {}  {}", icon::ARROW_RIGHT, target.display());
             if ui.radio(chosen, label).clicked() && !chosen {
                 // Nothing to move yet at the first start: the study folder simply lives there.
                 self.config.destination_root = target.display().to_string();

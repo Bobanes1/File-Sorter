@@ -11,7 +11,7 @@ use egui_phosphor::regular as icon;
 
 use super::dialogs::{actions, dialog_frame};
 use super::{App, Tab, section_title};
-use crate::deadlines::{self, DEADLINES_FILE, Deadline, Deadlines, Found, Kind};
+use crate::deadlines::{self, DEADLINES_FILE, Deadline, Deadlines, Every, Found, Kind, Repeat};
 use crate::fx::{self, ButtonStyle};
 use crate::i18n::Lang;
 use crate::index::{Hit, Indexer};
@@ -38,6 +38,9 @@ pub(super) struct NewDeadline {
     editing: Option<u64>,
     /// The file it is in (added by hand after «Check a file» found nothing).
     file: Option<PathBuf>,
+    /// Comes again: how often, and until when (typed, may be empty).
+    every: Option<Every>,
+    until: String,
 }
 
 impl NewDeadline {
@@ -49,6 +52,8 @@ impl NewDeadline {
             kind: Kind::Due,
             editing: None,
             file: None,
+            every: None,
+            until: String::new(),
         }
     }
 }
@@ -1129,6 +1134,15 @@ impl App {
                         badge(ui, lang.estimated(), p.warning_container, p.on_warning_container)
                             .on_hover_text(lang.estimated_hint());
                     }
+                    if let Some(repeat) = &d.repeat {
+                        let text = format!("{} {}", icon::REPEAT, lang.repeat_every(repeat.every));
+                        let until =
+                            repeat.until_day().map(|u| lang.repeat_until_day(&u.format("%d.%m.%Y").to_string()));
+                        let chip = badge(ui, &text, p.secondary_container, p.on_secondary_container);
+                        if let Some(until) = until {
+                            chip.on_hover_text(until);
+                        }
+                    }
                 });
                 let when = lang.due_when(days, late, d.time.as_deref());
                 let kind = lang.deadline_kind(d.kind);
@@ -1176,6 +1190,7 @@ impl App {
                 let module = self.config.courses.iter().position(|c| c.label() == d.module).unwrap_or(usize::MAX);
                 let time = d.time.as_deref().map(|t| format!(" {t}")).unwrap_or_default();
                 let date = d.day().map(|day| format!("{}{time}", day.format("%d.%m.%Y"))).unwrap_or_default();
+                let until = d.repeat.as_ref().and_then(Repeat::until_day);
                 self.study.new_deadline = Some(NewDeadline {
                     title: d.title.clone(),
                     module,
@@ -1183,10 +1198,12 @@ impl App {
                     kind: d.kind,
                     editing: Some(id),
                     file: None,
+                    every: d.repeat.as_ref().map(|r| r.every),
+                    until: until.map(|u| u.format("%d.%m.%Y").to_string()).unwrap_or_default(),
                 });
                 return;
             }
-            "done" => d.done = true,
+            "done" => self.study.deadlines.complete(id),
             "reopen" => d.done = false,
             "delete" => d.deleted = true,
             "calendar" => {
@@ -1215,6 +1232,7 @@ impl App {
         let modules: Vec<String> = self.config.courses.iter().map(|c| c.label()).collect();
         let today = Local::now().date_naive();
         let parsed = deadlines::parse_typed(&new.date, today);
+        let until_parsed = deadlines::parse_typed(&new.until, today);
         let mut close = false;
         let mut add = false;
         let modal = egui::Modal::new(Id::new("deadline-dialog")).frame(dialog_frame(ctx)).show(ctx, |ui| {
@@ -1262,8 +1280,28 @@ impl App {
                 None => (lang.date_not_understood().to_string(), p.error),
             };
             ui.label(RichText::new(preview.0).small().color(preview.1));
+            ui.add_space(8.0);
+            ui.label(RichText::new(lang.repeats()).small().color(p.on_surface_variant));
+            let mut options = vec![(None, lang.repeat_never().to_string())];
+            options.extend(Every::ALL.map(|e| (Some(e), lang.repeat_every(e).to_string())));
+            fx::segmented(ui, "deadline-repeat", &mut new.every, &options);
+            if new.every.is_some() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(lang.repeat_until()).color(p.on_surface_variant));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut new.until)
+                            .hint_text(lang.repeat_until_hint())
+                            .desired_width(200.0)
+                            .margin(Margin::symmetric(10, 6)),
+                    );
+                    if let Some((until, _)) = until_parsed {
+                        ui.label(RichText::new(until.format("%d.%m.%Y").to_string()).small().color(p.outline));
+                    }
+                });
+            }
             actions(ui, |ui| {
-                let ready = parsed.is_some() && !new.title.trim().is_empty();
+                let until_ok = new.every.is_none() || new.until.trim().is_empty() || until_parsed.is_some();
+                let ready = parsed.is_some() && !new.title.trim().is_empty() && until_ok;
                 let label = if new.editing.is_some() { lang.save() } else { lang.add() };
                 if ui.add_enabled_ui(ready, |ui| fx::button(ui, ButtonStyle::Filled, "", label)).inner.clicked() {
                     add = true;
@@ -1275,15 +1313,23 @@ impl App {
         });
         if add && let Some((date, time)) = parsed {
             let module = modules.get(new.module).cloned().unwrap_or_default();
-            match new.editing {
-                Some(id) => self.study.deadlines.edit(id, &new.title, &module, new.kind, date, time),
+            let id = match new.editing {
+                Some(id) => {
+                    self.study.deadlines.edit(id, &new.title, &module, new.kind, date, time);
+                    id
+                }
                 None => {
                     let id = self.study.deadlines.add_manual(&new.title, &module, new.kind, date, time);
                     if let Some(item) = self.study.deadlines.items.iter_mut().find(|d| d.id == id) {
                         item.file = new.file.clone();
                     }
+                    id
                 }
-            }
+            };
+            let repeat = new
+                .every
+                .map(|every| Repeat { every, until: until_parsed.map(|(u, _)| u.format("%Y-%m-%d").to_string()) });
+            self.study.deadlines.set_repeat(id, repeat);
             self.study.new_deadline = None;
             self.save_deadlines();
         } else if close || modal.should_close() {

@@ -305,6 +305,45 @@ pub struct Deadline {
     /// The reminders already sent («day», «hours3», …).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reminded: Vec<String>,
+    /// Comes again (every week, …): `date` is the next time it is due.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<Repeat>,
+}
+
+/// How often a deadline comes again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Every {
+    Week,
+    TwoWeeks,
+    Month,
+}
+
+impl Every {
+    pub const ALL: [Every; 3] = [Every::Week, Every::TwoWeeks, Every::Month];
+
+    pub fn after(self, date: NaiveDate) -> Option<NaiveDate> {
+        match self {
+            Every::Week => Some(date + chrono::Duration::weeks(1)),
+            Every::TwoWeeks => Some(date + chrono::Duration::weeks(2)),
+            Every::Month => date.checked_add_months(chrono::Months::new(1)),
+        }
+    }
+}
+
+/// A deadline that comes again, until a last date (or for good).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Repeat {
+    pub every: Every,
+    /// `YYYY-MM-DD`: the last time it can be due.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+impl Repeat {
+    pub fn until_day(&self) -> Option<NaiveDate> {
+        NaiveDate::parse_from_str(self.until.as_deref()?, "%Y-%m-%d").ok()
+    }
 }
 
 impl Deadline {
@@ -1271,6 +1310,7 @@ impl Deadlines {
                 estimated: f.estimated,
                 added: chrono::Utc::now().timestamp(),
                 reminded: Vec::new(),
+                repeat: None,
             });
             added += 1;
         }
@@ -1301,11 +1341,45 @@ impl Deadlines {
             estimated: false,
             added: chrono::Utc::now().timestamp(),
             reminded: Vec::new(),
+            repeat: None,
         });
         id
     }
 
     /// Correct an entry (a date that was read wrong, a better title).
+    /// Mark done. One that comes again moves on to its next date instead (the one done stays in
+    /// the list as done); after its last date it is done for good.
+    pub fn complete(&mut self, id: u64) {
+        let Some(i) = self.items.iter().position(|d| d.id == id) else { return };
+        let Some(repeat) = self.items[i].repeat.clone() else {
+            self.items[i].done = true;
+            return;
+        };
+        let next = self.items[i].day().and_then(|d| repeat.every.after(d));
+        let next = next.filter(|n| repeat.until_day().is_none_or(|u| *n <= u));
+        let Some(next) = next else {
+            self.items[i].done = true;
+            return;
+        };
+        let done_id = self.next_id();
+        let mut done = self.items[i].clone();
+        done.id = done_id;
+        done.repeat = None;
+        done.done = true;
+        let d = &mut self.items[i];
+        d.date = next.format("%Y-%m-%d").to_string();
+        d.reminded.clear();
+        d.estimated = false;
+        self.items.push(done);
+    }
+
+    /// Let a deadline come again (or not).
+    pub fn set_repeat(&mut self, id: u64, repeat: Option<Repeat>) {
+        if let Some(d) = self.items.iter_mut().find(|d| d.id == id) {
+            d.repeat = repeat;
+        }
+    }
+
     pub fn edit(&mut self, id: u64, title: &str, module: &str, kind: Kind, date: NaiveDate, time: Option<NaiveTime>) {
         let Some(d) = self.items.iter_mut().find(|d| d.id == id) else { return };
         let date = date.format("%Y-%m-%d").to_string();
@@ -1401,6 +1475,18 @@ pub fn ics(deadline: &Deadline, summary: &str, reminder: &str) -> String {
         format!("DTSTAMP:{stamp}"),
         start,
         end,
+    ]
+    .into_iter()
+    .chain(deadline.repeat.as_ref().map(|r| {
+        let rule = match r.every {
+            Every::Week => "FREQ=WEEKLY",
+            Every::TwoWeeks => "FREQ=WEEKLY;INTERVAL=2",
+            Every::Month => "FREQ=MONTHLY",
+        };
+        let until = r.until_day().map(|u| format!(";UNTIL={}T235959", u.format("%Y%m%d"))).unwrap_or_default();
+        format!("RRULE:{rule}{until}")
+    }))
+    .chain([
         format!("SUMMARY:{}", escape(summary)),
         format!("DESCRIPTION:{}", escape(&description)),
         "BEGIN:VALARM".to_string(),
@@ -1410,7 +1496,8 @@ pub fn ics(deadline: &Deadline, summary: &str, reminder: &str) -> String {
         "END:VALARM".to_string(),
         "END:VEVENT".to_string(),
         "END:VCALENDAR".to_string(),
-    ]
+    ])
+    .collect::<Vec<_>>()
     .join("\r\n")
         + "\r\n"
 }
@@ -1700,6 +1787,28 @@ mod tests {
         assert!(text.contains("DTSTART:20261024T235900\r\n"));
         assert!(text.contains("SUMMARY:Abgabe: Blatt 3\\, Prog\r\n"));
         assert!(text.starts_with("BEGIN:VCALENDAR\r\n") && text.ends_with("END:VCALENDAR\r\n"));
+    }
+
+    #[test]
+    fn recurring_deadlines_move_on_when_done() {
+        let mut list = Deadlines::default();
+        let id = list.add_manual("Wochenquiz", "Stats", Kind::Due, day(2026, 10, 23), None);
+        list.set_repeat(id, Some(Repeat { every: Every::Week, until: Some("2026-11-06".into()) }));
+        let ics_text = ics(&list.items[0], "Wochenquiz", "Morgen");
+        assert!(ics_text.contains("RRULE:FREQ=WEEKLY;UNTIL=20261106T235959"), "{ics_text}");
+        list.complete(id);
+        let series = list.items.iter().find(|d| d.id == id).unwrap();
+        assert_eq!((series.date.as_str(), series.done), ("2026-10-30", false), "next week");
+        assert_eq!(list.items.iter().filter(|d| d.done && d.date == "2026-10-23").count(), 1, "the done one stays");
+        list.complete(id);
+        list.complete(id);
+        let series = list.items.iter().find(|d| d.id == id).unwrap();
+        assert!(series.done && series.date == "2026-11-06", "after the last date it is done for good");
+        // Monthly, without an end.
+        let id = list.add_manual("Bericht", "", Kind::Due, day(2026, 1, 31), None);
+        list.set_repeat(id, Some(Repeat { every: Every::Month, until: None }));
+        list.complete(id);
+        assert_eq!(list.items.iter().find(|d| d.id == id).unwrap().date, "2026-02-28");
     }
 }
 

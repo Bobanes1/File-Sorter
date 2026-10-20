@@ -951,6 +951,29 @@ impl Lang {
     pub fn badge_new(self) -> &'static str {
         self.pick("new", "neu")
     }
+    pub fn repeats(self) -> &'static str {
+        self.pick("Repeats", "Wiederholt sich")
+    }
+    pub fn repeat_never(self) -> &'static str {
+        self.pick("Once", "Einmalig")
+    }
+    pub fn repeat_every(self, every: crate::deadlines::Every) -> &'static str {
+        use crate::deadlines::Every;
+        match every {
+            Every::Week => self.pick("Weekly", "Wöchentlich"),
+            Every::TwoWeeks => self.pick("Every 2 weeks", "Alle 2 Wochen"),
+            Every::Month => self.pick("Monthly", "Monatlich"),
+        }
+    }
+    pub fn repeat_until(self) -> &'static str {
+        self.pick("until", "bis")
+    }
+    pub fn repeat_until_hint(self) -> &'static str {
+        self.pick("e.g. 20.12. (optional)", "z. B. 20.12. (freiwillig)")
+    }
+    pub fn repeat_until_day(self, day: &str) -> String {
+        self.fmt(format!("until {day}"), format!("bis {day}"))
+    }
     pub fn estimated(self) -> &'static str {
         self.pick("date estimated", "Datum geschätzt")
     }

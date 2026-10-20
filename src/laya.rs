@@ -77,8 +77,8 @@ fn ready(dir: &Path) -> bool {
 pub enum Status {
     /// Not downloaded (yet).
     Missing,
-    /// Downloading, with the share done (0–1).
-    Downloading(f32),
+    /// Downloading, with the bytes done so far (of `total_size()`).
+    Downloading(u64),
     Ready,
     Failed(String),
 }
@@ -109,16 +109,15 @@ pub fn status(dir: Option<&Path>) -> Status {
     if ready(dir) { Status::Ready } else { Status::Missing }
 }
 
-fn progress(dir: &Path) -> f32 {
+fn progress(dir: &Path) -> u64 {
     let size = |p: PathBuf| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-    let done: u64 = FILES
+    FILES
         .iter()
         .map(|(_, name, total, _)| {
             let file = dir.join(name);
             if file.is_file() { *total } else { size(partial(&file)) }
         })
-        .sum();
-    done as f32 / total_size() as f32
+        .sum()
 }
 
 fn partial(file: &Path) -> PathBuf {

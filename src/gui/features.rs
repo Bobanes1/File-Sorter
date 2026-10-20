@@ -22,7 +22,7 @@ impl App {
         changed |= switch(ui, icon::GRAPH, title, hint, &mut f.classifier);
         divider(ui);
         let laya = crate::laya::status(laya_dir.as_deref());
-        if switch(ui, icon::SPARKLE, lang.feature_laya(), &lang.feature_laya_hint(&laya), &mut f.laya) {
+        if switch(ui, icon::ROBOT, lang.feature_laya(), &lang.feature_laya_hint(&laya), &mut f.laya) {
             if !f.laya {
                 crate::laya::forget();
             }
@@ -34,8 +34,21 @@ impl App {
                     crate::laya::start_download(dir);
                 }
             }
-            crate::laya::Status::Downloading(_) => {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500))
+            crate::laya::Status::Downloading(done) => {
+                let total = crate::laya::total_size();
+                ui.horizontal(|ui| {
+                    ui.add_space(40.0);
+                    ui.vertical(|ui| {
+                        // Sliding until the first bytes arrive, then how far it is.
+                        let fraction = (done > 0).then(|| done as f32 / total as f32);
+                        fx::progress_bar(ui, egui::Id::new("laya-download"), fraction);
+                        ui.add_space(2.0);
+                        let text = lang.laya_download_progress(done / 1_000_000, total / 1_000_000);
+                        ui.label(RichText::new(text).small().color(fx::pal(ui).on_surface_variant));
+                    });
+                });
+                ui.add_space(4.0);
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
             }
             _ => {}
         }

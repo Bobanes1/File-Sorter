@@ -1440,10 +1440,7 @@ impl Lang {
         );
         let state = match status {
             Status::Missing => return about,
-            Status::Downloading(done) => {
-                let pct = (done * 100.0).round();
-                self.fmt(format!("Downloading … {pct} %"), format!("Wird heruntergeladen … {pct} %"))
-            }
+            Status::Downloading(_) => self.pick("Downloading …", "Wird heruntergeladen …").into(),
             Status::Ready => self.pick("Ready.", "Bereit.").into(),
             Status::Failed(e) => self.fmt(
                 format!("Didn't work: {e}. Switch it off and on to try again."),
@@ -1451,6 +1448,9 @@ impl Lang {
             ),
         };
         format!("{about}\n{state}")
+    }
+    pub fn laya_download_progress(self, done_mb: u64, total_mb: u64) -> String {
+        self.fmt(format!("{done_mb} of {total_mb} MB"), format!("{done_mb} von {total_mb} MB"))
     }
     pub fn feature_ask_unsure(self) -> &'static str {
         self.pick("Ask when unsure", "Bei Unsicherheit nachfragen")

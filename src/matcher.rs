@@ -151,7 +151,7 @@ fn abbreviations(name: &str) -> Vec<String> {
 }
 
 /// Whether `a` and `b` differ by one typo: a letter more, less, different, or two swapped.
-fn one_typo(a: &str, b: &str) -> bool {
+pub fn one_typo(a: &str, b: &str) -> bool {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     if a == b || a.len().abs_diff(b.len()) > 1 {
         return false;

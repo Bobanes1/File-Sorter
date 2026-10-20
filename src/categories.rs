@@ -58,6 +58,11 @@ fn of_words<'a>(words: impl Iterator<Item = &'a str>) -> Option<Category> {
     words.filter_map(of_word).max_by_key(|c| rank(*c))
 }
 
+/// The kind a name says (lecture, exercise, solution, exam), if any.
+pub fn kind_of(name: &str) -> Option<Category> {
+    of_words(normalise(name).split(' '))
+}
+
 /// The kind of a file, from its name (`stem`, without extension) or else the start of its text.
 #[cfg(test)]
 pub fn classify(stem: &str, text: Option<&str>) -> Option<Category> {

@@ -61,6 +61,48 @@ struct Checked {
     added: usize,
 }
 
+/// The last searches, kept between starts.
+const RECENT_FILE: &str = "recent-searches.json";
+
+/// Keys pressed in the search field to move through the results.
+#[derive(Clone, Copy, PartialEq)]
+enum Nav {
+    Down,
+    Up,
+    Open,
+    Reveal,
+}
+
+/// The kind of file a search looks for.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub(super) enum FileType {
+    #[default]
+    Any,
+    Pdf,
+    Slides,
+    Word,
+    Text,
+}
+
+/// How far back a search looks.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub(super) enum Period {
+    #[default]
+    Any,
+    Week,
+    Month,
+    Semester,
+}
+
+/// The filters under the search field.
+#[derive(Clone, PartialEq, Default)]
+pub(super) struct SearchFilter {
+    module: Option<usize>,
+    kind: Option<crate::categories::Category>,
+    file_type: FileType,
+    period: Period,
+}
+
 /// Documents changed in the last this many days are looked through for dates.
 const SCAN_DAYS: i64 = 150;
 /// How many pages of a document are looked through for dates.
@@ -90,7 +132,16 @@ pub(super) struct Study {
     indexed: Option<(PathBuf, Vec<String>)>,
     pub(super) query: String,
     searched: String,
+    /// The filters the last search ran with.
+    searched_filter: SearchFilter,
+    pub(super) filter: SearchFilter,
     hits: Vec<Hit>,
+    /// The result chosen with ↑/↓ (Enter opens it).
+    selected: usize,
+    /// ↑/↓/Enter pressed in the search field this frame.
+    nav: Option<Nav>,
+    /// The last searches, newest first.
+    recent: Vec<String>,
     /// Ctrl+F was pressed: put the cursor into the search field.
     focus: bool,
     deadlines: Deadlines,
@@ -125,6 +176,14 @@ impl Study {
             indexed: None,
             query: String::new(),
             searched: String::new(),
+            searched_filter: SearchFilter::default(),
+            filter: SearchFilter::default(),
+            selected: 0,
+            nav: None,
+            recent: state_dir
+                .and_then(|d| std::fs::read_to_string(d.join(RECENT_FILE)).ok())
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default(),
             hits: Vec::new(),
             focus: false,
             deadlines,
@@ -199,7 +258,7 @@ impl App {
         }
         self.train_model();
         // Search as you type, once the index answers.
-        if self.study.query != self.study.searched {
+        if self.study.query != self.study.searched || self.study.filter != self.study.searched_filter {
             self.run_search();
         }
     }
@@ -236,10 +295,47 @@ impl App {
 
     fn run_search(&mut self) {
         self.study.searched = self.study.query.clone();
+        self.study.searched_filter = self.study.filter.clone();
+        self.study.selected = 0;
+        let f = &self.study.filter;
+        let days =
+            |d: i64| (chrono::Utc::now() - chrono::Duration::days(d)).timestamp_nanos_opt().map(|n| n.max(0) as u64);
+        let filter = crate::index::Filter {
+            folder: f.module.and_then(|i| self.config.courses.get(i)).map(|c| self.config.course_folder(c)),
+            kind: f.kind,
+            extensions: match f.file_type {
+                FileType::Any => Vec::new(),
+                FileType::Pdf => vec!["pdf".into()],
+                FileType::Slides => vec!["pptx".into(), "ppt".into(), "key".into(), "odp".into()],
+                FileType::Word => vec!["docx".into(), "doc".into(), "odt".into()],
+                FileType::Text => vec!["txt".into(), "md".into(), "ipynb".into()],
+            },
+            since: match f.period {
+                Period::Any => None,
+                Period::Week => days(7),
+                Period::Month => days(31),
+                Period::Semester => days(183),
+            },
+        };
+        let query = crate::index::Query::parse(&self.study.query);
         self.study.hits = match &self.study.indexer {
-            Some(indexer) => indexer.index.read().map(|i| i.search(&self.study.query, 60)).unwrap_or_default(),
+            Some(indexer) => indexer.index.read().map(|i| i.search_with(&query, &filter, 80)).unwrap_or_default(),
             None => Vec::new(),
         };
+    }
+
+    /// Remember a search that was used (a result opened).
+    fn remember_search(&mut self) {
+        let query = self.study.query.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        self.study.recent.retain(|q| *q != query);
+        self.study.recent.insert(0, query);
+        self.study.recent.truncate(8);
+        if let Some(file) = self.config.state_file(RECENT_FILE) {
+            let _ = crate::cloud::save_json(&self.study.recent, &file);
+        }
     }
 
     /// Deadlines follow their files when they move.
@@ -392,6 +488,23 @@ impl App {
             self.study.focus = true;
         }
         let id = Id::new("search-field");
+        // ↑/↓ choose a result, Enter opens it, Ctrl+Enter shows it in its folder.
+        let focused = ui.memory(|m| m.has_focus(id));
+        if focused && !self.study.query.is_empty() {
+            self.study.nav = ui.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                    Some(Nav::Down)
+                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                    Some(Nav::Up)
+                } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter) {
+                    Some(Nav::Reveal)
+                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                    Some(Nav::Open)
+                } else {
+                    None
+                }
+            });
+        }
         let field = egui::TextEdit::singleline(&mut self.study.query)
             .id(id)
             .hint_text(format!("{}  {}", icon::MAGNIFYING_GLASS, lang.search_hint()))
@@ -409,6 +522,89 @@ impl App {
         if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.study.query.clear();
         }
+        // The last searches, while the field is empty.
+        if response.has_focus() && self.study.query.is_empty() && !self.study.recent.is_empty() {
+            let mut chosen = None;
+            egui::Area::new(Id::new("recent-searches"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(response.rect.left_bottom() + vec2(0.0, 6.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_width(response.rect.width() + 32.0);
+                        ui.label(RichText::new(lang.recent_searches()).small().color(p.on_surface_variant));
+                        for query in &self.study.recent {
+                            let row = ui.add(egui::Button::selectable(
+                                false,
+                                format!("{}  {query}", icon::CLOCK_COUNTER_CLOCKWISE),
+                            ));
+                            if row.clicked() {
+                                chosen = Some(query.clone());
+                            }
+                        }
+                    });
+                });
+            if let Some(query) = chosen {
+                self.study.query = query;
+                self.study.focus = true;
+            }
+        }
+    }
+
+    /// Module, kind, file type and period to narrow a search.
+    fn search_filters_ui(&mut self, ui: &mut egui::Ui) {
+        use crate::categories::Category;
+        let lang = self.lang;
+        let f = &mut self.study.filter;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            let modules: Vec<String> = self.config.courses.iter().map(|c| c.name.clone()).collect();
+            let shown = f.module.and_then(|i| modules.get(i).cloned()).unwrap_or_else(|| lang.all_modules().into());
+            egui::ComboBox::from_id_salt("search-module").selected_text(shown).width(170.0).show_ui(ui, |ui| {
+                ui.selectable_value(&mut f.module, None, lang.all_modules());
+                for (i, m) in modules.iter().enumerate() {
+                    ui.selectable_value(&mut f.module, Some(i), m);
+                }
+            });
+            for (kind, label) in [Category::Lecture, Category::Exercise, Category::Solution, Category::Exam]
+                .into_iter()
+                .zip(lang.kind_names())
+            {
+                let on = f.kind == Some(kind);
+                if fx::chip(ui, on, label).clicked() {
+                    f.kind = if on { None } else { Some(kind) };
+                }
+            }
+            let types = [
+                (FileType::Any, lang.any_type()),
+                (FileType::Pdf, "PDF"),
+                (FileType::Slides, lang.slides()),
+                (FileType::Word, "Word"),
+                (FileType::Text, lang.text_files()),
+            ];
+            let shown = types.iter().find(|(t, _)| *t == f.file_type).map_or("", |(_, l)| l);
+            egui::ComboBox::from_id_salt("search-type").selected_text(shown).width(110.0).show_ui(ui, |ui| {
+                for (t, label) in types {
+                    ui.selectable_value(&mut f.file_type, t, label);
+                }
+            });
+            let periods = [
+                (Period::Any, lang.any_time()),
+                (Period::Week, lang.last_week()),
+                (Period::Month, lang.last_month()),
+                (Period::Semester, lang.this_semester()),
+            ];
+            let shown = periods.iter().find(|(t, _)| *t == f.period).map_or("", |(_, l)| l);
+            egui::ComboBox::from_id_salt("search-period").selected_text(shown).width(130.0).show_ui(ui, |ui| {
+                for (t, label) in periods {
+                    ui.selectable_value(&mut f.period, t, label);
+                }
+            });
+            if *f != SearchFilter::default()
+                && fx::button(ui, ButtonStyle::Text, icon::X, lang.reset_filters()).clicked()
+            {
+                *f = SearchFilter::default();
+            }
+        });
     }
 
     /// The results while something is typed into the search field.
@@ -438,9 +634,22 @@ impl App {
                 }
             });
         });
-        ui.add_space(8.0);
+        ui.add_space(4.0);
+        self.search_filters_ui(ui);
+        ui.label(RichText::new(lang.search_tips()).small().color(p.outline));
+        ui.add_space(6.0);
         let mut open = None;
         let mut reveal = None;
+        // ↑/↓/Enter from the search field.
+        let count = self.study.hits.len();
+        match self.study.nav.take() {
+            Some(Nav::Down) if count > 0 => self.study.selected = (self.study.selected + 1).min(count - 1),
+            Some(Nav::Up) => self.study.selected = self.study.selected.saturating_sub(1),
+            Some(Nav::Open) => open = self.study.hits.get(self.study.selected).map(|h| h.path.clone()),
+            Some(Nav::Reveal) => reveal = self.study.hits.get(self.study.selected).map(|h| h.path.clone()),
+            _ => {}
+        }
+        let selected = self.study.selected;
         egui::ScrollArea::vertical().id_salt("search-results").auto_shrink([false, false]).show(ui, |ui| {
             if self.study.hits.is_empty() {
                 ui.add_space(24.0);
@@ -450,7 +659,7 @@ impl App {
                 });
                 return;
             }
-            for hit in &self.study.hits {
+            for (k, hit) in self.study.hits.iter().enumerate() {
                 let response = fx::card(ui, |ui| {
                     ui.horizontal(|ui| {
                         let name = hit.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -470,7 +679,21 @@ impl App {
                         ui.add_space(2.0);
                         ui.add(egui::Label::new(highlighted(ui, &hit.snippet, &hit.marks)).wrap());
                     }
+                    if !hit.more_pages.is_empty() {
+                        ui.label(RichText::new(lang.also_on_pages(&hit.more_pages)).small().color(p.outline));
+                    }
                 });
+                if k == selected {
+                    ui.painter().rect_stroke(
+                        response.rect,
+                        egui::CornerRadius::same(16),
+                        egui::Stroke::new(2.0, p.primary),
+                        egui::StrokeKind::Inside,
+                    );
+                    if self.study.hits.len() > 1 {
+                        response.scroll_to_me(None);
+                    }
+                }
                 let click = ui.interact(response.rect, Id::new(("search-hit", &hit.path)), Sense::click());
                 if click.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(lang.open_file()).clicked() {
                     open = Some(hit.path.clone());
@@ -478,6 +701,9 @@ impl App {
                 ui.add_space(6.0);
             }
         });
+        if open.is_some() || reveal.is_some() {
+            self.remember_search();
+        }
         if let Some(path) = open {
             crate::desktop::open(&path);
         }

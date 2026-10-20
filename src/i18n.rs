@@ -551,6 +551,52 @@ impl Lang {
     pub fn indexed(self, files: usize) -> String {
         self.fmt(format!("{files} files searched"), format!("{files} Dateien durchsucht"))
     }
+    pub fn recent_searches(self) -> &'static str {
+        self.pick("Recent searches", "Letzte Suchen")
+    }
+    pub fn all_modules(self) -> &'static str {
+        self.pick("All modules", "Alle Module")
+    }
+    pub fn kind_names(self) -> [&'static str; 4] {
+        match self {
+            Lang::En => ["Lectures", "Exercises", "Solutions", "Exams"],
+            Lang::De => ["Vorlesung", "Übung", "Lösung", "Prüfung"],
+        }
+    }
+    pub fn any_type(self) -> &'static str {
+        self.pick("All types", "Alle Typen")
+    }
+    pub fn slides(self) -> &'static str {
+        self.pick("Slides", "Folien")
+    }
+    pub fn text_files(self) -> &'static str {
+        self.pick("Text & notes", "Text & Notizen")
+    }
+    pub fn any_time(self) -> &'static str {
+        self.pick("Any time", "Jederzeit")
+    }
+    pub fn last_week(self) -> &'static str {
+        self.pick("Last 7 days", "Letzte 7 Tage")
+    }
+    pub fn last_month(self) -> &'static str {
+        self.pick("Last month", "Letzter Monat")
+    }
+    pub fn this_semester(self) -> &'static str {
+        self.pick("This semester", "Dieses Semester")
+    }
+    pub fn reset_filters(self) -> &'static str {
+        self.pick("Reset", "Zurücksetzen")
+    }
+    pub fn search_tips(self) -> &'static str {
+        self.pick(
+            "Tip: the start of a word is enough · \"exact phrase\" · -word leaves out · ↑↓ and Enter open, Ctrl+Enter shows the folder",
+            "Tipp: Wortanfang genügt · \"genaue Phrase\" · -wort schliesst aus · ↑↓ und Enter öffnen, Ctrl+Enter zeigt den Ordner",
+        )
+    }
+    pub fn also_on_pages(self, pages: &[usize]) -> String {
+        let list = pages.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+        self.fmt(format!("also on page {list}"), format!("auch auf Seite {list}"))
+    }
     pub fn no_results(self) -> &'static str {
         self.pick("No file contains all of these words.", "Keine Datei enthält alle diese Wörter.")
     }

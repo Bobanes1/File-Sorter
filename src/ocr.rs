@@ -31,7 +31,23 @@ pub fn set_enabled(on: bool) {
 }
 
 pub fn enabled() -> bool {
+    // In tests only where a test asks for it (tiny test PDFs would all be recognised).
+    #[cfg(test)]
+    if !TEST_ON.with(|on| on.get()) {
+        return false;
+    }
     ENABLED.load(Ordering::Relaxed) && available() != Engine::Missing
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Recognition on for the calling test's thread.
+#[cfg(test)]
+pub fn enable_in_this_test() {
+    TEST_ON.with(|on| on.set(true));
 }
 
 /// Where the cache is kept (the state folder).
@@ -361,6 +377,7 @@ mod tests {
     #[test]
     #[ignore]
     fn recognises_a_scanned_page() {
+        enable_in_this_test();
         let file = PathBuf::from(std::env::var("OCR_SAMPLE").expect("OCR_SAMPLE=<scanned pdf>"));
         let text = pdf_pages(&file, &[1]).remove(&1).unwrap_or_default();
         println!("{text}");

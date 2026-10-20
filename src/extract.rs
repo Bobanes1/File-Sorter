@@ -369,6 +369,7 @@ mod tests {
         if crate::ocr::available() != crate::ocr::Engine::Tesseract {
             return;
         }
+        crate::ocr::enable_in_this_test();
         let scan = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scan_serie5.pdf");
         let text = extract_text(&scan);
         assert!(text.contains("Serie 5") && text.contains("Abgabe"), "{text}");

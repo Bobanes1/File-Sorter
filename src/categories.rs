@@ -153,10 +153,24 @@ pub fn subfolder_options(list: &[Subfolder], existing: &[String]) -> Vec<(String
         .iter()
         .map(|f| {
             let mut about = match f.builtin {
-                Some(Category::Lecture) => "lecture slides, a script or lecture notes".to_string(),
-                Some(Category::Exercise) => "exercise sheets, homework or assignments to solve".to_string(),
-                Some(Category::Solution) => "solutions or model answers to exercises or exams".to_string(),
-                Some(Category::Exam) => "exams: old exams, mock exams or exam questions".to_string(),
+                Some(Category::Lecture) => {
+                    "lecture material that teaches the topic: slides, a script, lecture notes (Vorlesung, Folien, \
+                     Skript, lecture, chapter)"
+                        .to_string()
+                }
+                Some(Category::Exercise) => {
+                    "an exercise sheet: tasks the student still has to solve, without answers (Übungsblatt, Serie, \
+                     Aufgabe, homework, assignment, exercise, devoir)"
+                        .to_string()
+                }
+                Some(Category::Solution) => {
+                    "worked solutions: the answers and results written out (Lösung, Musterlösung, solution, answer \
+                     key, corrigé)"
+                        .to_string()
+                }
+                Some(Category::Exam) => {
+                    "an exam paper or old exam (Klausur, Prüfung, Altklausur, exam, midterm, final)".to_string()
+                }
                 None => format!("the folder «{}»", f.name),
             };
             if !f.keywords.is_empty() {

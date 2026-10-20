@@ -58,18 +58,24 @@ impl Builtin {
     fn about(self) -> &'static str {
         match self {
             Builtin::Exercise => {
-                "an exercise to hand in: an exercise sheet, homework, assignment, problem set or lab report is due"
+                "homework is due: an exercise sheet, a problem set or a small assignment to hand in \
+                 (Übung, Serie, Blatt, Hausaufgabe, homework, assignment, devoir, esercizio, tarea)"
             }
-            Builtin::Exam => "an exam takes place: a written or oral exam, test, quiz, midterm or final",
+            Builtin::Exam => {
+                "an exam takes place: a written or oral exam, test, quiz, midterm or final \
+                 (Klausur, Prüfung, Test, exam, examen, esame)"
+            }
             Builtin::Project => {
-                "a larger piece of work is due: a project, seminar paper, essay, report, poster, presentation or thesis"
+                "a big piece of work is due: a project, seminar paper, thesis, essay, poster or presentation \
+                 (Projekt, Seminararbeit, Hausarbeit, Bachelorarbeit, project, mémoire, tesina)"
             }
             Builtin::Registration => {
-                "a registration deadline: signing up or registering for an exam, a course, a group or a topic"
+                "the last day to register or sign up: for an exam, a course, a group or a topic \
+                 (Anmeldung, Einschreibung, registration, inscription, iscrizione)"
             }
             Builtin::Other => {
-                "another event to attend or note: an excursion, consultation hour, workshop, guest talk or meeting \
-                 (not a regular lecture)"
+                "another event to attend: an excursion, consultation hour, workshop, guest talk or meeting \
+                 (Exkursion, Sprechstunde, Workshop, event), not a regular lecture"
             }
         }
     }

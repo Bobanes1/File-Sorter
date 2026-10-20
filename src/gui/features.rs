@@ -23,6 +23,9 @@ impl App {
         let (title, hint) = (lang.feature_ask_unsure(), lang.feature_ask_unsure_hint());
         changed |= switch(ui, icon::SEAL_QUESTION, title, hint, &mut f.ask_when_unsure);
         divider(ui);
+        let (title, hint) = (lang.feature_timetable_hint(), lang.timetable_sorting_note());
+        changed |= switch(ui, icon::CHALKBOARD_TEACHER, title, hint, &mut f.timetable_hint);
+        divider(ui);
         changed |= switch(ui, icon::GLOBE, lang.feature_origin(), lang.feature_origin_hint(), &mut f.origin);
         divider(ui);
         let (title, hint) = (lang.feature_subfolders(), lang.feature_subfolders_hint());

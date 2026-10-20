@@ -11,6 +11,7 @@ mod cloud;
 mod dialogs;
 mod features;
 mod overview;
+mod semester;
 mod settings;
 mod study;
 mod subfolders;
@@ -118,6 +119,7 @@ enum ErrorBox {
 enum Tab {
     Overview,
     Week,
+    Semester,
     Settings,
 }
 
@@ -184,6 +186,8 @@ pub(crate) struct App {
     cloud: cloud::CloudState,
     /// The search, deadlines and this week's files.
     study: study::Study,
+    semester: semester::Semester,
+    notes: crate::notes::Notes,
     /// Finishing a semester (archive).
     archive: archive::ArchiveState,
     /// A new version of File Sorter.
@@ -222,6 +226,12 @@ impl App {
         let cloud = cloud::CloudState::new(&cc.egui_ctx, config.state_dir.clone(), &config.cloud);
         let shared_window = Arc::new(Mutex::new(None));
         let study = study::Study::new(config.state_dir.as_deref());
+        let semester = semester::Semester::new(config.state_dir.as_deref());
+        let notes = config
+            .state_dir
+            .as_deref()
+            .map(|d| crate::notes::Notes::load(&d.join(crate::notes::NOTES_FILE)))
+            .unwrap_or_default();
         let mut app = App {
             config_path,
             config,
@@ -266,6 +276,8 @@ impl App {
             quit: Arc::new(AtomicBool::new(false)),
             cloud,
             study,
+            semester,
+            notes,
             archive: archive::ArchiveState::default(),
             update: update::UpdateState::default(),
             wizard: first_start.then(wizard::Wizard::new),
@@ -991,6 +1003,7 @@ impl App {
         let mut open_rect = None;
         // Right to left: Settings is drawn first.
         let mut tabs = vec![(Tab::Settings, icon::GEAR_SIX, lang.tab_settings())];
+        tabs.push((Tab::Semester, icon::CALENDAR_DOTS, lang.tab_semester()));
         if self.week_tab_visible() {
             tabs.push((Tab::Week, icon::CALENDAR_CHECK, lang.tab_week()));
         }
@@ -1029,6 +1042,7 @@ impl eframe::App for App {
         self.archive_logic();
         self.update_logic();
         self.resort_logic();
+        self.semester_logic();
         while let Ok(event) = self.events_rx.try_recv() {
             self.handle_event(event);
         }
@@ -1092,6 +1106,14 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         ui.set_opacity(fade);
                         self.week_ui(ui);
+                    });
+            }
+            Some(Tab::Semester) => {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(p.surface).inner_margin(Margin::symmetric(20, 12)))
+                    .show(ui, |ui| {
+                        ui.set_opacity(fade);
+                        self.semester_ui(ui);
                     });
             }
             Some(Tab::Settings) => {

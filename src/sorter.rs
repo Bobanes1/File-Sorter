@@ -589,6 +589,21 @@ fn choose_course(
             return Ok(Match { course, score: 0, reason: Reason::Learned(words) });
         }
     }
+    // A tie: the module whose lesson was running when the file came (only between the
+    // modules in question – during a lesson one may well work on something else).
+    if features.timetable_hint && labels.len() >= 2 {
+        let came = fs::metadata(path)
+            .and_then(|m| m.modified())
+            .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local())
+            .unwrap_or_else(|_| chrono::Local::now().naive_local());
+        let running: Vec<String> =
+            crate::timetable::running_modules(config, came).into_iter().filter(|m| labels.contains(m)).collect();
+        if let [label] = running.as_slice()
+            && let Some(course) = config.courses.iter().position(|c| c.label() == *label)
+        {
+            return Ok(Match { course, score: 0, reason: Reason::Timetable(label.clone()) });
+        }
+    }
     // Files from the same course page go together.
     if let Some(source) = origin
         && let Some(course) = origin::lookup(config, source)
@@ -1035,6 +1050,48 @@ pub(crate) mod tests {
         let m = choose_course(&file, &cfg, None, &mut None).unwrap();
         assert_eq!(m.course, 1);
         assert!(matches!(m.reason, Reason::Learned(_)));
+    }
+
+    #[test]
+    fn the_timetable_only_settles_ties() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(tmp.path());
+        cfg.state_dir = Some(tmp.path().join("state"));
+        fs::create_dir_all(cfg.state_dir.as_ref().unwrap()).unwrap();
+        cfg.read_file_contents = false;
+        cfg.features.classifier = false;
+        // Linear Algebra runs right now (all day, every day of this week).
+        let today = chrono::Local::now().date_naive();
+        let mut table = crate::timetable::Timetable::default();
+        for offset in 0..7 {
+            let date = today + chrono::Duration::days(offset);
+            table.lessons.push(crate::timetable::Lesson {
+                module: cfg.courses[1].label(),
+                weekday: chrono::Datelike::weekday(&date).num_days_from_monday(),
+                start: "00:00".into(),
+                end: "23:59".into(),
+                from: crate::timetable::day_text(date),
+                until: crate::timetable::day_text(date),
+                every: 1,
+                ..Default::default()
+            });
+        }
+        table.save(&cfg.state_file(crate::timetable::TIMETABLE_FILE).unwrap()).unwrap();
+        // A tie between Programming and Linear Algebra: the running lesson decides.
+        let tie = cfg.watch_path().join("python matrix.pdf");
+        make_pdf(&tie, "x");
+        let m = choose_course(&tie, &cfg, None, &mut None).unwrap();
+        assert_eq!((m.course, m.reason), (1, Reason::Timetable(cfg.courses[1].label())));
+        // A clear match for another module wins; a file nothing fits stays.
+        let clear = cfg.watch_path().join("prog1_Blatt.pdf");
+        make_pdf(&clear, "x");
+        assert_eq!(choose_course(&clear, &cfg, None, &mut None).unwrap().course, 0);
+        let none = cfg.watch_path().join("Ferienfotos.pdf");
+        make_pdf(&none, "x");
+        assert_eq!(choose_course(&none, &cfg, None, &mut None), Err(LeftReason::NoMatch));
+        // Switched off: asked again.
+        cfg.features.timetable_hint = false;
+        assert!(matches!(choose_course(&tie, &cfg, None, &mut None), Err(LeftReason::Unsure { .. })));
     }
 
     /// The browser's note on where a download came from (only Windows keeps it).

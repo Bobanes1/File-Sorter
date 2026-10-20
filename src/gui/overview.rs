@@ -211,12 +211,40 @@ impl App {
         let panes = [
             (ModulePane::Keywords, lang.keywords_title().to_string()),
             (ModulePane::Subfolders, lang.feature_subfolders().to_string()),
+            (ModulePane::Notes, lang.notes_title().to_string()),
         ];
         fx::segmented(ui, "module-pane", &mut self.module_pane, &panes);
         ui.add_space(8.0);
         match self.module_pane {
             ModulePane::Keywords => self.keywords_ui(ui, i),
             ModulePane::Subfolders => self.module_subfolders_ui(ui, i),
+            ModulePane::Notes => self.notes_ui(ui, i),
+        }
+    }
+
+    /// Notes about the module, saved as they are typed.
+    fn notes_ui(&mut self, ui: &mut egui::Ui, i: usize) {
+        let p = fx::pal(ui);
+        let lang = self.lang;
+        let label = self.config.courses[i].label();
+        ui.label(RichText::new(lang.notes_hint()).small().color(p.on_surface_variant));
+        let mut text = self.notes.by_module.get(&label).cloned().unwrap_or_default();
+        let field = egui::TextEdit::multiline(&mut text)
+            .desired_rows(9)
+            .desired_width(f32::INFINITY)
+            .margin(Margin::symmetric(12, 8))
+            .hint_text(lang.notes_title());
+        if ui.add(field).changed() {
+            if text.trim().is_empty() {
+                self.notes.by_module.remove(&label);
+            } else {
+                self.notes.by_module.insert(label, text);
+            }
+            if let Some(file) = self.config.state_file(crate::notes::NOTES_FILE)
+                && let Err(e) = self.notes.save(&file)
+            {
+                log::info!("Could not save the notes: {e}");
+            }
         }
     }
 
@@ -458,9 +486,10 @@ impl App {
             }
             let now = self.now();
             let modules: Vec<String> = self.config.courses.iter().map(|c| c.label()).collect();
+            let running = self.semester.running_now();
             ui.spacing_mut().item_spacing.y = 2.0;
             for card in self.cards.iter().rev() {
-                match cards::activity_row(ui, lang, card, now, &modules) {
+                match cards::activity_row(ui, lang, card, now, &modules, running.as_deref()) {
                     RowAction::None => {}
                     action => actions.push((card.key, action)),
                 }
@@ -553,6 +582,7 @@ pub(super) enum ModulePane {
     #[default]
     Keywords,
     Subfolders,
+    Notes,
 }
 
 /// A folder as a rounded pill with its name (the whole path on hover; a click opens it) and a

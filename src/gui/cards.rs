@@ -387,7 +387,15 @@ pub(crate) enum RowAction {
 /// One entry as a Material list item: icon in a tinted circle, title, status, details,
 /// time, an undo button and a menu to put the file into a(nother) module (`modules`, by
 /// label; empty for none). Slides in when new and flashes when its state changes.
-pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64, modules: &[String]) -> RowAction {
+/// `running`: the module whose lesson is running now (offered first in «Assign»).
+pub(crate) fn activity_row(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    card: &Card,
+    now: f64,
+    modules: &[String],
+    running: Option<&str>,
+) -> RowAction {
     let p = fx::pal(ui);
     let look = look(&p, lang, card);
     let motion = fx::motion(ui.ctx());
@@ -447,7 +455,7 @@ pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64,
                                     action = RowAction::Undo;
                                 }
                                 if let Some(result) = card.assignable().filter(|_| !modules.is_empty()) {
-                                    if let Some(i) = assign_menu(ui, lang, result, modules) {
+                                    if let Some(i) = assign_menu(ui, lang, result, modules, running) {
                                         action = RowAction::Assign(i);
                                     }
                                     // Unsure: one button per module in question (right to left).
@@ -509,7 +517,13 @@ pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64,
 }
 
 /// «Assign ▾» (or «Other module ▾» for a sorted file) with the list of modules.
-fn assign_menu(ui: &mut egui::Ui, lang: Lang, result: &SortResult, modules: &[String]) -> Option<usize> {
+fn assign_menu(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    result: &SortResult,
+    modules: &[String],
+    running: Option<&str>,
+) -> Option<usize> {
     let p = fx::pal(ui);
     let text = if result.sorted() { lang.other_module() } else { lang.assign() };
     let button = fx::button(ui, ButtonStyle::Text, icon::CARET_DOWN, text);
@@ -525,6 +539,17 @@ fn assign_menu(ui: &mut egui::Ui, lang: Lang, result: &SortResult, modules: &[St
         ui.set_min_width(260.0);
         ui.label(RichText::new(lang.assign_title()).small().color(p.on_surface_variant));
         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+            // The module of the lesson running now first.
+            if let Some(i) = running.and_then(|r| modules.iter().position(|m| m == r))
+                && current != Some(modules[i].as_str())
+            {
+                let text = format!("{}  {}  ({})", icon::CHALKBOARD_TEACHER, modules[i], lang.running_now());
+                if ui.add(egui::Button::selectable(false, text).truncate()).clicked() {
+                    chosen = Some(i);
+                    ui.close();
+                }
+                ui.separator();
+            }
             for (i, label) in modules.iter().enumerate() {
                 let here = current == Some(label.as_str());
                 let row = ui.add_enabled(!here, egui::Button::selectable(here, label).truncate());

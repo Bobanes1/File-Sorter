@@ -22,13 +22,15 @@ pub enum Reason {
     Origin(String),
     /// The keywords didn't decide; the module's other files have these words.
     Learned(Vec<String>),
+    /// Several modules fit equally well; this one's lesson was running when the file came.
+    Timetable(String),
 }
 
 impl Reason {
     pub fn keywords(&self) -> &[String] {
         match self {
             Reason::FileName(k) | Reason::Content(k) | Reason::Learned(k) => k,
-            Reason::Chosen | Reason::Origin(_) => &[],
+            Reason::Chosen | Reason::Origin(_) | Reason::Timetable(_) => &[],
         }
     }
 
@@ -40,6 +42,7 @@ impl Reason {
             Reason::Chosen => "chosen by hand".to_string(),
             Reason::Origin(host) => format!("downloaded from {host} like earlier files of this module"),
             Reason::Learned(k) => format!("like the module's other files ({})", k.join(", ")),
+            Reason::Timetable(m) => format!("a tie; the lesson of {m} was running"),
         }
     }
 }
@@ -259,6 +262,7 @@ impl Weights {
 }
 
 /// Keyword hits for one module in `text`. Returns (hits, matched keywords).
+#[cfg(test)]
 pub fn score_text(text: &str, course: &Course, cap: Option<usize>) -> (usize, Vec<String>) {
     let norm = normalise(text);
     let mut total = 0;

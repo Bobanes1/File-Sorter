@@ -155,6 +155,7 @@ fn shared_course(course: &Course) -> Option<Course> {
         keywords: course.keywords.iter().map(|k| k.trim()).filter(|k| !k.is_empty()).map(str::to_string).collect(),
         folder: String::new(),
         subject: course.subject.trim().to_string(),
+        ..course.clone()
     })
 }
 

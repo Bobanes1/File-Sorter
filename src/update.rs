@@ -92,7 +92,7 @@ fn parse_release(json: &str) -> Result<Release, String> {
 }
 
 /// `curl` without a console window popping up.
-fn curl() -> Command {
+pub(crate) fn curl() -> Command {
     #[allow(unused_mut)]
     let mut command = Command::new("curl");
     #[cfg(windows)]

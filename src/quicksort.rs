@@ -393,8 +393,11 @@ impl eframe::App for ResultsWindow {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     let modules: Vec<String> = self.config.courses.iter().map(|c| c.label()).collect();
+                    let running = crate::timetable::running_modules(&self.config, chrono::Local::now().naive_local())
+                        .into_iter()
+                        .next();
                     for card in self.cards.iter().rev() {
-                        match activity_row(ui, lang, card, now, &modules) {
+                        match activity_row(ui, lang, card, now, &modules, running.as_deref()) {
                             RowAction::None => {}
                             action => actions.push((card.key, action)),
                         }

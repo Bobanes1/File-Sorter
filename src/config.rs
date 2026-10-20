@@ -60,6 +60,79 @@ pub struct Course {
     /// Study program the module belongs to (a folder directly under destination_root).
     #[serde(default, deserialize_with = "null_as_default")]
     pub subject: String,
+    /// Credit points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ects: Option<f32>,
+    /// The grade, on the scale chosen in the settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<f32>,
+    /// Passed or failed without a grade (pass/fail modules), or still open.
+    #[serde(default, skip_serializing_if = "Status::is_open")]
+    pub status: Status,
+    /// When it was taken («HS 2026»).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub semester: String,
+}
+
+/// Where a module stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    #[default]
+    Open,
+    Passed,
+    Failed,
+}
+
+impl Status {
+    fn is_open(&self) -> bool {
+        *self == Status::Open
+    }
+}
+
+/// How grades are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GradeScale {
+    /// 1 to 6, 6 best, 4 and up passed.
+    #[default]
+    Swiss,
+    /// 1.0 to 5.0, 1.0 best, up to 4.0 passed.
+    German,
+}
+
+impl GradeScale {
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            GradeScale::Swiss => (1.0, 6.0),
+            GradeScale::German => (1.0, 5.0),
+        }
+    }
+
+    pub fn passed(self, grade: f32) -> bool {
+        match self {
+            GradeScale::Swiss => grade >= 4.0,
+            GradeScale::German => grade <= 4.0,
+        }
+    }
+}
+
+/// The ECTS-weighted average of the graded modules, the ECTS earned (passed modules), and
+/// the ECTS of modules with a grade.
+pub fn grade_summary(courses: &[&Course], scale: GradeScale) -> (Option<f32>, f32, f32) {
+    let graded: Vec<(f32, f32)> =
+        courses.iter().filter_map(|c| Some((c.grade?, c.ects.unwrap_or(0.0)))).filter(|(_, e)| *e > 0.0).collect();
+    let weight: f32 = graded.iter().map(|(_, e)| e).sum();
+    let average = (weight > 0.0).then(|| graded.iter().map(|(g, e)| g * e).sum::<f32>() / weight);
+    let earned: f32 = courses
+        .iter()
+        .filter(|c| match c.grade {
+            Some(g) => scale.passed(g),
+            None => c.status == Status::Passed,
+        })
+        .filter_map(|c| c.ects)
+        .sum();
+    (average, earned, weight)
 }
 
 impl Course {
@@ -69,6 +142,10 @@ impl Course {
             keywords: keywords.iter().map(|k| k.to_string()).collect(),
             folder: String::new(),
             subject: String::new(),
+            ects: None,
+            grade: None,
+            status: Status::Open,
+            semester: String::new(),
         }
     }
 
@@ -279,8 +356,14 @@ pub struct Features {
     pub ocr: bool,
     /// Remind of deadlines and exams with a system notification.
     pub reminders: bool,
+    /// Between modules that fit equally well, prefer the one whose lesson is running.
+    pub timetable_hint: bool,
     /// When before a deadline.
     pub reminder_leads: Vec<crate::reminders::Lead>,
+    /// How grades are written.
+    pub grade_scale: GradeScale,
+    /// ECTS needed for the degree.
+    pub ects_target: f32,
 }
 
 impl Default for Features {
@@ -305,7 +388,10 @@ impl Default for Features {
             classifier: true,
             ocr: true,
             reminders: true,
+            timetable_hint: true,
             reminder_leads: crate::reminders::default_leads(),
+            grade_scale: GradeScale::Swiss,
+            ects_target: 180.0,
         }
     }
 }
@@ -668,6 +754,30 @@ mod tests {
         let mut custom = Course::new("X", &[]).with_subject("M");
         custom.folder = tmp.path().join("custom").to_string_lossy().into();
         assert_eq!(cfg.course_folder(&custom), tmp.path().join("custom"));
+    }
+
+    #[test]
+    fn grade_averages_on_both_scales() {
+        let course = |grade: Option<f32>, ects: f32, status: Status| Course {
+            grade,
+            ects: Some(ects),
+            status,
+            ..Course::new("x", &[])
+        };
+        let swiss = [
+            course(Some(5.5), 6.0, Status::Open),
+            course(Some(4.0), 3.0, Status::Open),
+            course(Some(3.5), 3.0, Status::Open),
+            course(None, 2.0, Status::Passed),
+        ];
+        let refs: Vec<&Course> = swiss.iter().collect();
+        let (average, earned, graded) = grade_summary(&refs, GradeScale::Swiss);
+        assert_eq!(average, Some((5.5 * 6.0 + 4.0 * 3.0 + 3.5 * 3.0) / 12.0));
+        assert_eq!((earned, graded), (11.0, 12.0), "3.5 failed; the pass/fail module counts");
+        let german = [course(Some(1.3), 6.0, Status::Open), course(Some(4.3), 6.0, Status::Open)];
+        let refs: Vec<&Course> = german.iter().collect();
+        assert_eq!(grade_summary(&refs, GradeScale::German).1, 6.0, "4.3 failed");
+        assert!(GradeScale::German.passed(4.0) && !GradeScale::Swiss.passed(3.9));
     }
 
     #[test]

@@ -685,8 +685,32 @@ impl App {
             _ => {}
         }
         let selected = self.study.selected;
+        let module_filter = self.study.filter.module.and_then(|i| self.config.courses.get(i)).map(|c| c.label());
+        let note_hits: Vec<(String, String)> = self
+            .notes
+            .search(&self.study.query)
+            .into_iter()
+            .filter(|(m, _)| module_filter.as_ref().is_none_or(|f| f == m))
+            .collect();
+        let mut open_note: Option<String> = None;
         egui::ScrollArea::vertical().id_salt("search-results").auto_shrink([false, false]).show(ui, |ui| {
-            if self.study.hits.is_empty() {
+            // Notes of modules come first.
+            for (module, passage) in &note_hits {
+                let response = fx::card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(icon::NOTE_PENCIL).size(18.0).color(p.primary));
+                        let short = module.rsplit(" › ").next().unwrap_or(module);
+                        ui.label(fx::title(lang.note_hit(short), 15.0).color(p.on_surface));
+                    });
+                    ui.add(egui::Label::new(RichText::new(passage).color(p.on_surface_variant)).wrap());
+                });
+                let click = ui.interact(response.rect, Id::new(("note-hit", module)), Sense::click());
+                if click.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    open_note = Some(module.clone());
+                }
+                ui.add_space(6.0);
+            }
+            if self.study.hits.is_empty() && note_hits.is_empty() {
                 ui.add_space(24.0);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(icon::MAGNIFYING_GLASS).size(34.0).color(p.outline));
@@ -736,6 +760,15 @@ impl App {
                 ui.add_space(6.0);
             }
         });
+        if let Some(module) = open_note {
+            self.remember_search();
+            self.study.query.clear();
+            if let Some(i) = self.config.courses.iter().position(|c| c.label() == module) {
+                self.select(Some(i));
+                self.module_pane = super::overview::ModulePane::Notes;
+                self.switch_tab(Tab::Overview);
+            }
+        }
         if open.is_some() || reveal.is_some() {
             self.remember_search();
         }
@@ -781,6 +814,7 @@ impl App {
                 ui.add_space(margin);
                 ui.vertical(|ui| {
                     ui.set_width(width);
+                    self.today_lessons_ui(ui);
                     if self.config.features.deadlines {
                         self.deadlines_ui(ui);
                         ui.add_space(16.0);

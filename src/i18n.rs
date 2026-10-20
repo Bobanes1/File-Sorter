@@ -275,6 +275,13 @@ impl Lang {
                 format!("from {host}, like earlier files of this module"),
                 format!("von {host}, wie frühere Dateien dieses Moduls"),
             ),
+            Reason::Timetable(module) => {
+                let short = module.rsplit(" › ").next().unwrap_or(module);
+                self.fmt(
+                    format!("modules fit equally well – {short} was on the timetable"),
+                    format!("Module passten gleich gut – {short} lief laut Stundenplan gerade"),
+                )
+            }
             Reason::Learned(_) if words.is_empty() => {
                 self.pick("like the module's other files", "ähnlich wie die anderen Dateien des Moduls").into()
             }
@@ -531,6 +538,205 @@ impl Lang {
     // ---------- search and this week ----------
     pub fn tab_week(self) -> &'static str {
         self.pick("This week", "Diese Woche")
+    }
+    pub fn tab_semester(self) -> &'static str {
+        self.pick("Semester", "Semester")
+    }
+
+    // ---------- timetable ----------
+    pub fn timetable(self) -> &'static str {
+        self.pick("Timetable", "Stundenplan")
+    }
+    pub fn previous_week(self) -> &'static str {
+        self.pick("Previous week", "Vorherige Woche")
+    }
+    pub fn next_week(self) -> &'static str {
+        self.pick("Next week", "Nächste Woche")
+    }
+    pub fn calendar_week(self) -> &'static str {
+        self.pick("Week", "KW")
+    }
+    pub fn today(self) -> &'static str {
+        self.pick("Today", "Heute")
+    }
+    pub fn add_lesson(self) -> &'static str {
+        self.pick("Lesson", "Lektion")
+    }
+    pub fn lesson(self) -> &'static str {
+        self.pick("Lesson", "Lektion")
+    }
+    pub fn calendar_link(self) -> &'static str {
+        self.pick("Calendar link…", "Kalender-Link…")
+    }
+    pub fn calendar_link_hint(self) -> &'static str {
+        self.pick(
+            "Subscribe to the timetable link of your university (iCal/webcal); it is read again every day",
+            "Den Stundenplan-Link deiner Hochschule abonnieren (iCal/webcal); er wird täglich neu gelesen",
+        )
+    }
+    pub fn calendar_link_explained(self) -> &'static str {
+        self.pick(
+            "Paste the calendar link (iCal, .ics or webcal://) your university's portal offers for your timetable. File Sorter reads it now and again every day.",
+            "Füge den Kalender-Link (iCal, .ics oder webcal://) ein, den das Portal deiner Hochschule für deinen Stundenplan anbietet. File Sorter liest ihn jetzt und danach täglich.",
+        )
+    }
+    pub fn read_link(self) -> &'static str {
+        self.pick("Read", "Lesen")
+    }
+    pub fn unsubscribe(self) -> &'static str {
+        self.pick("Remove this link and its lessons", "Diesen Link und seine Lektionen entfernen")
+    }
+    pub fn subscribed(self, links: &str) -> String {
+        self.fmt(format!("Read daily from: {links}"), format!("Täglich gelesen von: {links}"))
+    }
+    pub fn import_calendar(self) -> &'static str {
+        self.pick("Import calendar…", "Kalender importieren…")
+    }
+    pub fn import_calendar_hint(self) -> &'static str {
+        self.pick(
+            "Read the lessons from a calendar file (.ics) exported from the university portal, Outlook or Google",
+            "Die Lektionen aus einer Kalenderdatei (.ics) lesen, exportiert aus dem Uni-Portal, Outlook oder Google",
+        )
+    }
+    pub fn import_explained(self, count: usize) -> String {
+        self.fmt(
+            format!("{count} lessons found. Check the module of each (guessed from its name) – what came from the same calendar before is replaced."),
+            format!("{count} Lektionen gefunden. Prüfe bei jeder das Modul (am Namen erraten) – was früher aus demselben Kalender kam, wird ersetzt."),
+        )
+    }
+    pub fn import_now(self) -> &'static str {
+        self.pick("Import", "Importieren")
+    }
+    pub fn no_lessons_found(self) -> &'static str {
+        self.pick("No lessons found in this calendar.", "In diesem Kalender wurden keine Lektionen gefunden.")
+    }
+    pub fn timetable_empty(self) -> &'static str {
+        self.pick(
+            "No timetable yet. Import the calendar from your university portal (.ics file or link), or add lessons by hand with «+ Lesson».",
+            "Noch kein Stundenplan. Importiere den Kalender aus dem Portal deiner Hochschule (.ics-Datei oder Link) oder trage Lektionen mit «+ Lektion» von Hand ein.",
+        )
+    }
+    pub fn timetable_sorting_note(self) -> &'static str {
+        self.pick(
+            "When sorting, the timetable only settles a tie: if two modules fit a file equally well, the one whose lesson was running wins – never against what the file says.",
+            "Beim Sortieren entscheidet der Stundenplan nur bei Gleichstand: Passen zwei Module gleich gut, gewinnt das, dessen Lektion gerade lief – nie gegen den Inhalt der Datei.",
+        )
+    }
+    pub fn weekday_short(self, day: u32) -> &'static str {
+        let i = day.min(6) as usize;
+        match self {
+            Lang::De => ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"][i],
+            Lang::En => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i],
+        }
+    }
+    pub fn weekday_long(self, day: u32) -> &'static str {
+        let i = day.min(6) as usize;
+        match self {
+            Lang::De => ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][i],
+            Lang::En => ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][i],
+        }
+    }
+    pub fn cancelled(self) -> &'static str {
+        self.pick("cancelled", "fällt aus")
+    }
+    pub fn lesson_title(self) -> &'static str {
+        self.pick("Title", "Titel")
+    }
+    pub fn weekday_label(self) -> &'static str {
+        self.pick("Day", "Tag")
+    }
+    pub fn time_from_to(self) -> &'static str {
+        self.pick("From – to", "Von – bis")
+    }
+    pub fn every_label(self) -> &'static str {
+        self.pick("Repeats", "Wiederholung")
+    }
+    pub fn every_weeks(self, n: u32) -> &'static str {
+        match n {
+            2 => self.pick("every 2 weeks", "alle 2 Wochen"),
+            _ => self.pick("every week", "jede Woche"),
+        }
+    }
+    pub fn lesson_room(self) -> &'static str {
+        self.pick("Room", "Raum")
+    }
+    pub fn lesson_kind(self) -> &'static str {
+        self.pick("Kind", "Art")
+    }
+    pub fn first_day(self) -> &'static str {
+        self.pick("First day", "Erster Tag")
+    }
+    pub fn last_day(self) -> &'static str {
+        self.pick("Last day", "Letzter Tag")
+    }
+    pub fn lesson_not_ready(self) -> &'static str {
+        self.pick("Times like 10:15, dates like 20.10.2026", "Zeiten wie 10:15, Daten wie 20.10.2026")
+    }
+    pub fn cancel_on(self, date: chrono::NaiveDate) -> String {
+        let d = date.format("%d.%m.");
+        self.fmt(format!("Cancelled on {d}"), format!("Fällt am {d} aus"))
+    }
+    pub fn takes_place(self, date: chrono::NaiveDate) -> String {
+        let d = date.format("%d.%m.");
+        self.fmt(format!("Takes place on {d} after all"), format!("Findet am {d} doch statt"))
+    }
+    pub fn running_now(self) -> &'static str {
+        self.pick("on now", "läuft gerade")
+    }
+    pub fn today_lessons(self) -> &'static str {
+        self.pick("Today", "Heute")
+    }
+
+    // ---------- grades ----------
+    pub fn grades_title(self) -> &'static str {
+        self.pick("Grades & ECTS", "Noten & ECTS")
+    }
+    pub fn scale_swiss(self) -> &'static str {
+        self.pick("1–6 (CH)", "1–6 (CH)")
+    }
+    pub fn scale_german(self) -> &'static str {
+        self.pick("1.0–5.0 (DE)", "1,0–5,0 (DE)")
+    }
+    pub fn semester_label(self) -> &'static str {
+        self.pick("Semester", "Semester")
+    }
+    pub fn grade_label(self) -> &'static str {
+        self.pick("Grade", "Note")
+    }
+    pub fn status_label(self) -> &'static str {
+        self.pick("Status", "Status")
+    }
+    pub fn passed(self) -> &'static str {
+        self.pick("passed", "bestanden")
+    }
+    pub fn failed(self) -> &'static str {
+        self.pick("failed", "nicht bestanden")
+    }
+    pub fn open_status(self) -> &'static str {
+        self.pick("open", "offen")
+    }
+    pub fn average(self) -> &'static str {
+        self.pick("Average (ECTS-weighted)", "Schnitt (nach ECTS gewichtet)")
+    }
+    pub fn ects_earned(self) -> &'static str {
+        self.pick("ECTS earned", "ECTS erreicht")
+    }
+    pub fn ects_target(self) -> &'static str {
+        self.pick("needed:", "nötig:")
+    }
+
+    // ---------- notes ----------
+    pub fn notes_title(self) -> &'static str {
+        self.pick("Notes", "Notizen")
+    }
+    pub fn notes_hint(self) -> &'static str {
+        self.pick(
+            "Anything about this module: exam rules, what to repeat, contacts … Saved by itself and found by the search.",
+            "Alles zu diesem Modul: Prüfungsregeln, was zu wiederholen ist, Kontakte … Wird von selbst gespeichert und von der Suche gefunden.",
+        )
+    }
+    pub fn note_hit(self, module: &str) -> String {
+        self.fmt(format!("Note · {module}"), format!("Notiz · {module}"))
     }
     pub fn search_hint(self) -> &'static str {
         self.pick("Search in files (Ctrl+F)", "In Dateien suchen (Ctrl+F)")
@@ -1074,6 +1280,9 @@ impl Lang {
             Lead::Hours3 => self.pick("3 hours before", "3 Stunden vorher"),
             Lead::Hour => self.pick("1 hour before", "1 Stunde vorher"),
         }
+    }
+    pub fn feature_timetable_hint(self) -> &'static str {
+        self.pick("Use the timetable for ties", "Stundenplan bei Gleichstand beachten")
     }
     pub fn feature_subfolders(self) -> &'static str {
         self.pick("Subfolders", "Unterordner")

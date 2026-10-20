@@ -812,6 +812,9 @@ impl Lang {
         let list = pages.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
         self.fmt(format!("also on page {list}"), format!("auch auf Seite {list}"))
     }
+    pub fn recognised_hit(self) -> &'static str {
+        self.pick("recognised text (scan)", "erkannter Text (Scan)")
+    }
     pub fn no_results(self) -> &'static str {
         self.pick("No file contains all of these words.", "Keine Datei enthält alle diese Wörter.")
     }

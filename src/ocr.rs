@@ -154,10 +154,17 @@ pub fn pdf_pages(path: &Path, pages: &[u32]) -> HashMap<u32, String> {
     let known: HashMap<u32, String> =
         Cache::with(|c| c.files.iter().find(|(k, _)| *k == key).map(|(_, p)| p.clone())).unwrap_or_default();
     let missing: Vec<u32> = pages.iter().copied().filter(|p| !known.contains_key(p)).collect();
-    let recognised = if missing.is_empty() { HashMap::new() } else { recognise_pdf(path, &missing) };
+    let recognised: HashMap<u32, String> = if missing.is_empty() {
+        HashMap::new()
+    } else {
+        recognise_pdf(path, &missing).into_iter().map(|(p, t)| (p, tidy(&t))).collect()
+    };
     for p in pages {
-        if let Some(text) = known.get(p).or_else(|| recognised.get(p)) {
+        if let Some(text) = recognised.get(p) {
             out.insert(*p, text.clone());
+        } else if let Some(text) = known.get(p) {
+            // (Kept by 0.13 as it came from the engine.)
+            out.insert(*p, tidy(text));
         }
     }
     if !recognised.is_empty() || !missing.is_empty() {
@@ -181,6 +188,55 @@ pub fn pdf_pages(path: &Path, pages: &[u32]) -> HashMap<u32, String> {
     out
 }
 
+/// Recognised text tidied for searching: words split at the end of a line ("Rekur-" /
+/// "sion") joined again, and ligatures written out.
+pub fn tidy(text: &str) -> String {
+    let text = text.replace('ﬁ', "fi").replace('ﬂ', "fl").replace('ﬀ', "ff").replace('\u{00AD}', "");
+    let mut out = String::with_capacity(text.len());
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        let line = line.trim_end();
+        let next_starts_small = lines
+            .peek()
+            .and_then(|next| next.trim_start().chars().next())
+            .is_some_and(|c| c.is_lowercase());
+        // "Rekur-" but not "-" alone or "Ein- und Ausgabe".
+        let split = line.strip_suffix('-').filter(|rest| rest.chars().last().is_some_and(char::is_alphabetic));
+        match split {
+            Some(rest) if next_starts_small => {
+                out.push_str(rest);
+                // The next line continues the word.
+                if let Some(next) = lines.next() {
+                    out.push_str(next.trim_start());
+                    out.push('\n');
+                }
+            }
+            _ => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// How many pages a PDF has, asked from the system's own PDF reader (for PDFs the text
+/// reader here can't open).
+pub fn pdf_page_count(path: &Path) -> Option<usize> {
+    #[cfg(windows)]
+    {
+        windows_ocr::page_count(path).ok()
+    }
+    #[cfg(not(windows))]
+    {
+        let out = std::process::Command::new("pdfinfo").arg(path).stderr(std::process::Stdio::null()).output().ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|l| l.strip_prefix("Pages:"))
+            .and_then(|n| n.trim().parse().ok())
+    }
+}
+
 /// The text in a picture (PNG, JPEG), recognised.
 pub fn image(path: &Path) -> Option<String> {
     if !enabled() {
@@ -188,9 +244,9 @@ pub fn image(path: &Path) -> Option<String> {
     }
     let key = fingerprint(path)?;
     if let Some(text) = Cache::with(|c| c.files.iter().find(|(k, _)| *k == key).and_then(|(_, p)| p.get(&1).cloned())) {
-        return Some(text);
+        return Some(tidy(&text));
     }
-    let text = recognise_image(path).unwrap_or_default();
+    let text = tidy(&recognise_image(path).unwrap_or_default());
     Cache::with(|c| {
         c.files.push((key, HashMap::from([(1, text.clone())])));
         c.save();
@@ -269,9 +325,9 @@ mod windows_ocr {
                 continue;
             }
             let page = document.GetPage(number - 1)?;
-            // About 200 dpi: wide enough for small print, within what the engine takes.
+            // About 300 dpi: wide enough for small print, within what the engine takes.
             let size = page.Size()?;
-            let width = ((size.Width * 200.0 / 72.0) as u32).min(largest);
+            let width = ((size.Width * 300.0 / 72.0) as u32).min(largest);
             let options = PdfPageRenderOptions::new()?;
             options.SetDestinationWidth(width)?;
             let stream = InMemoryRandomAccessStream::new()?;
@@ -280,6 +336,11 @@ mod windows_ocr {
             out.insert(number, read(&engine, &image)?);
         }
         Ok(out)
+    }
+
+    pub fn page_count(path: &Path) -> Result<usize> {
+        let file = StorageFile::GetFileFromPathAsync(&absolute(path))?.join()?;
+        Ok(PdfDocument::LoadFromFileAsync(&file)?.join()?.PageCount()? as usize)
     }
 
     pub fn image(path: &Path) -> Result<String> {
@@ -335,7 +396,7 @@ fn recognise_pdf(path: &Path, pages: &[u32]) -> HashMap<u32, String> {
     for &page in pages {
         let prefix = dir.join(format!("page{page}"));
         let rendered = std::process::Command::new("pdftoppm")
-            .args(["-r", "200", "-gray", "-png", "-singlefile", "-f", &page.to_string(), "-l", &page.to_string()])
+            .args(["-r", "300", "-gray", "-png", "-singlefile", "-f", &page.to_string(), "-l", &page.to_string()])
             .arg(path)
             .arg(&prefix)
             .stderr(std::process::Stdio::null())
@@ -360,6 +421,12 @@ fn recognise_image(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognised_text_joins_words_split_at_line_ends() {
+        assert_eq!(tidy("Die Rekur-\nsion ist\nEin- und Ausgabe\n-\nTeil-\nAufgabe"), "Die Rekursion ist\nEin- und Ausgabe\n-\nTeil-\nAufgabe\n");
+        assert_eq!(tidy("Auf\u{fb01}ndbar"), "Auffindbar\n");
+    }
 
     #[test]
     fn fingerprints_follow_the_content_not_the_name() {

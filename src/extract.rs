@@ -30,11 +30,14 @@ pub fn extract_text(path: &Path) -> String {
     }));
     let text = finish(result, path);
     // A scan (pages that are only pictures) or a photo: recognise the text.
-    if ext == "pdf" && crate::ocr::letters(&text) < crate::ocr::EMPTY_PAGE {
+    // (A scan may have a line of real text, a stamp or the page numbers: little text for
+    // its pages still counts as a scan.)
+    if ext == "pdf" && crate::ocr::letters(&text) < crate::ocr::EMPTY_PAGE * OCR_SORT_PAGES as usize {
         let pages: Vec<u32> = (1..=OCR_SORT_PAGES).collect();
         let found = crate::ocr::pdf_pages(path, &pages);
         if !found.is_empty() {
-            return pages.iter().filter_map(|p| found.get(p).cloned()).collect::<Vec<_>>().join("\n");
+            let recognised = pages.iter().filter_map(|p| found.get(p).cloned()).collect::<Vec<_>>().join("\n");
+            return if text.trim().is_empty() { recognised } else { format!("{text}\n{recognised}") };
         }
     }
     if crate::ocr::is_image(path) {
@@ -45,7 +48,7 @@ pub fn extract_text(path: &Path) -> String {
 
 /// Pages of a scan that are recognised for sorting, and for the search and deadlines.
 const OCR_SORT_PAGES: u32 = 3;
-const OCR_INDEX_PAGES: usize = 12;
+const OCR_INDEX_PAGES: usize = 40;
 
 /// Text from the start of a document held in memory (`name` gives its type).
 fn extract_bytes(name: &str, data: &[u8]) -> String {
@@ -108,20 +111,21 @@ const INDEX_FILE_CHARS: usize = 400_000;
 
 /// The whole text of a document for the search, one entry per page (PDF) or slide (PowerPoint);
 /// Word and text files are one page. Empty if it can't be read.
-pub fn pages(path: &Path) -> Vec<String> {
+/// Also says whether some of it was recognised from the image of a page (a scan).
+pub fn pages(path: &Path) -> (Vec<String>, bool) {
     pages_up_to(path, INDEX_PAGES)
 }
 
 /// The text of the first `count` pages or slides, for finding deadlines further in than the
 /// title page (an exam date on page 6 of the course information).
 pub fn first_pages(path: &Path, count: usize) -> String {
-    match pages_up_to(path, count) {
+    match pages_up_to(path, count).0 {
         pages if pages.is_empty() => extract_text(path),
         pages => pages.join("\n"),
     }
 }
 
-fn pages_up_to(path: &Path, count: usize) -> Vec<String> {
+fn pages_up_to(path: &Path, count: usize) -> (Vec<String>, bool) {
     let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     let result = catch_unwind(AssertUnwindSafe(|| match ext.as_str() {
         "pdf" => pdf_pages(&fs::read(path).ok()?, count),
@@ -135,22 +139,35 @@ fn pages_up_to(path: &Path, count: usize) -> Vec<String> {
         _ => None,
     }));
     let mut read = result.ok().flatten().unwrap_or_default();
+    let mut recognised = false;
     // Pages without a text layer (a scan): recognise the first ones; a photo is one page.
     if ext == "pdf" {
+        // A PDF that can't be read at all (some scanners write what the reader here doesn't
+        // understand) is still recognised from its pictures.
+        if read.is_empty()
+            && crate::ocr::enabled()
+            && let Some(pages) = crate::ocr::pdf_page_count(path)
+        {
+            read = vec![String::new(); pages.min(OCR_INDEX_PAGES).min(count)];
+        }
         let empty: Vec<u32> = read
             .iter()
             .enumerate()
-            .take(OCR_INDEX_PAGES)
+            .take(OCR_INDEX_PAGES.min(count))
             .filter(|(_, p)| crate::ocr::letters(p) < crate::ocr::EMPTY_PAGE)
             .map(|(i, _)| i as u32 + 1)
             .collect();
         for (number, text) in crate::ocr::pdf_pages(path, &empty) {
-            if let Some(page) = read.get_mut(number as usize - 1) {
+            if let Some(page) = read.get_mut(number as usize - 1)
+                && crate::ocr::letters(&text) > crate::ocr::letters(page)
+            {
                 *page = text;
+                recognised = true;
             }
         }
     } else if crate::ocr::is_image(path) {
         read = crate::ocr::image(path).into_iter().collect();
+        recognised = read.iter().any(|p| crate::ocr::letters(p) > 0);
     }
     let mut total = 0;
     let mut pages = Vec::new();
@@ -162,8 +179,9 @@ fn pages_up_to(path: &Path, count: usize) -> Vec<String> {
         }
         pages.push(page);
     }
-    pages
+    (pages, recognised)
 }
+
 
 fn pdf_pages(data: &[u8], count: usize) -> Option<Vec<String>> {
     let mut doc = load_pdf(data)?;

@@ -684,7 +684,11 @@ impl App {
         let mut reveal = None;
         // ↑/↓/Enter from the search field.
         let count = self.study.hits.len();
-        match self.study.nav.take() {
+        let nav = self.study.nav.take();
+        // Scrolled to the chosen result only when it was chosen with the keys, so the list can
+        // be scrolled with the mouse.
+        let moved = matches!(nav, Some(Nav::Down | Nav::Up));
+        match nav {
             Some(Nav::Down) if count > 0 => self.study.selected = (self.study.selected + 1).min(count - 1),
             Some(Nav::Up) => self.study.selected = self.study.selected.saturating_sub(1),
             Some(Nav::Open) => open = self.study.hits.get(self.study.selected).map(|h| h.path.clone()),
@@ -734,6 +738,9 @@ impl App {
                         if let Some(page) = hit.page {
                             ui.label(RichText::new(lang.page(page)).small().color(p.on_surface_variant));
                         }
+                        if hit.recognised {
+                            ui.label(RichText::new(lang.recognised_hit()).small().color(p.outline));
+                        }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if fx::button(ui, ButtonStyle::Text, icon::FOLDER_OPEN, lang.show_in_folder()).clicked() {
                                 reveal = Some(hit.path.clone());
@@ -756,7 +763,7 @@ impl App {
                         egui::Stroke::new(2.0, p.primary),
                         egui::StrokeKind::Inside,
                     );
-                    if self.study.hits.len() > 1 {
+                    if moved {
                         response.scroll_to_me(None);
                     }
                 }

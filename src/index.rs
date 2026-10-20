@@ -38,6 +38,34 @@ pub struct Doc {
     modified: u64,
     /// Text per page or slide (empty for files that are only found by name).
     pages: Vec<String>,
+    /// Read while text recognition was on (older entries, or ones read without it, are read
+    /// again when they look like a scan).
+    #[serde(default, skip_serializing_if = "is_false")]
+    ocr_checked: bool,
+    /// Some of the text was recognised from the picture of a page: it may have small errors,
+    /// so near words are found in it too.
+    #[serde(default, skip_serializing_if = "is_false")]
+    recognised: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl Doc {
+    /// A scan or a photo read before recognition could read it.
+    fn wants_recognition(&self) -> bool {
+        if self.ocr_checked || !is_text_type(&self.path) {
+            return false;
+        }
+        let ext = self.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if crate::ocr::is_image(&self.path) {
+            return true;
+        }
+        ext == "pdf"
+            && (self.pages.is_empty()
+                || self.pages.iter().take(3).any(|p| crate::ocr::letters(p) < crate::ocr::EMPTY_PAGE))
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -71,6 +99,8 @@ pub struct Hit {
     pub marks: Vec<Range<usize>>,
     /// Other pages with hits.
     pub more_pages: Vec<usize>,
+    /// Found in text recognised from a scan.
+    pub recognised: bool,
     score: usize,
     modified: u64,
 }
@@ -167,9 +197,16 @@ impl Index {
         }
         let candidates: Vec<usize> = (0..self.docs.len()).filter(|&i| filter.allows(&self.docs[i])).collect();
         let mut hits = self.rank(query, &candidates, false, limit);
-        // Nothing (or very little) found: allow one typo in longer words.
-        if hits.len() < 3 && query.terms.iter().any(|t| t.chars().count() >= TYPO_LENGTH) {
-            let fuzzy = self.rank(query, &candidates, true, limit);
+        // Nothing (or very little) found: allow one typo in longer words. In recognised text
+        // (scans) always, as recognition gets a letter wrong now and then.
+        let long = query.terms.iter().any(|t| t.chars().count() >= TYPO_LENGTH);
+        if long {
+            let scans: Vec<usize> = if hits.len() < 3 {
+                candidates
+            } else {
+                candidates.into_iter().filter(|&i| self.docs[i].recognised).collect()
+            };
+            let fuzzy = self.rank(query, &scans, true, limit);
             for hit in fuzzy {
                 if !hits.iter().any(|h| h.path == hit.path) {
                     hits.push(hit);
@@ -275,6 +312,7 @@ impl Index {
                 snippet,
                 marks: marked,
                 more_pages,
+                recognised: doc.recognised,
                 score: (score * 1000.0) as usize,
                 modified: doc.modified,
             });
@@ -499,18 +537,22 @@ pub fn refresh(root: &Path, extensions: &[String], old: &[Doc], mut progress: im
     let mut docs = Vec::new();
     for (path, meta) in files_in(root, extensions) {
         let (size, modified) = (meta.len(), stamp(&meta));
-        if let Some(doc) = known.get(path.as_path()).filter(|d| d.size == size && d.modified == modified) {
+        let ocr_on = crate::ocr::enabled();
+        if let Some(doc) = known
+            .get(path.as_path())
+            .filter(|d| d.size == size && d.modified == modified && !(ocr_on && d.wants_recognition()))
+        {
             docs.push((*doc).clone());
             continue;
         }
         // Only in the cloud: found by name, read once it is on this computer.
-        let pages = if is_text_type(&path) && !crate::cloud::is_placeholder(&path) {
+        let (pages, recognised) = if is_text_type(&path) && !crate::cloud::is_placeholder(&path) {
             crate::extract::pages(&path)
         } else {
-            Vec::new()
+            (Vec::new(), false)
         };
         let modified = if pages.is_empty() && crate::cloud::is_placeholder(&path) { 0 } else { modified };
-        docs.push(Doc { path, size, modified, pages });
+        docs.push(Doc { path, size, modified, pages, ocr_checked: ocr_on, recognised });
         progress(&docs);
     }
     docs.sort_by(|a, b| a.path.cmp(&b.path));
@@ -702,14 +744,9 @@ mod tests {
     #[test]
     fn finds_words_on_pages_with_snippets() {
         let docs = vec![
-            Doc {
-                path: PathBuf::from("/s/Prog/VL3.pdf"),
-                size: 1,
-                modified: 1,
-                pages: vec!["Einleitung".into(), "Die Rekursion: eine Funktion ruft sich selbst auf.".into()],
-            },
-            Doc { path: PathBuf::from("/s/Prog/Rekursion Übung.pdf"), size: 1, modified: 1, pages: vec![] },
-            Doc { path: PathBuf::from("/s/Stats/x.pdf"), size: 1, modified: 1, pages: vec!["Mittelwert".into()] },
+            doc("/s/Prog/VL3.pdf", 1, &["Einleitung", "Die Rekursion: eine Funktion ruft sich selbst auf."]),
+            doc("/s/Prog/Rekursion Übung.pdf", 1, &[]),
+            doc("/s/Stats/x.pdf", 1, &["Mittelwert"]),
         ];
         let index = Index::from_docs(docs);
         let hits = index.search("REKURSION", 10);
@@ -724,7 +761,41 @@ mod tests {
     }
 
     fn doc(path: &str, modified: u64, pages: &[&str]) -> Doc {
-        Doc { path: PathBuf::from(path), size: 1, modified, pages: pages.iter().map(|p| p.to_string()).collect() }
+        Doc {
+            path: PathBuf::from(path),
+            size: 1,
+            modified,
+            pages: pages.iter().map(|p| p.to_string()).collect(),
+            ocr_checked: false,
+            recognised: false,
+        }
+    }
+
+    #[test]
+    fn recognised_text_is_searched_with_a_typo_even_among_many_hits() {
+        let mut docs: Vec<Doc> =
+            (0..5).map(|i| doc(&format!("/s/Prog/VL{i}.pdf"), 1, &["Die Rekursion und Schleifen"])).collect();
+        // Recognition read an "l" as "1".
+        let mut scan = doc("/s/Prog/Scan.pdf", 1, &["Rekursion: Sch1eifen vermeiden"]);
+        scan.recognised = true;
+        docs.push(scan);
+        // Typed text with the same typo is not a scan: only exact words count there.
+        docs.push(doc("/s/Prog/Notiz.pdf", 1, &["Sch1eifen"]));
+        let index = Index::from_docs(docs);
+        let hits = index.search("schleifen", 20);
+        assert_eq!(hits.len(), 6, "{hits:?}");
+        assert_eq!(hits.last().unwrap().path, PathBuf::from("/s/Prog/Scan.pdf"), "exact hits first");
+    }
+
+    #[test]
+    fn scans_read_before_recognition_are_read_again() {
+        let mut old = doc("/s/a.pdf", 1, &[""]);
+        assert!(old.wants_recognition());
+        old.ocr_checked = true;
+        assert!(!old.wants_recognition());
+        assert!(!doc("/s/a.pdf", 1, &["Lineare Algebra, Vorlesung 3: Vektorräume und Basen"]).wants_recognition());
+        assert!(doc("/s/photo.jpg", 1, &[]).wants_recognition());
+        assert!(!doc("/s/slides.pptx", 1, &[""]).wants_recognition());
     }
 
     #[test]
@@ -820,6 +891,31 @@ mod tests {
         indexer.pause(false);
         assert!(wait_for(&|i| i.len() == 2), "back from disk, and the new file read");
         assert_eq!(indexer.index.read().unwrap().search("rekursion", 5).len(), 2);
+    }
+
+    /// A scan indexed by 0.12 (no text) is read again once recognition is there, and found.
+    #[test]
+    fn scans_indexed_without_recognition_become_searchable() {
+        if crate::ocr::available() != crate::ocr::Engine::Tesseract {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let module = tmp.path().join("Analysis");
+        fs::create_dir_all(&module).unwrap();
+        let scan = module.join("scan_0042.pdf");
+        fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scan_serie5.pdf"), &scan).unwrap();
+        let extensions = vec![".pdf".to_string()];
+        let old = refresh(tmp.path(), &extensions, &[], |_| {});
+        assert!(Index::from_docs(old.clone()).search("abgabe", 5).is_empty(), "no recognition in this pass");
+        crate::ocr::enable_in_this_test();
+        let mut read = 0;
+        let docs = refresh(tmp.path(), &extensions, &old, |_| read += 1);
+        assert_eq!(read, 1);
+        let hits = Index::from_docs(docs.clone()).search("abgabe serie", 5);
+        assert_eq!(hits.len(), 1, "{docs:?}");
+        let mut read = 0;
+        refresh(tmp.path(), &extensions, &docs, |_| read += 1);
+        assert_eq!(read, 0, "recognised once");
     }
 
     #[test]

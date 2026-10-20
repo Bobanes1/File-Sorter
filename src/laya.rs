@@ -1,7 +1,8 @@
 //! Optional: let a decision model choose the module from a file's name and text, instead of
 //! counting keyword hits. The model is laya-uni: Laya (convaiinnovations/laya, multilingual
 //! checkpoint) fine-tuned on course files of every faculty (`training/laya-uni`). It runs on
-//! this computer; only the model (about 680 MB) is downloaded once, into the state folder.
+//! this computer; only the model (about 680 MB) is downloaded, into the state folder, and
+//! again when a newer one is published (`keep_up`).
 //! When the model isn't there, isn't sure, or the modules don't fit into its question,
 //! the keywords decide as before.
 //!
@@ -18,58 +19,124 @@ use std::sync::{Arc, Mutex};
 use candle_core::{D, DType, Device, IndexOp, Module, Tensor};
 use candle_nn::{Embedding, LayerNorm, Linear, VarBuilder};
 use candle_transformers::models::modernbert::{self, ModernBert};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, Course};
 
-/// The release the model comes from (NilsBriggen/laya-uni); the checksums pin its files.
-const RELEASE: &str = "https://github.com/NilsBriggen/laya-uni/releases/download/laya-uni-1";
-/// (file in the release, size, SHA-256)
-const FILES: [(&str, u64, &str); 4] = [
-    ("rl_agent_config.json", 4987, "c06f9dff24ed9f1132e5e44020381d380d3b5ea30e650f90a82ff6378215c6ff"),
-    ("encoder-config.json", 1939, "36b7d4898274ed6f06ce9c1f0e34034d8bd39295ab232d7cabc41a3eac821e5f"),
-    ("tokenizer.json", 34_363_188, "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f"),
-    ("model.safetensors", 643_835_524, "2a73a52757ff1557d59abcdb43db469327df077146ce68140292a943572925bb"),
-];
-/// Where version 0.15's first, not fine-tuned model was kept (removed once laya-uni is there).
+/// The newest model's manifest: GitHub sends this to the latest release of NilsBriggen/laya-uni.
+/// Each model is its own release (laya-uni-1, -2, …) whose files are never replaced.
+const MANIFEST_URL: &str = "https://github.com/NilsBriggen/laya-uni/releases/latest/download/manifest.json";
+/// The manifest of laya-uni-1, for when the newest one can't be read on the first download.
+const BUILT_IN: &str = r#"{"name": "laya-uni-1", "version": 1, "min_probability": 0.7, "min_lead": 2.0, "files": [
+ {"name": "rl_agent_config.json", "size": 4987, "sha256": "c06f9dff24ed9f1132e5e44020381d380d3b5ea30e650f90a82ff6378215c6ff",
+  "url": "https://github.com/NilsBriggen/laya-uni/releases/download/laya-uni-1/rl_agent_config.json"},
+ {"name": "encoder-config.json", "size": 1939, "sha256": "36b7d4898274ed6f06ce9c1f0e34034d8bd39295ab232d7cabc41a3eac821e5f",
+  "url": "https://github.com/NilsBriggen/laya-uni/releases/download/laya-uni-1/encoder-config.json"},
+ {"name": "tokenizer.json", "size": 34363188, "sha256": "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f",
+  "url": "https://github.com/NilsBriggen/laya-uni/releases/download/laya-uni-1/tokenizer.json"},
+ {"name": "model.safetensors", "size": 643835524, "sha256": "2a73a52757ff1557d59abcdb43db469327df077146ce68140292a943572925bb",
+  "url": "https://github.com/NilsBriggen/laya-uni/releases/download/laya-uni-1/model.safetensors"}]}"#;
+/// The files a model consists of (each manifest lists them with its own URLs and checksums).
+const FILE_NAMES: [&str; 4] = ["rl_agent_config.json", "encoder-config.json", "tokenizer.json", "model.safetensors"];
+/// Which model is in use, next to the models' folders.
+const INSTALLED: &str = "installed.json";
+/// Where the first, not fine-tuned model was kept (removed once laya-uni is there).
 const OLD_DIR: &str = "laya";
+/// How often to look for a newer model.
+const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 pub const INSTRUCTIONS: &str = "Which university module does this file belong to?";
 /// Enough text for the model's 1024 tokens; tokenizing a whole book would only cost time.
 const MAX_TEXT_CHARS: usize = 6000;
-// Chosen on the validation rows: 76 % of files sorted at 96.5 % precision (training/laya-uni/README.md).
-/// The answer must be at least this likely,
-const MIN_PROBABILITY: f32 = 0.7;
-/// and this many times as likely as the second.
-const MIN_LEAD: f32 = 2.0;
 /// Option texts are cut to this many tokens (as in training).
 const MAX_OPTION_TOKENS: usize = 48;
 
-pub fn total_size() -> u64 {
-    FILES.iter().map(|f| f.1).sum()
+/// One published model: its files and the confidence it needs before it sorts a file
+/// (chosen per model on its validation rows, see training/laya-uni).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Manifest {
+    name: String,
+    version: u32,
+    /// The answer must be at least this likely,
+    min_probability: f32,
+    /// and this many times as likely as the second.
+    min_lead: f32,
+    files: Vec<Asset>,
 }
 
-/// Where the model is kept.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+struct Asset {
+    name: String,
+    url: String,
+    size: u64,
+    sha256: String,
+}
+
+impl Manifest {
+    fn built_in() -> Manifest {
+        serde_json::from_str(BUILT_IN).expect("the built-in manifest is valid")
+    }
+
+    /// Only what the app can use: the four files, from GitHub, over https.
+    fn checked(self) -> Result<Manifest, String> {
+        let mut names: Vec<&str> = self.files.iter().map(|f| f.name.as_str()).collect();
+        names.sort_unstable();
+        let mut expected = FILE_NAMES.to_vec();
+        expected.sort_unstable();
+        let safe_name = !self.name.is_empty()
+            && self.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+            && !self.name.starts_with('.');
+        if names != expected || !safe_name {
+            return Err(format!("the manifest of {} doesn't describe a model", self.name));
+        }
+        if let Some(f) = self.files.iter().find(|f| !f.url.starts_with("https://github.com/")) {
+            return Err(format!("{} is not on GitHub: {}", f.name, f.url));
+        }
+        Ok(self)
+    }
+
+    fn size(&self) -> u64 {
+        self.files.iter().map(|f| f.size).sum()
+    }
+}
+
+/// About how much the model download is (for the switch's hint).
+pub fn total_size() -> u64 {
+    Manifest::built_in().size()
+}
+
+/// Where the models are kept: one folder per model, plus `installed.json`.
 pub fn dir(config: &Config) -> Option<PathBuf> {
     config.state_file("laya-uni")
 }
 
-fn ready(dir: &Path) -> bool {
-    FILES.iter().all(|(name, _, _)| dir.join(name).is_file())
+/// The model in use, if its files are all there.
+fn installed(root: &Path) -> Option<Manifest> {
+    let manifest: Manifest = serde_json::from_str(&fs::read_to_string(root.join(INSTALLED)).ok()?).ok()?;
+    let manifest = manifest.checked().ok()?;
+    manifest.files.iter().all(|f| root.join(&manifest.name).join(&f.name).is_file()).then_some(manifest)
 }
 
 pub enum Status {
     /// Not downloaded (yet).
     Missing,
-    /// Downloading, with the bytes done so far (of `total_size()`).
-    Downloading(u64),
+    /// Downloading, with the bytes done so far and the whole size. `Ready` still holds the
+    /// model in use while a newer one comes.
+    Downloading(u64, u64),
     Ready,
     Failed(String),
 }
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
-/// Why the last download or loading failed (until switched off and on again).
+/// The model being downloaded, and where to (for the progress bar).
+static TARGET: Mutex<Option<(PathBuf, Manifest)>> = Mutex::new(None);
+/// When `keep_up` looked last.
+static LAST_LOOK: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// When a newer model was looked for last.
+static LAST_CHECK: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// Why the first download or the loading failed (until switched off and on again). A failed
+/// update is only logged: the model in use goes on working.
 static ERROR: Mutex<Option<String>> = Mutex::new(None);
-static CACHE: Mutex<Option<Arc<Laya>>> = Mutex::new(None);
+static CACHE: Mutex<Option<(PathBuf, Arc<Laya>)>> = Mutex::new(None);
 
 fn error() -> Option<String> {
     ERROR.lock().ok().and_then(|e| e.clone())
@@ -81,24 +148,27 @@ fn set_error(message: Option<String>) {
     }
 }
 
-pub fn status(dir: Option<&Path>) -> Status {
-    let Some(dir) = dir else { return Status::Missing };
-    if DOWNLOADING.load(Ordering::Relaxed) {
-        return Status::Downloading(progress(dir));
+pub fn status(root: Option<&Path>) -> Status {
+    let Some(root) = root else { return Status::Missing };
+    if DOWNLOADING.load(Ordering::Relaxed)
+        && let Some((dir, manifest)) = TARGET.lock().ok().and_then(|t| t.clone())
+    {
+        return Status::Downloading(progress(&dir, &manifest), manifest.size());
     }
     if let Some(e) = error() {
         return Status::Failed(e);
     }
-    if ready(dir) { Status::Ready } else { Status::Missing }
+    if installed(root).is_some() { Status::Ready } else { Status::Missing }
 }
 
-fn progress(dir: &Path) -> u64 {
+fn progress(dir: &Path, manifest: &Manifest) -> u64 {
     let size = |p: PathBuf| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-    FILES
+    manifest
+        .files
         .iter()
-        .map(|(name, total, _)| {
-            let file = dir.join(name);
-            if file.is_file() { *total } else { size(partial(&file)) }
+        .map(|f| {
+            let file = dir.join(&f.name);
+            if file.is_file() { f.size } else { size(partial(&file)) }
         })
         .sum()
 }
@@ -107,27 +177,116 @@ fn partial(file: &Path) -> PathBuf {
     file.with_extension("partial")
 }
 
-/// Fetch the model in the background (once at a time).
-pub fn start_download(dir: PathBuf) {
+/// Called now and then while the switch is on: fetch the model if it isn't there, and once a
+/// day (if updates may be looked for) a newer one, in the background. The one in use keeps
+/// sorting until the newer one is complete and checked.
+pub fn keep_up(root: PathBuf, look_for_updates: bool, now: bool) {
+    if DOWNLOADING.load(Ordering::Relaxed) || crate::lean::active() {
+        return;
+    }
+    // Every few seconds is plenty (it is called for every frame of the window).
+    let quiet = LAST_LOOK.lock().is_ok_and(|mut last| {
+        let quiet = !now && last.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(5));
+        if !quiet {
+            *last = Some(std::time::Instant::now());
+        }
+        quiet
+    });
+    if quiet {
+        return;
+    }
+    let current = installed(&root);
+    if current.is_none() {
+        if error().is_none() {
+            start(root, None);
+        }
+        return;
+    }
+    let due = LAST_CHECK.lock().is_ok_and(|mut last| {
+        let due = last.is_none_or(|t| t.elapsed() >= CHECK_EVERY);
+        if due {
+            *last = Some(std::time::Instant::now());
+        }
+        due
+    });
+    if look_for_updates && due {
+        start(root, current);
+    }
+}
+
+/// Download the newest model (or, the first time and offline, laya-uni-1) and put it in use.
+fn start(root: PathBuf, current: Option<Manifest>) {
     if DOWNLOADING.swap(true, Ordering::Relaxed) {
         return;
     }
-    set_error(None);
     std::thread::spawn(move || {
-        if let Err(e) = download(&dir) {
-            log::info!("Could not download the Laya model: {e}");
-            set_error(Some(e));
+        let first = current.is_none();
+        match update(&root, current) {
+            Err(e) if first => {
+                log::info!("Could not download the Laya model: {e}");
+                set_error(Some(e));
+            }
+            Err(e) => log::info!("Could not update the Laya model: {e}"),
+            Ok(()) => {}
+        }
+        if let Ok(mut t) = TARGET.lock() {
+            *t = None;
         }
         DOWNLOADING.store(false, Ordering::Relaxed);
     });
 }
 
+/// Put the newest model in use if it is newer than `current` (the first time, when the newest
+/// can't be read, laya-uni-1).
+fn update(root: &Path, current: Option<Manifest>) -> Result<(), String> {
+    let newest = match fetch_manifest() {
+        Ok(m) => m,
+        Err(e) if current.is_none() => {
+            log::info!("Could not read the newest Laya model's manifest ({e}); taking laya-uni-1");
+            Manifest::built_in()
+        }
+        Err(e) => return Err(e),
+    };
+    if current.as_ref().is_some_and(|c| c.version >= newest.version) {
+        return Ok(());
+    }
+    install(root, &newest)
+}
+
+fn fetch_manifest() -> Result<Manifest, String> {
+    let fetched = crate::update::curl()
+        .args(["--max-time", "30"])
+        .arg(MANIFEST_URL)
+        .output()
+        .map_err(|e| format!("curl could not be started: {e}"))?;
+    if !fetched.status.success() {
+        return Err(String::from_utf8_lossy(&fetched.stderr).trim().to_string());
+    }
+    let manifest: Manifest = serde_json::from_slice(&fetched.stdout).map_err(|e| e.to_string())?;
+    manifest.checked()
+}
+
+/// Download a model into its own folder, then make it the one in use and remove the others.
+fn install(root: &Path, manifest: &Manifest) -> Result<(), String> {
+    let dir = root.join(&manifest.name);
+    if let Ok(mut t) = TARGET.lock() {
+        *t = Some((dir.clone(), manifest.clone()));
+    }
+    download(&dir, manifest)?;
+    let tmp = root.join(format!("{INSTALLED}.partial"));
+    fs::write(&tmp, serde_json::to_string_pretty(manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, root.join(INSTALLED)).map_err(|e| e.to_string())?;
+    log::info!("Laya model {} is in use", manifest.name);
+    remove_other_models(root, &manifest.name);
+    Ok(())
+}
+
 /// Download the files that are missing, each checked against its SHA-256. An interrupted
 /// download goes on where it stopped.
-fn download(dir: &Path) -> Result<(), String> {
+fn download(dir: &Path, manifest: &Manifest) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    for (name, _, sha) in FILES {
-        let file = dir.join(name);
+    for asset in &manifest.files {
+        let file = dir.join(&asset.name);
         if file.is_file() {
             continue;
         }
@@ -135,32 +294,50 @@ fn download(dir: &Path) -> Result<(), String> {
         let fetched = crate::update::curl()
             .args(["--max-time", "7200", "--continue-at", "-", "--output"])
             .arg(&part)
-            .arg(format!("{RELEASE}/{name}"))
+            .arg(&asset.url)
             .output()
             .map_err(|e| format!("curl could not be started: {e}"))?;
         if !fetched.status.success() {
             return Err(String::from_utf8_lossy(&fetched.stderr).trim().to_string());
         }
         let got = crate::update::sha256_of(&part).map_err(|e| e.to_string())?;
-        if got != sha {
+        if got != asset.sha256 {
             let _ = fs::remove_file(&part);
-            return Err(format!("the download of {name} is not the published one (SHA-256 {got})"));
+            return Err(format!("the download of {} is not the published one (SHA-256 {got})", asset.name));
         }
         fs::rename(&part, &file).map_err(|e| e.to_string())?;
     }
-    remove_old_model(dir);
     Ok(())
 }
 
-/// The not fine-tuned model of the first version: only its own files, and the folder if
-/// nothing else is in it.
-fn remove_old_model(dir: &Path) {
-    let Some(old) = dir.parent().map(|p| p.join(OLD_DIR)) else { return };
-    for (name, _, _) in FILES {
-        let _ = fs::remove_file(old.join(name));
-        let _ = fs::remove_file(partial(&old.join(name)));
+/// Older models (folders next to the one in use, files of the first layout directly in the
+/// folder, and the not fine-tuned model): only their own files, and a folder only if nothing
+/// else is in it.
+fn remove_other_models(root: &Path, keep: &str) {
+    let remove_files = |dir: &Path| {
+        for name in FILE_NAMES {
+            let _ = fs::remove_file(dir.join(name));
+            let _ = fs::remove_file(partial(&dir.join(name)));
+        }
+    };
+    remove_files(root);
+    for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() && entry.file_name() != keep {
+            remove_files(&path);
+            let _ = fs::remove_dir(&path);
+        }
     }
-    let _ = fs::remove_dir(old);
+    if let Some(old) = root.parent().map(|p| p.join(OLD_DIR)) {
+        remove_files(&old);
+        let _ = fs::remove_dir(old);
+    }
+    // The model in memory is an older one now; the next file loads the new one.
+    if let Ok(mut cache) = CACHE.lock()
+        && cache.as_ref().is_some_and(|(dir, _)| !dir.ends_with(keep))
+    {
+        *cache = None;
+    }
 }
 
 /// Drop the model from memory (switched off, or saving resources in the background).
@@ -173,13 +350,15 @@ pub fn forget() {
 
 fn load(dir: &Path) -> Option<Arc<Laya>> {
     let mut cache = CACHE.lock().ok()?;
-    if let Some(model) = cache.as_ref() {
+    if let Some((loaded, model)) = cache.as_ref()
+        && loaded == dir
+    {
         return Some(model.clone());
     }
     match Laya::load(dir) {
         Ok(model) => {
             let model = Arc::new(model);
-            *cache = Some(model.clone());
+            *cache = Some((dir.to_path_buf(), model.clone()));
             Some(model)
         }
         Err(e) => {
@@ -195,22 +374,23 @@ pub fn usable(config: &Config) -> bool {
     !crate::lean::active()
         && config.courses.len() >= 2
         && error().is_none()
-        && !DOWNLOADING.load(Ordering::Relaxed)
-        && dir(config).is_some_and(|d| ready(&d))
+        && dir(config).is_some_and(|d| installed(&d).is_some())
 }
 
 /// The module for `path` (with the text read from it, if any) and how sure the model is (%),
 /// or None when the keywords should decide.
 pub fn guess(config: &Config, path: &Path, text: Option<&str>) -> Option<(usize, u8)> {
-    if !usable(config) {
+    if crate::lean::active() || config.courses.len() < 2 || error().is_some() {
         return None;
     }
-    let model = load(&dir(config)?)?;
+    let root = dir(config)?;
+    let manifest = installed(&root)?;
+    let model = load(&root.join(&manifest.name))?;
     let options: Vec<String> = config.courses.iter().map(option_text).collect();
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let state = state_for(&name, text.unwrap_or(""));
     match model.choose(&options, &state) {
-        Ok(Some(p)) => confident(&p),
+        Ok(Some(p)) => confident(&p, manifest.min_probability, manifest.min_lead),
         Ok(None) => None,
         Err(e) => {
             log::info!("The Laya model failed on {}: {e}", path.display());
@@ -235,12 +415,13 @@ pub fn option(label: &str, keywords: &[String]) -> String {
     if keywords.is_empty() { label.to_string() } else { format!("{label}: {}", keywords.join(", ")) }
 }
 
-/// The best option if the model is clearly sure of it.
-fn confident(p: &[f32]) -> Option<(usize, u8)> {
+/// The best option if the model is clearly sure of it: at least `min_probability`, and
+/// `min_lead` times as likely as the second.
+fn confident(p: &[f32], min_probability: f32, min_lead: f32) -> Option<(usize, u8)> {
     let mut order: Vec<usize> = (0..p.len()).collect();
     order.sort_by(|a, b| p[*b].total_cmp(&p[*a]));
     let (best, second) = (p[*order.first()?], order.get(1).map_or(0.0, |i| p[*i]));
-    (best >= MIN_PROBABILITY && best >= MIN_LEAD * second).then(|| (order[0], (best * 100.0).round() as u8))
+    (best >= min_probability && best >= min_lead * second).then(|| (order[0], (best * 100.0).round() as u8))
 }
 
 /// The token ids the question is made of (as the model was trained):
@@ -534,10 +715,10 @@ mod tests {
 
     #[test]
     fn answers_only_when_clearly_sure() {
-        assert_eq!(confident(&[0.1, 0.8, 0.1]), Some((1, 80)));
-        assert_eq!(confident(&[0.5, 0.3, 0.2]), None);
-        assert_eq!(confident(&[0.62, 0.38]), None);
-        assert_eq!(confident(&[]), None);
+        assert_eq!(confident(&[0.1, 0.8, 0.1], 0.7, 2.0), Some((1, 80)));
+        assert_eq!(confident(&[0.5, 0.3, 0.2], 0.7, 2.0), None);
+        assert_eq!(confident(&[0.72, 0.28], 0.7, 3.0), None);
+        assert_eq!(confident(&[], 0.7, 2.0), None);
         let p = softmax(&[1.0, 2.0, 3.0], 1.0);
         assert!((p.iter().sum::<f32>() - 1.0).abs() < 1e-6 && p[2] > p[1]);
     }
@@ -553,34 +734,70 @@ mod tests {
     }
 
     #[test]
-    fn the_old_model_goes_but_nothing_else() {
-        let tmp = tempfile::tempdir().unwrap();
-        let old = tmp.path().join(OLD_DIR);
-        fs::create_dir_all(&old).unwrap();
-        for (name, _, _) in FILES {
-            fs::write(old.join(name), "x").unwrap();
-        }
-        remove_old_model(&tmp.path().join("laya-uni"));
-        assert!(!old.exists());
-        // A folder with something else in it stays (only our files go).
-        fs::create_dir_all(&old).unwrap();
-        fs::write(old.join("model.safetensors"), "x").unwrap();
-        fs::write(old.join("notes.txt"), "mine").unwrap();
-        remove_old_model(&tmp.path().join("laya-uni"));
-        assert!(!old.join("model.safetensors").exists() && old.join("notes.txt").exists());
+    fn only_a_manifest_of_the_four_files_from_github_is_taken() {
+        let built_in = Manifest::built_in();
+        assert_eq!(built_in.clone().checked().unwrap(), built_in);
+        assert_eq!(built_in.min_probability, 0.7);
+        let mut elsewhere = built_in.clone();
+        elsewhere.files[3].url = "https://example.com/model.safetensors".into();
+        assert!(elsewhere.checked().is_err());
+        let mut climbing = built_in.clone();
+        climbing.name = "../outside".into();
+        assert!(climbing.checked().is_err());
+        let mut short = built_in;
+        short.files.pop();
+        assert!(short.checked().is_err());
     }
 
-    /// Downloads about 680 MB from the release (or uses FILE_SORTER_LAYA_DIR) and asks the real
+    #[test]
+    fn a_model_is_in_use_once_its_files_and_installed_json_are_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("laya-uni");
+        let manifest = Manifest::built_in();
+        fs::create_dir_all(root.join(&manifest.name)).unwrap();
+        fs::write(root.join(INSTALLED), serde_json::to_string(&manifest).unwrap()).unwrap();
+        assert_eq!(installed(&root), None);
+        for name in FILE_NAMES {
+            fs::write(root.join(&manifest.name).join(name), "x").unwrap();
+        }
+        assert_eq!(installed(&root), Some(manifest));
+        assert!(matches!(status(Some(&root)), Status::Ready));
+    }
+
+    #[test]
+    fn older_models_go_but_nothing_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("laya-uni");
+        let old = tmp.path().join(OLD_DIR);
+        for dir in [root.join("laya-uni-1"), root.join("laya-uni-2"), root.clone(), old.clone()] {
+            fs::create_dir_all(&dir).unwrap();
+            for name in FILE_NAMES {
+                fs::write(dir.join(name), "x").unwrap();
+            }
+        }
+        fs::write(old.join("notes.txt"), "mine").unwrap();
+        remove_other_models(&root, "laya-uni-2");
+        assert!(FILE_NAMES.iter().all(|n| root.join("laya-uni-2").join(n).is_file()));
+        assert!(!root.join("laya-uni-1").exists());
+        assert!(FILE_NAMES.iter().all(|n| !root.join(n).exists() && !old.join(n).exists()));
+        // A folder with something else in it stays (only our files go).
+        assert!(old.join("notes.txt").exists());
+    }
+
+    /// Reads the newest manifest, downloads about 680 MB (into FILE_SORTER_LAYA_DIR, or a
+    /// temporary folder) and asks the real
     /// model about files of faculties other than computer science. (The heart-cycle lecture
     /// leans to Anatomie at 39 %: not sure enough to sort, which is what this checks.)
     #[test]
     #[ignore]
     fn downloads_and_picks_obvious_modules_of_any_faculty() {
-        let dir = std::env::var_os("FILE_SORTER_LAYA_DIR")
+        let root = std::env::var_os("FILE_SORTER_LAYA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join("file-sorter-laya-uni"));
-        download(&dir).unwrap();
-        let model = Laya::load(&dir).unwrap();
+        let newest = fetch_manifest().unwrap();
+        install(&root, &newest).unwrap();
+        let manifest = installed(&root).unwrap();
+        let model = Laya::load(&root.join(&manifest.name)).unwrap();
         let cases = [
             (
                 ["Strafrecht AT", "Privatrecht I", "Staatsrecht", "Römisches Recht"],
@@ -608,7 +825,35 @@ mod tests {
                 _ => 1,
             };
             // Right, or unsure (then the keywords decide) – never sure of the wrong module.
-            assert!(confident(&p).is_none_or(|(best, _)| best == expected), "{name}: {p:?}");
+            let sure = confident(&p, manifest.min_probability, manifest.min_lead);
+            assert!(sure.is_none_or(|(best, _)| best == expected), "{name}: {p:?}");
         }
+    }
+
+    /// Network: a computer with an older model (version 0) moves to the newest one and keeps
+    /// nothing of the old one. Uses FILE_SORTER_LAYA_DIR like the test above (the download is
+    /// skipped when the newest model's files are already there).
+    #[test]
+    #[ignore]
+    fn an_older_model_is_replaced_by_the_newest() {
+        let root = std::env::var_os("FILE_SORTER_LAYA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("file-sorter-laya-uni"));
+        let mut old = Manifest::built_in();
+        old.name = "laya-uni-0".into();
+        old.version = 0;
+        fs::create_dir_all(root.join(&old.name)).unwrap();
+        for name in FILE_NAMES {
+            fs::write(root.join(&old.name).join(name), "old").unwrap();
+        }
+        fs::write(root.join(INSTALLED), serde_json::to_string(&old).unwrap()).unwrap();
+        assert_eq!(installed(&root).unwrap().version, 0);
+        update(&root, installed(&root)).unwrap();
+        let now = installed(&root).unwrap();
+        assert!(now.version >= 1, "{now:?}");
+        assert!(!root.join("laya-uni-0").exists());
+        // Nothing newer than what is in use: nothing happens.
+        update(&root, Some(now.clone())).unwrap();
+        assert_eq!(installed(&root), Some(now));
     }
 }

@@ -25,32 +25,26 @@ impl App {
         if switch(ui, icon::ROBOT, lang.feature_laya(), &lang.feature_laya_hint(&laya), &mut f.laya) {
             if !f.laya {
                 crate::laya::forget();
+            } else if let Some(dir) = laya_dir {
+                // Start the download right away (`App::logic` keeps it up to date later).
+                crate::laya::keep_up(dir, f.update_check, true);
             }
             changed = true;
         }
-        match laya {
-            crate::laya::Status::Missing if f.laya => {
-                if let Some(dir) = laya_dir {
-                    crate::laya::start_download(dir);
-                }
-            }
-            crate::laya::Status::Downloading(done) => {
-                let total = crate::laya::total_size();
-                ui.horizontal(|ui| {
-                    ui.add_space(40.0);
-                    ui.vertical(|ui| {
-                        // Sliding until the first bytes arrive, then how far it is.
-                        let fraction = (done > 0).then(|| done as f32 / total as f32);
-                        fx::progress_bar(ui, egui::Id::new("laya-download"), fraction);
-                        ui.add_space(2.0);
-                        let text = lang.laya_download_progress(done / 1_000_000, total / 1_000_000);
-                        ui.label(RichText::new(text).small().color(fx::pal(ui).on_surface_variant));
-                    });
+        if let crate::laya::Status::Downloading(done, total) = laya {
+            ui.horizontal(|ui| {
+                ui.add_space(40.0);
+                ui.vertical(|ui| {
+                    // Sliding until the first bytes arrive, then how far it is.
+                    let fraction = (done > 0).then(|| done as f32 / total as f32);
+                    fx::progress_bar(ui, egui::Id::new("laya-download"), fraction);
+                    ui.add_space(2.0);
+                    let text = lang.laya_download_progress(done / 1_000_000, total / 1_000_000);
+                    ui.label(RichText::new(text).small().color(fx::pal(ui).on_surface_variant));
                 });
-                ui.add_space(4.0);
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-            }
-            _ => {}
+            });
+            ui.add_space(4.0);
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
         }
         divider(ui);
         let (title, hint) = (lang.feature_ask_unsure(), lang.feature_ask_unsure_hint());

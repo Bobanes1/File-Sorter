@@ -28,7 +28,7 @@ if [ -f "$DATA/test_oer.jsonl" ]; then
 fi
 cp train.log out/train_report.json report/
 mkdir -p dist
-python pack.py out dist | tee dist/FILES.rs
+python pack.py out dist | tee dist/SHA256SUMS.txt
 ls -l dist report report-oer 2>/dev/null || true
 tar czf results.tar.gz dist report report-oer 2>/dev/null || tar czf results.tar.gz dist report
 echo "Done. Download results.tar.gz"

@@ -1440,7 +1440,7 @@ impl Lang {
         );
         let state = match status {
             Status::Missing => return about,
-            Status::Downloading(_) => self.pick("Downloading …", "Wird heruntergeladen …").into(),
+            Status::Downloading(..) => self.pick("Downloading …", "Wird heruntergeladen …").into(),
             Status::Ready => self.pick("Ready.", "Bereit.").into(),
             Status::Failed(e) => self.fmt(
                 format!("Didn't work: {e}. Switch it off and on to try again."),

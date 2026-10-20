@@ -1174,6 +1174,11 @@ impl eframe::App for App {
         self.flatten_logic();
         self.drive_logic();
         self.update_logic();
+        if self.config.features.laya
+            && let Some(dir) = crate::laya::dir(&self.config)
+        {
+            crate::laya::keep_up(dir, self.config.features.update_check, false);
+        }
         self.resort_logic();
         self.semester_logic();
         let minimised = ctx.input(|i| i.viewport().minimized.unwrap_or(false));

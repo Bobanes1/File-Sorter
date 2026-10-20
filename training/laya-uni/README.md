@@ -8,7 +8,8 @@ picks the right module for files from every faculty, not just computer science.
 |---|---|
 | `train.py` | downloads the base checkpoint, runs `laya.train.finetune` (3 epochs, effective batch 64, options shuffled, 1024 / 256 tokens, fp16) |
 | `evaluate.py` | scores base and fine-tuned side by side, by faculty and language; coverage / precision for the app's `MIN_PROBABILITY` / `MIN_LEAD` rule and the loosest pair with ≥ 95 % precision on validation |
-| `pack.py` | copies the four release files into `dist/` and prints the `FILES` table for `src/laya.rs` |
+| `pack.py` | copies the four release files into `dist/` and lists their sizes and SHA-256 |
+| `manifest.py` | writes the `manifest.json` the app reads (release name, version, thresholds, files) |
 | `run_remote.sh` | all of it on a fresh GPU box |
 | `smoke_rows.py`, `test_evaluate.py` | a 40-row sample to try the pipeline, and a check of the threshold maths |
 
@@ -75,13 +76,26 @@ bucket (else its choice temperature), without the [0.5, 5] clamp laya's own runt
 
 ## 5. Publish
 
-1. Upload the four files in `dist/` as assets of a new release of [NilsBriggen/laya-uni](https://github.com/NilsBriggen/laya-uni) (`laya-uni-1` is the first), and update its README's numbers.
-2. Put the files' sizes and SHA-256s from `dist/FILES.rs` into `FILES` in `src/laya.rs` and point `RELEASE` at the new release.
-3. Set `MIN_PROBABILITY` / `MIN_LEAD` to the recommended ones.
+The app reads `https://github.com/NilsBriggen/laya-uni/releases/latest/download/manifest.json` once a day
+(with *Updates* on) and moves to a model whose `version` is higher than the one it has. It downloads
+the files the manifest lists, checks each SHA-256, and only then switches over and removes the old
+model. So:
 
-`pack.py` writes `tokenizer.json` without the 48-token truncation the saved tokenizer carries from
-training (laya cuts option texts that way); the app's tokenizer would otherwise cut every file's
-text to 48 tokens as well.
+1. **Every model gets its own release.** The tag is the model's name (`laya-uni-2`, `laya-uni-3`, …), and the
+   version goes up by one each time. Never replace or delete the files of a published release:
+   computers in the middle of a download would get a checksum error, and the app on a version without
+   the manifest pins laya-uni-1's files.
+2. **Choose the thresholds** from `report/report.md`: the validation table, cross-checked on the test rows.
+3. **Write the manifest:** `python3 manifest.py dist laya-uni-2 2 <MIN_PROBABILITY> <MIN_LEAD>`.
+4. **Create the release** with the five files in `dist/` (the four model files and `manifest.json`), and
+   update the numbers in the laya-uni README. The newest release is "latest", so apps pick it up within
+   a day.
+
+The first manifest (laya-uni-1) is also built into `src/laya.rs`. It is used when the newest one can't be
+read on the very first download. Change it only if laya-uni-1's release ever moves.
+
+The network tests download into one folder, so run them one at a time:
+`FILE_SORTER_LAYA_DIR=/some/dir cargo test laya -- --ignored --test-threads=1`.
 
 ## Time and cost
 

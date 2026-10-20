@@ -1035,6 +1035,28 @@ impl Lang {
             "Passen zwei Module etwa gleich gut, bleibt die Datei liegen und die Aktivität fragt, welches stimmt.",
         )
     }
+    pub fn feature_ocr(self) -> &'static str {
+        self.pick("Recognise text in scans", "Texterkennung für Scans")
+    }
+    pub fn feature_ocr_hint(self) -> &'static str {
+        if cfg!(windows) {
+            self.pick(
+                "Scanned PDFs and photos of pages are read with the text recognition built into Windows, so they can be sorted, searched and their deadlines found.",
+                "Eingescannte PDFs und Fotos von Seiten werden mit der in Windows eingebauten Texterkennung gelesen – so werden sie sortiert, gefunden und ihre Termine erkannt.",
+            )
+        } else {
+            self.pick(
+                "Scanned PDFs and photos of pages are read with tesseract, so they can be sorted, searched and their deadlines found.",
+                "Eingescannte PDFs und Fotos von Seiten werden mit tesseract gelesen – so werden sie sortiert, gefunden und ihre Termine erkannt.",
+            )
+        }
+    }
+    pub fn feature_ocr_missing(self) -> &'static str {
+        self.pick(
+            "Not installed: sudo apt install tesseract-ocr tesseract-ocr-deu poppler-utils (then restart File Sorter).",
+            "Nicht installiert: sudo apt install tesseract-ocr tesseract-ocr-deu poppler-utils (danach File Sorter neu starten).",
+        )
+    }
     pub fn feature_subfolders(self) -> &'static str {
         self.pick("Subfolders", "Unterordner")
     }

@@ -43,6 +43,15 @@ impl App {
             });
         }
         divider(ui);
+        let ocr_hint = match crate::ocr::available() {
+            crate::ocr::Engine::Missing => lang.feature_ocr_missing(),
+            _ => lang.feature_ocr_hint(),
+        };
+        if switch(ui, icon::SCAN, lang.feature_ocr(), ocr_hint, &mut f.ocr) {
+            crate::ocr::set_enabled(f.ocr);
+            changed = true;
+        }
+        divider(ui);
         changed |= switch(ui, icon::FILE_ZIP, lang.feature_unzip(), lang.feature_unzip_hint(), &mut f.unzip);
         divider(ui);
         let (title, hint) = (lang.feature_versions(), lang.feature_versions_hint());

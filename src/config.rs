@@ -275,6 +275,8 @@ pub struct Features {
     pub ask_when_unsure: bool,
     /// Learn the modules from the files already in them, for files the keywords don't decide.
     pub classifier: bool,
+    /// Recognise the text of scanned PDFs and pictures.
+    pub ocr: bool,
 }
 
 impl Default for Features {
@@ -297,6 +299,7 @@ impl Default for Features {
             update_install: UpdateMode::Ask,
             ask_when_unsure: true,
             classifier: true,
+            ocr: true,
         }
     }
 }
@@ -452,6 +455,8 @@ pub fn load_config(path: &Path) -> io::Result<Config> {
         Config::default()
     };
     config.state_dir = Some(config_path_dir(path));
+    crate::ocr::set_cache_dir(&config_path_dir(path));
+    crate::ocr::set_enabled(config.features.ocr);
     Ok(config)
 }
 

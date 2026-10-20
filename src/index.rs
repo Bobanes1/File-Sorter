@@ -19,7 +19,7 @@ use unicode_normalization::UnicodeNormalization;
 
 pub const INDEX_FILE: &str = "search-index.json";
 /// Files with text worth reading; other files are found by their name only.
-const TEXT_TYPES: &[&str] = &["pdf", "pptx", "docx", "txt", "md"];
+const TEXT_TYPES: &[&str] = &["pdf", "pptx", "docx", "txt", "md", "png", "jpg", "jpeg"];
 const MAX_DEPTH: usize = 8;
 /// Changes in the study folder are seen as they happen; besides, the index is brought up to
 /// date this often (for changes the system didn't report, e.g. on network drives).

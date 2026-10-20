@@ -123,6 +123,29 @@ jobs:
           if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\Projekt\prog1_Projekt_Anleitung.pptx")) { throw "not in the Projekt folder" }
           Write-Host "sorted into the subfolders"
 
+      - name: Smoke-test text recognition (a scanned PDF)
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "ocr"
+          New-Item -ItemType Directory -Force "$root\Downloads" | Out-Null
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--read-text", "`"$((Resolve-Path tests\fixtures\scan_serie5.pdf).Path)`"", "--config", "`"$root\config.json`"" -Wait -PassThru
+          Get-Content "$root\file-sorter.log"
+          # A runner without an OCR language installed reads nothing; that is reported, not failed.
+          if ($p.ExitCode -ne 0) { Write-Warning "Windows text recognition found no text on this runner"; exit 0 }
+          $log = Get-Content "$root\file-sorter.log" -Raw
+          if ($log -notmatch "Serie 5") { throw "the scan was not read correctly" }
+          # Sorted by its recognised text alone (the name says nothing).
+          Copy-Item tests\fixtures\scan_serie5.pdf "$root\Downloads\scan_0042.pdf"
+          @{
+            watch_folder = "$root\Downloads"
+            destination_root = "$root\Studium"
+            courses = @(@{ name = "Analysis I"; subject = "Mathematik"; keywords = @("analysis i") }, @{ name = "Statistik"; keywords = @("statistik") })
+          } | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--config", "`"$root\config.json`"" -Wait -PassThru
+          Get-Content "$root\file-sorter.log" -Tail 5
+          if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\scan_0042.pdf")) { throw "the scan was not sorted by its text" }
+          Write-Host "the scanned PDF was read and sorted"
+
       - name: Smoke-test looking for updates
         shell: pwsh
         run: |

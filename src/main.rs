@@ -23,6 +23,7 @@ mod keywords;
 mod ledger;
 mod logger;
 mod matcher;
+mod ocr;
 mod origin;
 mod quicksort;
 mod resort;
@@ -59,6 +60,7 @@ Usage: file-sorter [--config PATH] [--headless | --sort-now | [--sort] FILE... [
   --unregister-menu remove it again
   --list-clouds     write the cloud folders found (OneDrive, Dropbox, …) to the log
   --check-update    write whether a newer File Sorter is available to the log
+  --read-text FILE  write the text read from FILE (with text recognition for scans) to the log
   --config PATH     settings file (default: per-user config.json)";
 
 struct Args {
@@ -74,6 +76,8 @@ struct Args {
     register_menu: Option<bool>,
     list_clouds: bool,
     check_update: bool,
+    /// Print the text read from this file (with text recognition for scans), and exit.
+    read_text: Option<PathBuf>,
     /// Started again after an update: wait until the old process (this id) has ended.
     wait_for: Option<u32>,
 }
@@ -90,6 +94,7 @@ fn parse_args() -> Result<Args, String> {
         register_menu: None,
         list_clouds: false,
         check_update: false,
+        read_text: None,
         wait_for: None,
     };
     let mut it = std::env::args().skip(1);
@@ -104,6 +109,7 @@ fn parse_args() -> Result<Args, String> {
             "--unregister-menu" => args.register_menu = Some(false),
             "--list-clouds" => args.list_clouds = true,
             "--check-update" => args.check_update = true,
+            "--read-text" => args.read_text = Some(it.next().ok_or("--read-text needs a file")?.into()),
             "--wait-for" => args.wait_for = it.next().and_then(|pid| pid.parse().ok()),
             "--config" => args.config = it.next().ok_or("--config needs a path")?.into(),
             "--days" | "--hours" => {
@@ -165,6 +171,13 @@ fn main() -> ExitCode {
         update::wait_for(pid);
     }
     update::clean_up();
+    if let Some(file) = &args.read_text {
+        ocr::set_cache_dir(&config::config_path_dir(&args.config));
+        let text = extract::extract_text(file);
+        log::info!("Text recognition: {:?}", ocr::available());
+        log::info!("Text of {}:\n{text}", file.display());
+        return if ocr::letters(&text) > 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+    }
     if args.check_update {
         return match update::check() {
             Ok(Some(release)) => {

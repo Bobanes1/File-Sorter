@@ -39,6 +39,18 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_HiDpi",
 ] }
 tray-icon = { version = "0.26", default-features = false }
+# Windows' own text recognition (for scanned PDFs) and its notifications (reminders).
+windows = { version = "0.62", features = [
+    "Data_Pdf",
+    "Data_Xml_Dom",
+    "Foundation",
+    "Foundation_Collections",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage",
+    "Storage_Streams",
+    "UI_Notifications",
+] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

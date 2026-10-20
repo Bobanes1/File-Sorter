@@ -177,8 +177,6 @@ const NOT_DUE: &[&str] = &[
     "opens",
     "start",
 ];
-/// A weekday after one of these is every week, not one day ("jeweils Montag", "every Friday").
-const EVERY: &[&str] = &["jeweils", "jeden", "immer", "every", "each"];
 /// Words in a sentence that say something is handed in ("Bitte bis 9.11. in Moodle hochladen").
 const HAND_IN_WORDS: &[&str] = &[
     "hochlad",
@@ -957,7 +955,7 @@ fn relative_after(folded: &[char], from: usize, stops: &[bool], reference: Naive
                 return Some((date, n_end));
             }
             w if NEXT.contains(&w) => {
-                if let Some((unit, unit_end)) = next(1).filter(|(u, _)| ["woche", "week"].contains(u)) {
+                if let Some((_, unit_end)) = next(1).filter(|(u, _)| ["woche", "week"].contains(u)) {
                     let monday = days(7 - reference.weekday().num_days_from_monday() as i64);
                     return Some(match next(2).and_then(|(d, e)| weekday_of(d).map(|d| (d, e))) {
                         Some((day, day_end)) => (monday + chrono::Duration::days(day), day_end),

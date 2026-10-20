@@ -28,8 +28,24 @@ pub fn extract_text(path: &Path) -> String {
         "zip" => Some(zip_text(path)),
         _ => None,
     }));
-    finish(result, path)
+    let text = finish(result, path);
+    // A scan (pages that are only pictures) or a photo: recognise the text.
+    if ext == "pdf" && crate::ocr::letters(&text) < crate::ocr::EMPTY_PAGE {
+        let pages: Vec<u32> = (1..=OCR_SORT_PAGES).collect();
+        let found = crate::ocr::pdf_pages(path, &pages);
+        if !found.is_empty() {
+            return pages.iter().filter_map(|p| found.get(p).cloned()).collect::<Vec<_>>().join("\n");
+        }
+    }
+    if crate::ocr::is_image(path) {
+        return crate::ocr::image(path).unwrap_or_default();
+    }
+    text
 }
+
+/// Pages of a scan that are recognised for sorting, and for the search and deadlines.
+const OCR_SORT_PAGES: u32 = 3;
+const OCR_INDEX_PAGES: usize = 12;
 
 /// Text from the start of a document held in memory (`name` gives its type).
 fn extract_bytes(name: &str, data: &[u8]) -> String {
@@ -118,9 +134,27 @@ fn pages_up_to(path: &Path, count: usize) -> Vec<String> {
         "txt" | "md" => fs::read(path).ok().map(|b| vec![String::from_utf8_lossy(&b).into_owned()]),
         _ => None,
     }));
+    let mut read = result.ok().flatten().unwrap_or_default();
+    // Pages without a text layer (a scan): recognise the first ones; a photo is one page.
+    if ext == "pdf" {
+        let empty: Vec<u32> = read
+            .iter()
+            .enumerate()
+            .take(OCR_INDEX_PAGES)
+            .filter(|(_, p)| crate::ocr::letters(p) < crate::ocr::EMPTY_PAGE)
+            .map(|(i, _)| i as u32 + 1)
+            .collect();
+        for (number, text) in crate::ocr::pdf_pages(path, &empty) {
+            if let Some(page) = read.get_mut(number as usize - 1) {
+                *page = text;
+            }
+        }
+    } else if crate::ocr::is_image(path) {
+        read = crate::ocr::image(path).into_iter().collect();
+    }
     let mut total = 0;
     let mut pages = Vec::new();
-    for page in result.ok().flatten().unwrap_or_default().into_iter().take(count) {
+    for page in read.into_iter().take(count) {
         let page: String = page.chars().take(INDEX_PAGE_CHARS).collect();
         total += page.len();
         if total > INDEX_FILE_CHARS {
@@ -327,6 +361,22 @@ fn resolve_ref(r: &quick_xml::events::BytesRef) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A scan (a page that is only a picture): its text is recognised, so it is sorted and
+    /// its deadline found. Runs where tesseract is installed (and on Windows in CI).
+    #[test]
+    fn scanned_pages_are_recognised() {
+        if crate::ocr::available() != crate::ocr::Engine::Tesseract {
+            return;
+        }
+        let scan = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scan_serie5.pdf");
+        let text = extract_text(&scan);
+        assert!(text.contains("Serie 5") && text.contains("Abgabe"), "{text}");
+        let found =
+            crate::deadlines::find(&first_pages(&scan, 3), chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap());
+        assert_eq!(found[0].date, chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap());
+    }
+
     use super::*;
     use std::path::PathBuf;
 

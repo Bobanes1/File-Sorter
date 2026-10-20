@@ -953,6 +953,7 @@ dependencies = [
  "tempfile",
  "tray-icon",
  "unicode-normalization",
+ "windows",
  "windows-sys 0.59.0",
  "winreg",
  "winresource",

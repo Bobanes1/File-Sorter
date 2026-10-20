@@ -24,13 +24,15 @@ pub enum Reason {
     Learned(Vec<String>),
     /// Several modules fit equally well; this one's lesson was running when the file came.
     Timetable(String),
+    /// The Laya model chose it, this sure (percent).
+    Model(u8),
 }
 
 impl Reason {
     pub fn keywords(&self) -> &[String] {
         match self {
             Reason::FileName(k) | Reason::Content(k) | Reason::Learned(k) => k,
-            Reason::Chosen | Reason::Origin(_) | Reason::Timetable(_) => &[],
+            Reason::Chosen | Reason::Origin(_) | Reason::Timetable(_) | Reason::Model(_) => &[],
         }
     }
 
@@ -43,6 +45,7 @@ impl Reason {
             Reason::Origin(host) => format!("downloaded from {host} like earlier files of this module"),
             Reason::Learned(k) => format!("like the module's other files ({})", k.join(", ")),
             Reason::Timetable(m) => format!("a tie; the lesson of {m} was running"),
+            Reason::Model(p) => format!("chosen by the Laya model ({p}% sure)"),
         }
     }
 }

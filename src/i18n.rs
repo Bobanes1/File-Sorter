@@ -282,6 +282,10 @@ impl Lang {
                     format!("Module passten gleich gut – {short} lief laut Stundenplan gerade"),
                 )
             }
+            Reason::Model(sure) => self.fmt(
+                format!("chosen by the Laya model ({sure} % sure)"),
+                format!("vom Laya-Modell gewählt ({sure} % sicher)"),
+            ),
             Reason::Learned(_) if words.is_empty() => {
                 self.pick("like the module's other files", "ähnlich wie die anderen Dateien des Moduls").into()
             }
@@ -1422,6 +1426,31 @@ impl Lang {
             "When the keywords don't decide, compare a file with the files already in each module and sort it only if one is clearly more alike.",
             "Wenn die Stichwörter nicht entscheiden, eine Datei mit den Dateien vergleichen, die schon in den Modulen liegen, und nur einsortieren, wenn eines klar ähnlicher ist.",
         )
+    }
+    pub fn feature_laya(self) -> &'static str {
+        self.pick("Let the Laya model choose the module", "Modul vom Laya-Modell wählen lassen")
+    }
+    /// What the model does, and where its download stands.
+    pub fn feature_laya_hint(self, status: &crate::laya::Status) -> String {
+        use crate::laya::Status;
+        let mb = crate::laya::total_size() / 1_000_000;
+        let about = self.fmt(
+            format!("Reads a file's name and text with a language model that runs on this computer, instead of only counting keywords. Downloads {mb} MB once and needs about 1.3 GB of memory; the keywords decide while it isn't sure. Not trained on course files, so it may guess poorly."),
+            format!("Liest Name und Text einer Datei mit einem Sprachmodell, das auf diesem Computer läuft, statt nur Stichwörter zu zählen. Lädt einmal {mb} MB herunter und braucht etwa 1,3 GB Arbeitsspeicher; solange es unsicher ist, entscheiden die Stichwörter. Nicht auf Kursdateien trainiert, kann also danebenliegen."),
+        );
+        let state = match status {
+            Status::Missing => return about,
+            Status::Downloading(done) => {
+                let pct = (done * 100.0).round();
+                self.fmt(format!("Downloading … {pct} %"), format!("Wird heruntergeladen … {pct} %"))
+            }
+            Status::Ready => self.pick("Ready.", "Bereit.").into(),
+            Status::Failed(e) => self.fmt(
+                format!("Didn't work: {e}. Switch it off and on to try again."),
+                format!("Hat nicht geklappt: {e}. Aus- und wieder einschalten, um es nochmals zu versuchen."),
+            ),
+        };
+        format!("{about}\n{state}")
     }
     pub fn feature_ask_unsure(self) -> &'static str {
         self.pick("Ask when unsure", "Bei Unsicherheit nachfragen")

@@ -566,12 +566,22 @@ fn choose_course(
 ) -> Result<Match, LeftReason> {
     // A ZIP file's list of files is like a name, so it is always read.
     let zip = suffix(path) == ".zip";
-    let read = |p: &Path| {
+    let mut read = |p: &Path| {
+        if let Some(t) = text.as_ref() {
+            return t.clone();
+        }
         let t = if zip && !config.read_file_contents { crate::extract::zip_names(p) } else { extract_text(p) };
         *text = Some(t.clone());
         t
     };
     let features = &config.features;
+    // The Laya model first; the keywords decide when it is off, not downloaded or not sure.
+    if features.laya && crate::laya::usable(config) {
+        let content = (config.read_file_contents || zip).then(|| read(path));
+        if let Some((course, sure)) = crate::laya::guess(config, path, content.as_deref()) {
+            return Ok(Match { course, score: 0, reason: Reason::Model(sure) });
+        }
+    }
     let margin = if features.ask_when_unsure { crate::matcher::UNSURE_MARGIN } else { 0 };
     let candidates = match crate::matcher::decide(path, &config.courses, config.read_file_contents || zip, margin, read)
     {

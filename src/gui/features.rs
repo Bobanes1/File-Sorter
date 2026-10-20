@@ -13,12 +13,32 @@ impl App {
     /// Returns true if a setting changed.
     pub(super) fn features_ui(&mut self, ui: &mut egui::Ui) -> bool {
         let lang = self.lang;
+        let laya_dir = crate::laya::dir(&self.config);
         let f = &mut self.config.features;
         let mut changed = false;
         changed |= switch(ui, icon::BRAIN, lang.feature_learn(), lang.feature_learn_hint(), &mut f.learn);
         divider(ui);
         let (title, hint) = (lang.feature_classifier(), lang.feature_classifier_hint());
         changed |= switch(ui, icon::GRAPH, title, hint, &mut f.classifier);
+        divider(ui);
+        let laya = crate::laya::status(laya_dir.as_deref());
+        if switch(ui, icon::SPARKLE, lang.feature_laya(), &lang.feature_laya_hint(&laya), &mut f.laya) {
+            if !f.laya {
+                crate::laya::forget();
+            }
+            changed = true;
+        }
+        match laya {
+            crate::laya::Status::Missing if f.laya => {
+                if let Some(dir) = laya_dir {
+                    crate::laya::start_download(dir);
+                }
+            }
+            crate::laya::Status::Downloading(_) => {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500))
+            }
+            _ => {}
+        }
         divider(ui);
         let (title, hint) = (lang.feature_ask_unsure(), lang.feature_ask_unsure_hint());
         changed |= switch(ui, icon::SEAL_QUESTION, title, hint, &mut f.ask_when_unsure);

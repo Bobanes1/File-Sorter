@@ -362,6 +362,8 @@ pub struct Features {
     pub ask_when_unsure: bool,
     /// Learn the modules from the files already in them, for files the keywords don't decide.
     pub classifier: bool,
+    /// Let the downloaded Laya model choose the module (the keywords decide when it isn't sure).
+    pub laya: bool,
     /// Recognise the text of scanned PDFs and pictures.
     pub ocr: bool,
     /// Remind of deadlines and exams with a system notification.
@@ -396,6 +398,7 @@ impl Default for Features {
             update_install: UpdateMode::Ask,
             ask_when_unsure: true,
             classifier: true,
+            laya: false,
             ocr: true,
             reminders: true,
             timetable_hint: true,

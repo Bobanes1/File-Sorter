@@ -6,3 +6,6 @@ report/
 smoke/
 data/
 train.log
+report-oer/
+results.tar.gz
+job.tar.gz

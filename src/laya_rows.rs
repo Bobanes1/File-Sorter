@@ -18,6 +18,8 @@ use crate::laya;
 
 /// At most this many options per question (the other modules of the program, at random).
 const MAX_OPTIONS: usize = 12;
+/// At least this many options per question (filled up from other programs if needed).
+const MIN_OPTIONS: usize = 4;
 /// Rows made from each synthetic record (each with other options and option wording).
 const ROWS_PER_RECORD: usize = 2;
 
@@ -243,8 +245,9 @@ fn row(programs: &[Program], ex: &Example, rng: &mut Rng) -> String {
     let program = &programs[ex.program];
     let mut others: Vec<usize> = (0..program.modules.len()).filter(|i| Some(*i) != ex.module).collect();
     rng.shuffle(&mut others);
-    let room = MAX_OPTIONS - usize::from(ex.module.is_some());
-    others.truncate(room.min(others.len()).max(2.min(others.len())));
+    // As many options as a student has modules: between MIN_OPTIONS and MAX_OPTIONS.
+    let target = MIN_OPTIONS + rng.below(MAX_OPTIONS - MIN_OPTIONS + 1);
+    others.truncate(target - usize::from(ex.module.is_some()));
     // A minor or a second program: a few modules from elsewhere.
     let mut foreign: Vec<(usize, usize)> = Vec::new();
     if programs.len() > 1 && rng.chance(30) {
@@ -253,6 +256,21 @@ fn row(programs: &[Program], ex: &Example, rng: &mut Rng) -> String {
             if p != ex.program && !programs[p].modules.is_empty() {
                 foreign.push((p, rng.below(programs[p].modules.len())));
             }
+        }
+    }
+    // A program with fewer modules (the open course material has 1–7): fill up from the same
+    // faculty first, then from anywhere.
+    let mut tries = 0;
+    while others.len() + foreign.len() + usize::from(ex.module.is_some()) < target && tries < 200 {
+        tries += 1;
+        let p = rng.below(programs.len());
+        let same_faculty = programs[p].faculty == program.faculty;
+        if p == ex.program || programs[p].modules.is_empty() || (!same_faculty && tries < 100) {
+            continue;
+        }
+        let m = (p, rng.below(programs[p].modules.len()));
+        if !foreign.contains(&m) {
+            foreign.push(m);
         }
     }
     let with_keywords = rng.chance(50);

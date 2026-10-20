@@ -22,7 +22,13 @@ python train.py --train "$DATA/train.jsonl" --val "$DATA/val.jsonl" --out out "$
 test_rows=()
 [ -f "$DATA/test.jsonl" ] && test_rows=(--test "$DATA/test.jsonl")
 python evaluate.py --model base=base/multilingual --model laya-uni=out --val "$DATA/val.jsonl" "${test_rows[@]}" --out report
+# The real course PDFs (open course material), scored with the same thresholds.
+if [ -f "$DATA/test_oer.jsonl" ]; then
+    python evaluate.py --model base=base/multilingual --model laya-uni=out --val "$DATA/val.jsonl" --test "$DATA/test_oer.jsonl" --out report-oer
+fi
 cp train.log out/train_report.json report/
 mkdir -p dist
 python pack.py out dist | tee dist/FILES.rs
-ls -l dist report
+ls -l dist report report-oer 2>/dev/null || true
+tar czf results.tar.gz dist report report-oer 2>/dev/null || tar czf results.tar.gz dist report
+echo "Done. Download results.tar.gz"

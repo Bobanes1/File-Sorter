@@ -688,7 +688,7 @@ fn place_file(
     {
         return SortResult::left(path, LeftReason::AlreadyInFolder { course: label });
     }
-    let mut folder = destination_folder(config, &course_folder, path, text);
+    let mut folder = destination_folder(config, &course_folder, path, text.clone());
     if let Err(e) = fs::create_dir_all(&folder) {
         return SortResult::left(path, LeftReason::Error(format!("cannot create {}: {e}", folder.display())));
     }
@@ -723,7 +723,10 @@ fn place_file(
     if config.features.versions {
         let versions_name = categories::safe_folder_name(&config.features.versions_folder);
         let versions_name = if versions_name.is_empty() { "Ältere Versionen".to_string() } else { versions_name };
-        let others = crate::versions::other_versions(&folder, path);
+        // By name, checked against the title pages (and by title page when the name says nothing).
+        let start = |p: &Path| crate::extract::first_pages(p, 1);
+        let own = text.clone().unwrap_or_else(|| start(path));
+        let others = crate::versions::versions_by_content(&folder, path, &own, start);
         if others.iter().any(|other| crate::versions::is_older(path, other)) {
             // The file that arrives is the older one ("v1" while "v2" is there).
             folder = folder.join(&versions_name);

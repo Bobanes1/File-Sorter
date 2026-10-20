@@ -271,8 +271,8 @@ const WORKS: &[&str] = &[
 const LOOK_AHEAD: usize = 160;
 const LOOK_BEHIND: usize = 120;
 const MAX_LINE_BREAKS: usize = 4;
-/// How far a weekday without date may be from the word.
-const WEEKDAY_AHEAD: usize = 40;
+/// How far a weekday or relative date («in zwei Wochen») may be from the word.
+const WEEKDAY_AHEAD: usize = 50;
 /// How much text around it is kept to show where it was found.
 const CONTEXT: usize = 70;
 
@@ -874,27 +874,104 @@ fn passage(raw: &[char], a: usize, b: usize) -> String {
     raw[from..to].iter().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// A weekday soon after `from` ("Abgabe: Montag, 10:15 Uhr"): the next such day after
-/// `reference`, and where the weekday ends.
-fn weekday_after(folded: &[char], from: usize, stops: &[bool], reference: NaiveDate) -> Option<(NaiveDate, usize)> {
+/// A date given relative to when the file came: a weekday («Abgabe: Montag»), «morgen»,
+/// «übermorgen», «in zwei Wochen», «nächste Woche Freitag», «KW 45» (its Friday). Returns
+/// the date and where the words end. «Jeweils Montag» is every week, not one date.
+fn relative_after(folded: &[char], from: usize, stops: &[bool], reference: NaiveDate) -> Option<(NaiveDate, usize)> {
+    const NUMBERS: &[(&str, i64)] = &[
+        ("ein", 1),
+        ("einem", 1),
+        ("einer", 1),
+        ("eine", 1),
+        ("one", 1),
+        ("a", 1),
+        ("zwei", 2),
+        ("two", 2),
+        ("drei", 3),
+        ("three", 3),
+        ("vier", 4),
+        ("four", 4),
+        ("funf", 5),
+        ("five", 5),
+        ("sechs", 6),
+        ("six", 6),
+        ("sieben", 7),
+        ("seven", 7),
+        ("acht", 8),
+        ("eight", 8),
+        ("zehn", 10),
+        ("ten", 10),
+        ("vierzehn", 14),
+    ];
+    const NEXT: &[&str] = &["nachste", "nachsten", "nachster", "kommende", "kommenden", "next", "folgenden"];
     let limit = (from + WEEKDAY_AHEAD).min(folded.len());
+    // The words up to the end of the sentence: (word, start, end).
+    let mut words: Vec<(String, usize, usize)> = Vec::new();
     let mut i = from;
     while i < limit && !stops[i] {
-        if folded[i].is_alphabetic() && (i == 0 || !folded[i - 1].is_alphabetic()) {
-            let (w, end) = word(folded, i);
-            if let Some(&(_, day)) = WEEKDAYS.iter().find(|(name, _)| *name == w) {
-                if EVERY.contains(&word_before_at(folded, i).0.as_str()) {
-                    return None;
-                }
-                let today = reference.weekday().num_days_from_monday();
-                let ahead = (day + 7 - today) % 7;
-                let ahead = if ahead == 0 { 7 } else { ahead };
-                return Some((reference + chrono::Duration::days(ahead as i64), end));
-            }
+        if folded[i].is_alphanumeric() && (i == 0 || !folded[i - 1].is_alphanumeric()) {
+            let end = (i..folded.len()).find(|&j| !folded[j].is_alphanumeric()).unwrap_or(folded.len());
+            words.push((folded[i..end].iter().collect(), i, end));
             i = end;
             continue;
         }
         i += 1;
+    }
+    let days = |n: i64| reference + chrono::Duration::days(n);
+    let weekday_of = |w: &str| WEEKDAYS.iter().find(|(name, _)| *name == w).map(|(_, d)| *d as i64);
+    let next_weekday = |day: i64| {
+        let ahead = (day - reference.weekday().num_days_from_monday() as i64).rem_euclid(7);
+        days(if ahead == 0 { 7 } else { ahead })
+    };
+    let number = |w: &str| {
+        w.parse::<i64>()
+            .ok()
+            .filter(|n| (1..=60).contains(n))
+            .or_else(|| NUMBERS.iter().find(|(name, _)| *name == w).map(|(_, n)| *n))
+    };
+    for (k, (w, start, end)) in words.iter().enumerate() {
+        let next = |n: usize| words.get(k + n).map(|(w, _, e)| (w.as_str(), *e));
+        let before = k.checked_sub(1).map(|b| words[b].0.as_str());
+        match w.as_str() {
+            "jeweils" | "jeden" | "immer" | "every" | "each" => return None,
+            "morgen" | "tomorrow" if before != Some("am") => return Some((days(1), *end)),
+            "ubermorgen" => return Some((days(2), *end)),
+            "in" => {
+                let (Some((n, _)), Some((unit, unit_end))) = (next(1), next(2)) else { continue };
+                let Some(n) = number(n) else { continue };
+                let per = match unit {
+                    "tag" | "tage" | "tagen" | "day" | "days" => 1,
+                    "woche" | "wochen" | "week" | "weeks" => 7,
+                    _ => continue,
+                };
+                return Some((days(n * per), unit_end));
+            }
+            "kw" | "kalenderwoche" | "week" => {
+                let Some((n, n_end)) = next(1) else { continue };
+                let Some(week) = n.parse::<u32>().ok().filter(|w| (1..=53).contains(w)) else { continue };
+                // That week's Friday, the one closest after the file came.
+                let friday = |year| NaiveDate::from_isoywd_opt(year, week, chrono::Weekday::Fri);
+                let date = friday(reference.year())
+                    .filter(|d| *d >= reference - chrono::Duration::days(60))
+                    .or_else(|| friday(reference.year() + 1))?;
+                return Some((date, n_end));
+            }
+            w if NEXT.contains(&w) => {
+                if let Some((unit, unit_end)) = next(1).filter(|(u, _)| ["woche", "week"].contains(u)) {
+                    let monday = days(7 - reference.weekday().num_days_from_monday() as i64);
+                    return Some(match next(2).and_then(|(d, e)| weekday_of(d).map(|d| (d, e))) {
+                        Some((day, day_end)) => (monday + chrono::Duration::days(day), day_end),
+                        None => (monday + chrono::Duration::days(4), unit_end),
+                    });
+                }
+            }
+            w => {
+                if let Some(day) = weekday_of(w) {
+                    let _ = start;
+                    return Some((next_weekday(day), *end));
+                }
+            }
+        }
     }
     None
 }
@@ -1007,7 +1084,7 @@ pub fn find(text: &str, reference: NaiveDate) -> Vec<Found> {
                     if kind != Kind::Due || look != Look::Ahead {
                         return None;
                     }
-                    let (date, end) = weekday_after(&folded, word_end, &stops, reference)?;
+                    let (date, end) = relative_after(&folded, word_end, &stops, reference)?;
                     Some(Hit { date, start: end, end, title: None, estimated: true })
                 });
                 hits.extend(hit);
@@ -1397,7 +1474,8 @@ mod tests {
                 &[(day(2026, 11, 4), None, Kind::Due)],
             ),
             // The date of another sentence is not the deadline.
-            ("Abgabe in KW 45 über Moodle. Vorlesung vom 20.10.2026.", &[]),
+            // Only the week: its Friday (estimated).
+            ("Abgabe in KW 45 über Moodle. Vorlesung vom 20.10.2026.", &[(day(2026, 11, 6), None, Kind::Due)]),
             ("Diese Inhalte sind prüfungsrelevant (Stand 20.10.2026).", &[]),
         ];
         for (text, expected) in cases {
@@ -1493,6 +1571,25 @@ mod tests {
         }
         // Only a weekday: the next one after the file came, marked as estimated.
         assert!(find("Abgabe: Montag, 10:15 Uhr", day(2026, 10, 20))[0].estimated);
+    }
+
+    #[test]
+    fn relative_dates_count_from_when_the_file_came() {
+        let reference = day(2026, 10, 20); // a Tuesday
+        let first = |text: &str| find(text, reference).first().map(|f| (f.date, f.estimated));
+        assert_eq!(first("Abgabe: morgen bis 12 Uhr"), Some((day(2026, 10, 21), true)));
+        assert_eq!(first("Abgabe übermorgen"), Some((day(2026, 10, 22), true)));
+        assert_eq!(first("Abgabe in zwei Wochen"), Some((day(2026, 11, 3), true)));
+        assert_eq!(first("Abgabe in 10 Tagen"), Some((day(2026, 10, 30), true)));
+        assert_eq!(first("Due in two weeks"), Some((day(2026, 11, 3), true)));
+        assert_eq!(first("Abgabe nächste Woche Freitag"), Some((day(2026, 10, 30), true)));
+        assert_eq!(first("Abgabe nächste Woche"), Some((day(2026, 10, 30), true)), "its Friday");
+        assert_eq!(first("Abgabe bis Ende KW 2"), Some((day(2027, 1, 15), true)), "next year's week 2");
+        assert_eq!(first("Abgabe: Freitag"), Some((day(2026, 10, 23), true)));
+        assert_eq!(first("Abgabe am Morgen der Vorlesung"), None, "«am Morgen» is no date");
+        assert_eq!(first("Abgabe jeweils in der Übung"), None);
+        // A written date always wins.
+        assert_eq!(first("Abgabe morgen, 21.10.2026"), Some((day(2026, 10, 21), false)));
     }
 
     /// A semester plan: one deadline per row, from the «Abgabe» column, named after the row.

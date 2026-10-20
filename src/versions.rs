@@ -107,6 +107,70 @@ pub fn other_versions(folder: &Path, new: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Words at the start of a document that are compared.
+const TITLE_WORDS: usize = 80;
+/// Title pages this much alike (Jaccard of word triples) are the same document.
+const SAME_TITLE: f64 = 0.85;
+/// Title pages this little alike are different documents, whatever their names say.
+const DIFFERENT_TITLE: f64 = 0.2;
+/// Files read to compare, at most.
+const MAX_COMPARED: usize = 10;
+
+/// Word triples from the start of a text.
+fn shingles(text: &str) -> std::collections::HashSet<String> {
+    let words: Vec<String> = normalise(text).split(' ').take(TITLE_WORDS).map(str::to_string).collect();
+    words.windows(3).map(|w| w.join(" ")).collect()
+}
+
+/// How alike two title pages are (0 to 1), or `None` if one says too little to tell.
+pub fn alike(a: &str, b: &str) -> Option<f64> {
+    let (a, b) = (shingles(a), shingles(b));
+    if a.len() < 10 || b.len() < 10 {
+        return None;
+    }
+    Some(a.intersection(&b).count() as f64 / a.union(&b).count() as f64)
+}
+
+/// Other versions of `new` in `folder`, looking at the content too: files the name calls
+/// versions are left out when their title page is clearly a different document, and files
+/// with another name count when their title page is the same («Skript.pdf» and
+/// «Skript_final_neu_WS.pdf»; only files whose name shares a word with the new one are read).
+/// `text_of` reads the start of a file.
+pub fn versions_by_content(
+    folder: &Path,
+    new: &Path,
+    new_text: &str,
+    text_of: impl Fn(&Path) -> String,
+) -> Vec<PathBuf> {
+    let by_name = other_versions(folder, new);
+    let mut found: Vec<PathBuf> = by_name
+        .into_iter()
+        .filter(|other| alike(new_text, &text_of(other)).is_none_or(|a| a >= DIFFERENT_TITLE))
+        .collect();
+    if !found.is_empty() {
+        return found;
+    }
+    let (stem, ext) = stem_and_ext(new);
+    let words: Vec<String> = split(&stem).0.into_iter().filter(|w| w.chars().count() >= 3).collect();
+    let Ok(entries) = fs::read_dir(folder) else { return found };
+    let mut candidates: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p != new)
+        .filter(|p| {
+            let (s, e) = stem_and_ext(p);
+            e == ext && !s.starts_with("~$") && split(&s).0.iter().any(|w| words.contains(w))
+        })
+        .collect();
+    candidates.sort();
+    for other in candidates.into_iter().take(MAX_COMPARED) {
+        if alike(new_text, &text_of(&other)).is_some_and(|a| a >= SAME_TITLE) {
+            found.push(other);
+        }
+    }
+    found
+}
+
 /// True if `new` is an older version than `existing`: a lower version number ("v1" arriving
 /// while "v2" is there), or none while the existing one has one ("Skript" after
 /// "Skript_v2"). Otherwise the file that arrives is the newer one.
@@ -159,6 +223,26 @@ mod tests {
         assert!(!is_older(Path::new("a/Skript_v3.pdf"), Path::new("a/Skript_v2.pdf")));
         assert!(is_older(Path::new("a/Skript.pdf"), Path::new("a/Skript_v2.pdf")));
         assert!(!is_older(Path::new("a/Skript_v2.pdf"), Path::new("a/Skript.pdf")));
+    }
+
+    #[test]
+    fn content_tells_versions_apart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let title = "Einführung in die Programmierung Kapitel 3 Rekursion und Iteration Prof. Dr. Huber \
+                     Wintersemester 2026 Inhalt Rekursive Funktionen Basisfall Rekursionsschritt Beispiele";
+        let other = "Statistik Übungsblatt 2 Wahrscheinlichkeit Zufallsvariablen Erwartungswert Varianz \
+                     Aufgabe 1 Berechnen Sie den Erwartungswert der folgenden Verteilung";
+        let texts: std::collections::HashMap<&str, &str> =
+            [("Skript.pdf", title), ("Skript_final_neu_WS.pdf", title), ("Skript (1).pdf", other)].into();
+        for name in ["Skript_final_neu_WS.pdf", "Skript (1).pdf", "Notizen.pdf"] {
+            fs::write(tmp.path().join(name), name).unwrap();
+        }
+        let text_of = |p: &Path| texts.get(p.file_name().unwrap().to_str().unwrap()).copied().unwrap_or("").to_string();
+        // «Skript (1).pdf» is named like a version, but is another document; the long name is the same one.
+        let found = versions_by_content(tmp.path(), &tmp.path().join("Skript.pdf"), title, text_of);
+        let names: Vec<_> = found.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["Skript_final_neu_WS.pdf"]);
+        assert!(alike(title, "kurz").is_none(), "too little text to tell");
     }
 
     #[test]

@@ -457,6 +457,8 @@ pub struct Features {
     pub timetable_hint: bool,
     /// When before a deadline.
     pub reminder_leads: Vec<crate::reminders::Lead>,
+    /// What deadlines and appointments are put into («Übung», «Prüfung», …).
+    pub deadline_categories: Vec<crate::deadlines::Category>,
     /// How grades are written.
     pub grade_scale: GradeScale,
     /// ECTS needed for the degree.
@@ -488,6 +490,7 @@ impl Default for Features {
             reminders: true,
             timetable_hint: true,
             reminder_leads: crate::reminders::default_leads(),
+            deadline_categories: crate::deadlines::Category::defaults(),
             grade_scale: GradeScale::Swiss,
             ects_target: 180.0,
         }

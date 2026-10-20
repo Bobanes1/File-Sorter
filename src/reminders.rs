@@ -159,7 +159,7 @@ mod windows_toast {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deadlines::Kind;
+    use crate::deadlines::Category;
     use chrono::NaiveDate;
 
     fn at(d: u32, h: u32, m: u32) -> NaiveDateTime {
@@ -168,9 +168,10 @@ mod tests {
 
     #[test]
     fn reminds_once_at_each_time_and_catches_up_with_one() {
+        let exercise = Category::defaults().remove(0);
         let mut list = Deadlines::default();
         let due = at(24, 23, 59);
-        list.add_manual("Blatt 3", "Prog", Kind::Due, due.date(), Some(due.time()));
+        list.add_manual("Blatt 3", "Prog", &exercise, due.date(), Some(due.time()));
         let leads = default_leads();
         assert!(take_due(&mut list, &leads, at(23, 12, 0)).is_empty(), "too early");
         assert_eq!(take_due(&mut list, &leads, at(23, 23, 59)).len(), 1, "a day before");
@@ -179,11 +180,11 @@ mod tests {
         assert!(take_due(&mut list, &leads, at(24, 22, 0)).is_empty());
         // Not running for days: one reminder, not two; past ones none.
         let mut late = Deadlines::default();
-        late.add_manual("Blatt 4", "Prog", Kind::Due, due.date(), Some(due.time()));
+        late.add_manual("Blatt 4", "Prog", &exercise, due.date(), Some(due.time()));
         assert_eq!(take_due(&mut late, &leads, at(24, 22, 0)).len(), 1);
         assert!(take_due(&mut late, &leads, at(24, 22, 30)).is_empty());
         let mut past = Deadlines::default();
-        past.add_manual("Blatt 5", "Prog", Kind::Due, due.date(), Some(due.time()));
+        past.add_manual("Blatt 5", "Prog", &exercise, due.date(), Some(due.time()));
         assert!(take_due(&mut past, &leads, at(25, 9, 0)).is_empty());
     }
 

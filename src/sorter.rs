@@ -699,8 +699,24 @@ pub(crate) fn subfolder_for(
     let existing = categories::existing_subfolders(course_folder, &features.versions_folder);
     let read_text =
         || (config.read_file_contents && suffix(path) != ".zip").then(|| text.unwrap_or_else(|| extract_text(path)));
-    let name =
-        categories::pick_subfolder(&stem, &features.subfolder_list, &features.subfolder_learned, &existing, read_text)?;
+    // The AI model reads documents whose name says nothing.
+    let ask = |text: &str| {
+        if !features.laya {
+            return None;
+        }
+        let options = categories::subfolder_options(&features.subfolder_list, &existing);
+        let (folder, p) = crate::laya::subfolder_for(&file_name(path), text, &options)?;
+        log::info!("Laya put {} into the subfolder «{folder}» ({:.0} % sure)", file_name(path), p * 100.0);
+        Some(folder)
+    };
+    let name = categories::pick_subfolder(
+        &stem,
+        &features.subfolder_list,
+        &features.subfolder_learned,
+        &existing,
+        read_text,
+        ask,
+    )?;
     Some(categories::safe_folder_name(&name)).filter(|n| !n.is_empty())
 }
 

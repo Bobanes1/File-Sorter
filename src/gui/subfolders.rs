@@ -124,27 +124,13 @@ fn subfolder_list_ui(
                 .desired_width(150.0)
                 .margin(Margin::symmetric(10, 6));
             *changed |= ui.add(name).changed();
-            // The words as one text ("zusammenfassung, summary"), kept while typing.
-            let id = Id::new(("subfolder-words", i));
-            let joined = folder.keywords.join(", ");
-            let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| joined.clone());
             let hint = match folder.builtin {
                 Some(kind) => lang.subfolder_builtin_words(kind),
                 None => lang.subfolder_words_hint(),
             };
-            let field = egui::TextEdit::singleline(&mut text)
-                .hint_text(hint)
-                .desired_width(ui.available_width() - 48.0)
-                .margin(Margin::symmetric(10, 6));
-            let response = ui.add(field);
-            if response.changed() {
-                folder.keywords = text.split(',').map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect();
-                *changed = true;
-            }
-            if !response.has_focus() {
-                text = folder.keywords.join(", ");
-            }
-            ui.data_mut(|d| d.insert_temp(id, text));
+            let id = Id::new(("subfolder-words", i));
+            let width = ui.available_width() - 48.0;
+            *changed |= super::features::words_field(ui, id, hint, &mut folder.keywords, width);
             if fx::icon_button(ui, icon::TRASH).on_hover_text(lang.delete()).clicked() {
                 remove = Some(i);
             }
@@ -364,7 +350,7 @@ impl App {
                 .filter(|n| !n.is_empty())
                 .collect();
             for dir in &existing {
-                if !names.iter().any(|n| n.eq_ignore_ascii_case(dir)) {
+                if !names.iter().any(|n| crate::categories::same_name(n, dir)) {
                     names.push(dir.clone());
                 }
             }

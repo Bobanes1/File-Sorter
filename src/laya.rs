@@ -483,70 +483,90 @@ fn choice(answer: &Value) -> Option<(String, f64, f64)> {
 /// The option for «none of the modules».
 const NONE: &str = "none";
 
-/// Which module a document belongs to: its label and how sure Laya is, when it is clearly
-/// sure (at least `0.6`, and twice as likely as the next). `allowed` limits the answer to
-/// some modules (those the keywords found about equally likely).
-pub fn module_for(config: &crate::config::Config, name: &str, text: &str, allowed: &[String]) -> Option<(String, f64)> {
-    if config.courses.is_empty() || !available() {
+/// Asks which of `options` (id, what it is) `text` is about, or none of them (`none`: what
+/// that means here). The id and how sure Laya is, when it is clearly sure: at least `0.6`, and
+/// twice as likely as the next.
+fn pick_one(instructions: &str, options: &[(String, String)], none: &str, text: String) -> Option<(String, f64)> {
+    if options.is_empty() || !available() {
         return None;
     }
     let mut criteria = serde_json::Map::new();
-    for course in &config.courses {
-        let label = course.label();
-        if criteria.contains_key(&label) {
-            continue;
-        }
-        let words: Vec<&str> = course.keywords.iter().map(String::as_str).take(12).collect();
-        let mut about = format!("the course «{}»", course.name);
-        if !course.subject.is_empty() {
-            about.push_str(&format!(" (study program {})", course.subject));
-        }
-        if !words.is_empty() {
-            about.push_str(&format!("; typical words: {}", words.join(", ")));
-        }
-        criteria.insert(label, Value::String(about));
+    for (id, about) in options {
+        criteria.entry(id.clone()).or_insert_with(|| Value::String(about.clone()));
     }
-    criteria.insert(
-        NONE.into(),
-        Value::String("none of these courses: other subjects, personal or administrative documents".into()),
-    );
-    let questions = json!({
-        "module": {
-            "type": "choice",
-            "instructions": "This is a document a student downloaded. Which university course is it for?",
-            "criteria": criteria,
-        }
-    });
+    criteria.insert(NONE.into(), Value::String(none.into()));
+    let questions = json!({"pick": {"type": "choice", "instructions": instructions, "criteria": criteria}});
+    let answers = ask(&[text], &questions, None)?;
+    let (id, p, second) = choice(&answers[0]["pick"])?;
+    (id != NONE && p >= 0.6 && p >= 2.0 * second).then_some((id, p))
+}
+
+/// The start of a document as it is shown to Laya: its name, then its text.
+fn document(name: &str, text: &str) -> String {
     let body: String = text.chars().take(3000).collect();
-    let state = format!("File name: {name}\n\n{body}");
-    let answers = ask(&[state], &questions, None)?;
-    let (label, p, second) = choice(&answers[0]["module"])?;
-    let fits = label != NONE && (allowed.is_empty() || allowed.contains(&label));
-    (fits && p >= 0.6 && p >= 2.0 * second).then_some((label, p))
+    format!("File name: {name}\n\n{body}")
 }
 
-/// What a date in a sentence is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DateKind {
-    Due,
-    Exam,
-    Other,
+/// Which module a document belongs to: its label and how sure Laya is, when it is clearly
+/// sure. `allowed` limits the answer to some modules (those the keywords found about equally
+/// likely).
+pub fn module_for(config: &crate::config::Config, name: &str, text: &str, allowed: &[String]) -> Option<(String, f64)> {
+    let options: Vec<(String, String)> = config
+        .courses
+        .iter()
+        .filter(|c| allowed.is_empty() || allowed.contains(&c.label()))
+        .map(|course| {
+            let mut about = format!("the course «{}»", course.name);
+            if !course.subject.is_empty() {
+                about.push_str(&format!(" (study program {})", course.subject));
+            }
+            let words: Vec<&str> = course.keywords.iter().map(String::as_str).take(12).collect();
+            if !words.is_empty() {
+                about.push_str(&format!("; typical words: {}", words.join(", ")));
+            }
+            (course.label(), about)
+        })
+        .collect();
+    pick_one(
+        "This is a document a student downloaded. Which university course is it for?",
+        &options,
+        "none of these courses: other subjects, personal or administrative documents",
+        document(name, text),
+    )
 }
 
-/// For each sentence with a date: what the date is, and how sure Laya is.
-pub fn date_kinds(sentences: &[String]) -> Option<Vec<(DateKind, f64)>> {
+/// Which subfolder of a module a document goes in (options: folder name, what goes there),
+/// when Laya is clearly sure; none means the module's folder itself.
+pub fn subfolder_for(name: &str, text: &str, options: &[(String, String)]) -> Option<(String, f64)> {
+    pick_one(
+        "This is a document from a university course. Which folder of the course does it belong in?",
+        options,
+        "none of these folders: general course information, or something that fits no folder",
+        document(name, text),
+    )
+}
+
+/// For each sentence with a date: which of the `categories` (id, what such a date is) the
+/// date is, or `None` when it is not a date to note, and how sure Laya is.
+pub fn date_categories(sentences: &[String], categories: &[(String, String)]) -> Option<Vec<(Option<String>, f64)>> {
     if sentences.is_empty() {
         return Some(Vec::new());
     }
+    let mut criteria = serde_json::Map::new();
+    for (id, about) in categories {
+        criteria.entry(id.clone()).or_insert_with(|| Value::String(about.clone()));
+    }
+    criteria.insert(
+        NONE.into(),
+        Value::String(
+            "not a date to note: a publication or version date, a past event, a holiday or a regular lecture".into(),
+        ),
+    );
     let questions = json!({
         "kind": {
             "type": "choice",
             "instructions": "What is the date in this sentence from a university course document?",
-            "criteria": {
-                "due": "a deadline: something must be handed in, submitted, uploaded or registered for by then",
-                "exam": "an exam, test, quiz or presentation takes place then",
-                "other": "anything else: a lecture, a publication or version date, a holiday, a past event",
-            },
+            "criteria": criteria,
         }
     });
     let answers = ask(sentences, &questions, Some(256))?;
@@ -554,15 +574,8 @@ pub fn date_kinds(sentences: &[String]) -> Option<Vec<(DateKind, f64)>> {
         answers
             .iter()
             .map(|a| match choice(&a["kind"]) {
-                Some((kind, p, _)) => {
-                    let kind = match kind.as_str() {
-                        "due" => DateKind::Due,
-                        "exam" => DateKind::Exam,
-                        _ => DateKind::Other,
-                    };
-                    (kind, p)
-                }
-                None => (DateKind::Other, 0.0),
+                Some((id, p, _)) => ((id != NONE).then_some(id), p),
+                None => (None, 0.0),
             })
             .collect(),
     )
@@ -590,11 +603,28 @@ class Agent:
             low = s.lower()
             answers = {}
             for qid, q in questions.items():
-                keys = list(q.get("criteria", {}).keys())
-                if qid == "module":
-                    pick = next((k for k in keys if "statistik" in k.lower()), "none") if "varianz" in low else "none"
-                else:
-                    pick = "due" if any(w in low for w in ("abgabe", "due", "rendre")) else ("exam" if any(w in low for w in ("prüfung", "exam")) else "other")
+                criteria = q.get("criteria", {})
+                keys = list(criteria.keys())
+                def named(k):
+                    # «Name» and typical words of an option the text mentions.
+                    about = criteria[k].lower()
+                    words = [w.strip(" .;,") for w in about.split("typical words:")[-1].split(",")] if "typical words:" in about else []
+                    if "«" in about:
+                        words.append(about.split("«")[1].split("»")[0])
+                    return any(w and len(w) > 2 and w in low for w in words)
+                def leading(marker):
+                    # The option named so, or whose description starts so.
+                    return next((k for k in keys if k == marker or criteria[k].lower().startswith(marker)), None)
+                pick = None
+                if qid == "pick" and "varianz" in low:
+                    pick = next((k for k in keys if "statistik" in k.lower()), None)
+                elif qid != "pick" or "folder" in q.get("instructions", ""):
+                    pick = next((k for k in keys if k != "none" and named(k)), None)
+                    if pick is None and any(w in low for w in ("abgabe", "due", "rendre", "aufgabe 1")):
+                        pick = leading("exercise") or leading("an exercise")
+                    if pick is None and any(w in low for w in ("prüfung", "exam")):
+                        pick = leading("exam") or leading("an exam")
+                pick = pick or "none"
                 probs = {k: (0.9 if k == pick else 0.1 / max(1, len(keys) - 1)) for k in keys}
                 answers[qid] = {"type": "choice", "choice": pick, "probabilities": probs}
             out.append({"answers": answers})
@@ -634,7 +664,7 @@ def load(*args, **kwargs):
         let Some(place) = fake_place(tmp.path()) else { return };
         let mut helper = Helper::start(&place).unwrap();
         let questions = json!({"kind": {"type": "choice", "instructions": "?",
-            "criteria": {"due": "a", "exam": "b", "other": "c"}}});
+            "criteria": {"exercise": "a", "exam": "b", "none": "c"}}});
         let answers = helper
             .ask(
                 &["Abgabe bis 3. November".into(), "Prüfung am 20. Januar".into(), "Stand: 1. Oktober".into()],
@@ -643,7 +673,7 @@ def load(*args, **kwargs):
             )
             .unwrap();
         let picks: Vec<String> = answers.iter().map(|a| choice(&a["kind"]).unwrap().0).collect();
-        assert_eq!(picks, ["due", "exam", "other"]);
+        assert_eq!(picks, ["exercise", "exam", "none"]);
         // A bad request gets an error, and the helper goes on.
         assert!(helper.ask(&["x".into()], &json!({"q": 1}), None).is_err());
         assert_eq!(helper.ask(&["Abgabe".into()], &questions, None).unwrap().len(), 1);
@@ -679,10 +709,26 @@ def load(*args, **kwargs):
         let reference = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
         let text = "Le devoir 3 est à rendre avant le 7 novembre 2026 à 18h.\nVersion du 3 octobre 2026.";
         assert!(crate::deadlines::find(text, reference).is_empty(), "the rules don't know it");
-        let found = crate::deadlines::find_with_ai(text, reference);
+        let mut categories = crate::deadlines::Category::defaults();
+        let found = crate::deadlines::find_in(text, reference, &categories);
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].date, chrono::NaiveDate::from_ymd_opt(2026, 11, 7).unwrap());
         assert!(found[0].ai && found[0].kind == crate::deadlines::Kind::Due);
+        assert_eq!(found[0].category, "exercise");
+        assert_eq!(found[0].title.as_deref(), Some("Le devoir 3 est à rendre avant le 7 novembre 2026 à 18h"));
+        // A category of the user's own.
+        categories.push(crate::deadlines::Category::custom("Exkursion", &categories));
+        let found = crate::deadlines::find_in("Die Exkursion ins Museum ist am 12.11.2026.", reference, &categories);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!((found[0].category.as_str(), found[0].kind), ("c1", crate::deadlines::Kind::Exam));
+        // Subfolders: a name that says nothing, read by the model.
+        let options = [
+            ("Vorlesung".to_string(), "lecture slides or script".to_string()),
+            ("Übungen".to_string(), "exercise sheets or homework to solve".to_string()),
+        ];
+        let picked = subfolder_for("scan_0042.pdf", "Blatt 4. Aufgabe 1: Zeigen Sie …", &options);
+        assert_eq!(picked.map(|p| p.0).as_deref(), Some("Übungen"));
+        assert_eq!(subfolder_for("info.pdf", "Willkommen im Kurs", &options), None);
         stop();
     }
 

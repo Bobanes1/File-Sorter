@@ -28,6 +28,141 @@ pub enum Kind {
     Exam,
 }
 
+/// The categories File Sorter knows by itself; they can be renamed or removed, and others
+/// added, in the settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Builtin {
+    Exercise,
+    Exam,
+    Project,
+    Registration,
+    Other,
+}
+
+impl Builtin {
+    pub const ALL: [Builtin; 5] =
+        [Builtin::Exercise, Builtin::Exam, Builtin::Project, Builtin::Registration, Builtin::Other];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Builtin::Exercise => "exercise",
+            Builtin::Exam => "exam",
+            Builtin::Project => "project",
+            Builtin::Registration => "registration",
+            Builtin::Other => "other",
+        }
+    }
+
+    /// What such a date is, for the AI model.
+    fn about(self) -> &'static str {
+        match self {
+            Builtin::Exercise => {
+                "an exercise to hand in: an exercise sheet, homework, assignment, problem set or lab report is due"
+            }
+            Builtin::Exam => "an exam takes place: a written or oral exam, test, quiz, midterm or final",
+            Builtin::Project => {
+                "a larger piece of work is due: a project, seminar paper, essay, report, poster, presentation or thesis"
+            }
+            Builtin::Registration => {
+                "a registration deadline: signing up or registering for an exam, a course, a group or a topic"
+            }
+            Builtin::Other => {
+                "another event to attend or note: an excursion, consultation hour, workshop, guest talk or meeting \
+                 (not a regular lecture)"
+            }
+        }
+    }
+}
+
+/// What a date is about («Übung», «Prüfung», …), shown with each entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Category {
+    pub id: String,
+    /// Empty: the built-in name, in the user's language.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// Words that put a date into this category when its sentence contains them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    /// A date to be there (an exam), not one to hand something in by.
+    #[serde(default)]
+    pub appointment: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<Builtin>,
+}
+
+impl Category {
+    pub fn defaults() -> Vec<Category> {
+        Builtin::ALL
+            .into_iter()
+            .map(|b| Category {
+                id: b.id().to_string(),
+                name: String::new(),
+                keywords: Vec::new(),
+                appointment: matches!(b, Builtin::Exam | Builtin::Other),
+                builtin: Some(b),
+            })
+            .collect()
+    }
+
+    /// A new category the user adds, with an id not taken yet.
+    pub fn custom(name: &str, taken: &[Category]) -> Category {
+        let id = (1..).map(|n| format!("c{n}")).find(|id| taken.iter().all(|c| &c.id != id)).unwrap_or_default();
+        Category { id, name: name.trim().to_string(), keywords: Vec::new(), appointment: true, builtin: None }
+    }
+
+    /// What dates in this category are, for the AI model.
+    pub fn about(&self) -> String {
+        let mut about = match self.builtin {
+            Some(b) => b.about().to_string(),
+            None => format!("«{}»", self.name),
+        };
+        if !self.keywords.is_empty() {
+            about.push_str(&format!("; typical words: {}", self.keywords.join(", ")));
+        }
+        about
+    }
+}
+
+/// The category with `id`; one that was removed counts as «other» (or the first there is).
+pub fn category<'a>(categories: &'a [Category], id: &str) -> Option<&'a Category> {
+    categories
+        .iter()
+        .find(|c| c.id == id)
+        .or_else(|| categories.iter().find(|c| c.builtin == Some(Builtin::Other)))
+        .or(categories.first())
+}
+
+/// Words saying a date is a registration deadline (folded).
+const REGISTRATION_WORDS: &[&str] = &["anmeld", "registr", "einschreib", "sign up", "signup", "inscri", "iscriz"];
+
+/// The category of a date the rules found: the user's words for a category, else what the
+/// rules know (a registration, a project or paper, an exam, else an exercise).
+fn category_by_rules(f: &Found, categories: &[Category]) -> String {
+    let text = fold(&format!("{} {} {}", f.context, f.title.as_deref().unwrap_or(""), f.word));
+    let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let mentions = |keyword: &str| {
+        let keyword = fold(keyword.trim());
+        !keyword.is_empty()
+            && (keyword.contains(' ') && text.contains(&keyword) || words.iter().any(|w| w.starts_with(&keyword)))
+    };
+    if let Some(c) = categories.iter().find(|c| c.keywords.iter().any(|k| mentions(k))) {
+        return c.id.clone();
+    }
+    let title = fold(f.title.as_deref().unwrap_or(""));
+    let builtin = if REGISTRATION_WORDS.iter().any(|w| text.contains(w)) {
+        Builtin::Registration
+    } else if f.kind == Kind::Exam {
+        Builtin::Exam
+    } else if title.split(' ').any(|w| WORKS.iter().any(|work| w.starts_with(work))) {
+        Builtin::Project
+    } else {
+        Builtin::Exercise
+    };
+    category(categories, builtin.id()).map(|c| c.id.clone()).unwrap_or_default()
+}
+
 /// Where the date is, seen from the word.
 #[derive(Clone, Copy, PartialEq)]
 enum Look {
@@ -291,8 +426,12 @@ pub struct Deadline {
     pub done: bool,
     /// Deleted by the user: hidden, and not found again in the same file.
     pub deleted: bool,
+    /// A date to be there (an exam), or to hand something in by.
     #[serde(default)]
     pub kind: Kind,
+    /// The id of its [`Category`] (empty in lists saved before there were categories).
+    #[serde(default)]
+    pub category: String,
     /// The date as it was found, when the user corrected it (so it isn't found again).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub found_date: Option<String>,
@@ -380,6 +519,8 @@ pub struct Found {
     pub estimated: bool,
     /// Found by the AI model (in a sentence the rules here don't know).
     pub ai: bool,
+    /// The id of its [`Category`] (set by [`find_in`]).
+    pub category: String,
 }
 
 fn month(word: &str) -> Option<u32> {
@@ -984,41 +1125,76 @@ pub fn dated_sentences(text: &str, reference: NaiveDate) -> Vec<(NaiveDate, Opti
     out
 }
 
-/// What [`find`] finds, checked by the AI model when it is there: dates in sentences the
-/// rules here don't know (other languages, unusual wording) that it is sure are deadlines or
-/// exams are added, and found dates it is very sure are something else are left out.
-pub fn find_with_ai(text: &str, reference: NaiveDate) -> Vec<Found> {
+/// What [`find`] finds, each in one of `categories`. With the AI model there it is also
+/// asked: dates in sentences the rules here don't know (other languages, unusual wording) that
+/// it is sure about are added, found dates it is very sure are something else are left out,
+/// and it decides the category.
+pub fn find_in(text: &str, reference: NaiveDate, categories: &[Category]) -> Vec<Found> {
     let mut found = find(text, reference);
-    if !crate::laya::available() {
-        return found;
+    if let Some(verdicts) = ask_ai(text, reference, categories) {
+        // A date the rules found, but every sentence it is in is clearly about something else.
+        found.retain(|f| {
+            let about: Vec<_> = verdicts.iter().filter(|v| v.0 == f.date).collect();
+            about.is_empty() || !about.iter().all(|v| v.3.is_none() && v.4 >= 0.9)
+        });
+        for f in &mut found {
+            if let Some(v) = verdicts.iter().find(|v| v.0 == f.date && v.3.is_some() && v.4 >= SURE) {
+                f.category = v.3.clone().unwrap_or_default();
+            }
+        }
+        for (date, time, sentence, category, p) in verdicts {
+            let Some(category) = category else { continue };
+            if p < SURE || found.iter().any(|f| f.date == date) {
+                continue;
+            }
+            let raw: Vec<char> = sentence.chars().collect();
+            let title = work_name(&raw, 0, raw.len()).map(|(t, _)| t).or_else(|| Some(shortened(&sentence, 60)));
+            let context: String = sentence.chars().take(CONTEXT * 2).collect();
+            let (word, estimated, ai) = (String::new(), false, true);
+            found.push(Found { date, time, context, kind: Kind::Due, word, title, estimated, ai, category });
+        }
+    }
+    for f in &mut found {
+        if f.category.is_empty() {
+            f.category = category_by_rules(f, categories);
+        }
+        if let Some(c) = category(categories, &f.category) {
+            f.kind = if c.appointment { Kind::Exam } else { Kind::Due };
+        }
+    }
+    found
+}
+
+/// How sure the AI model must be to add a date or decide its category.
+const SURE: f64 = 0.75;
+
+/// The AI model's verdict on each dated sentence: the date, its time, the sentence, the
+/// category (`None`: not a date to note) and how sure it is.
+type Verdict = (NaiveDate, Option<NaiveTime>, String, Option<String>, f64);
+
+fn ask_ai(text: &str, reference: NaiveDate, categories: &[Category]) -> Option<Vec<Verdict>> {
+    if !crate::laya::available() || categories.is_empty() {
+        return None;
     }
     let mut sentences = dated_sentences(text, reference);
     sentences.truncate(MAX_ASKED);
     if sentences.is_empty() {
-        return found;
+        return None;
     }
     let texts: Vec<String> = sentences.iter().map(|(_, _, s)| s.clone()).collect();
-    let Some(kinds) = crate::laya::date_kinds(&texts) else { return found };
-    use crate::laya::DateKind;
-    // A date the rules found, but every sentence it is in is clearly about something else.
-    found.retain(|f| {
-        let verdicts: Vec<(DateKind, f64)> =
-            sentences.iter().zip(&kinds).filter(|((d, _, _), _)| *d == f.date).map(|(_, k)| *k).collect();
-        verdicts.is_empty() || !verdicts.iter().all(|(k, p)| *k == DateKind::Other && *p >= 0.9)
-    });
-    for ((date, time, sentence), (kind, p)) in sentences.into_iter().zip(kinds) {
-        let kind = match kind {
-            DateKind::Due => Kind::Due,
-            DateKind::Exam => Kind::Exam,
-            DateKind::Other => continue,
-        };
-        if p < 0.75 || found.iter().any(|f| f.date == date) {
-            continue;
-        }
-        let context: String = sentence.chars().take(CONTEXT * 2).collect();
-        found.push(Found { date, time, context, kind, word: String::new(), title: None, estimated: false, ai: true });
+    let options: Vec<(String, String)> = categories.iter().map(|c| (c.id.clone(), c.about())).collect();
+    let answers = crate::laya::date_categories(&texts, &options)?;
+    Some(sentences.into_iter().zip(answers).map(|((d, t, s), (c, p))| (d, t, s, c, p)).collect())
+}
+
+/// `text` cut after at most `max` characters, at a word, with «…».
+fn shortened(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
     }
-    found
+    let cut: String = text.chars().take(max).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    format!("{}…", cut.trim_end_matches([',', ';', ':', ' ']))
 }
 
 /// A date given relative to when the file came: a weekday («Abgabe: Montag»), «morgen»,
@@ -1260,6 +1436,7 @@ pub fn find(text: &str, reference: NaiveDate) -> Vec<Found> {
                     word: word.clone(),
                     title,
                     estimated: hit.estimated,
+                    category: String::new(),
                 };
                 add(&mut found, f);
             }
@@ -1293,6 +1470,7 @@ pub fn find(text: &str, reference: NaiveDate) -> Vec<Found> {
                 word: String::new(),
                 title,
                 estimated: false,
+                category: String::new(),
             };
             add(&mut found, f);
         }
@@ -1345,6 +1523,32 @@ impl Deadlines {
         if list.finder < FINDER_VERSION {
             list.scanned.clear();
             list.finder = FINDER_VERSION;
+        }
+        // Saved before there were categories, or without a title (found by the AI model in 0.15).
+        let defaults = Category::defaults();
+        for d in &mut list.items {
+            if d.category.is_empty() {
+                let f = Found {
+                    date: NaiveDate::MIN,
+                    time: None,
+                    context: String::new(),
+                    kind: d.kind,
+                    word: String::new(),
+                    title: Some(d.title.clone()),
+                    estimated: false,
+                    ai: false,
+                    category: String::new(),
+                };
+                d.category = category_by_rules(&f, &defaults);
+            }
+            if d.title.trim().is_empty() {
+                d.title = d
+                    .file
+                    .as_deref()
+                    .and_then(Path::file_stem)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "–".into());
+            }
         }
         list
     }
@@ -1403,15 +1607,25 @@ impl Deadlines {
         let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let mut added = 0;
         for f in found {
-            // Named after what the text says is due ("Serie 5"), else after the file.
-            let title = f.title.clone().unwrap_or_else(|| match f.kind {
-                Kind::Due => stem.clone(),
-                Kind::Exam => capitalised(&f.word),
-            });
+            // Named after what the text says is due ("Serie 5"), the exam ("Klausur"), else
+            // after the file.
+            let title = f
+                .title
+                .clone()
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| (!f.word.is_empty()).then(|| capitalised(&f.word)))
+                .unwrap_or_else(|| stem.clone());
             let date = f.date.format("%Y-%m-%d").to_string();
-            // Also not when the user corrected the date of what was found here.
             let known = self.items.iter().any(|d| {
-                d.file.as_deref() == Some(file) && (d.date == date || d.found_date.as_deref() == Some(date.as_str()))
+                // Also not when the user corrected the date of what was found here.
+                let here = d.file.as_deref() == Some(file)
+                    && (d.date == date || d.found_date.as_deref() == Some(date.as_str()));
+                // The same exam or hand-in in another document of the module.
+                let elsewhere = d.module == module
+                    && d.date == date
+                    && d.category == f.category
+                    && (f.kind == Kind::Exam || d.title.eq_ignore_ascii_case(&title));
+                here || elsewhere
             });
             if known {
                 continue;
@@ -1428,6 +1642,7 @@ impl Deadlines {
                 done: false,
                 deleted: false,
                 kind: f.kind,
+                category: f.category,
                 found_date: None,
                 estimated: f.estimated,
                 added: chrono::Utc::now().timestamp(),
@@ -1444,7 +1659,7 @@ impl Deadlines {
         &mut self,
         title: &str,
         module: &str,
-        kind: Kind,
+        category: &Category,
         date: NaiveDate,
         time: Option<NaiveTime>,
     ) -> u64 {
@@ -1459,7 +1674,8 @@ impl Deadlines {
             context: String::new(),
             done: false,
             deleted: false,
-            kind,
+            kind: if category.appointment { Kind::Exam } else { Kind::Due },
+            category: category.id.clone(),
             found_date: None,
             estimated: false,
             added: chrono::Utc::now().timestamp(),
@@ -1504,7 +1720,15 @@ impl Deadlines {
         }
     }
 
-    pub fn edit(&mut self, id: u64, title: &str, module: &str, kind: Kind, date: NaiveDate, time: Option<NaiveTime>) {
+    pub fn edit(
+        &mut self,
+        id: u64,
+        title: &str,
+        module: &str,
+        category: &Category,
+        date: NaiveDate,
+        time: Option<NaiveTime>,
+    ) {
         let Some(d) = self.items.iter_mut().find(|d| d.id == id) else { return };
         let date = date.format("%Y-%m-%d").to_string();
         if d.file.is_some() && d.found_date.is_none() && d.date != date {
@@ -1516,7 +1740,8 @@ impl Deadlines {
         }
         d.title = title.trim().to_string();
         d.module = module.to_string();
-        d.kind = kind;
+        d.kind = if category.appointment { Kind::Exam } else { Kind::Due };
+        d.category = category.id.clone();
         d.date = date;
         d.time = time.map(|t| t.format("%H:%M").to_string());
     }
@@ -1629,6 +1854,82 @@ pub fn ics(deadline: &Deadline, summary: &str, reminder: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cat(id: &str) -> Category {
+        Category::defaults().into_iter().find(|c| c.id == id).unwrap()
+    }
+
+    fn found(date: NaiveDate, kind: Kind, category: &str, title: Option<&str>) -> Found {
+        Found {
+            date,
+            time: None,
+            context: String::new(),
+            kind,
+            word: String::new(),
+            title: title.map(String::from),
+            estimated: false,
+            ai: true,
+            category: category.into(),
+        }
+    }
+
+    #[test]
+    fn every_entry_has_a_title_and_one_exam_is_listed_once() {
+        let mut list = Deadlines::default();
+        let exam = day(2027, 1, 4);
+        // Found by the AI model without a name: named after the file, not left empty.
+        list.add_found(Path::new("/s/Statistik_I.pdf"), 1, "Stats", vec![found(exam, Kind::Exam, "exam", None)]);
+        assert_eq!(list.items[0].title, "Statistik_I");
+        // The same exam in another document of the module: not a second entry.
+        list.add_found(Path::new("/s/Zusammenfassung.pdf"), 1, "Stats", vec![found(exam, Kind::Exam, "exam", None)]);
+        // The same hand-in only when it has the same name.
+        let due = day(2026, 11, 7);
+        let sheet = |t| vec![found(due, Kind::Due, "exercise", Some(t))];
+        list.add_found(Path::new("/s/a.pdf"), 1, "Stats", sheet("Serie 5"));
+        list.add_found(Path::new("/s/b.pdf"), 1, "Stats", sheet("serie 5"));
+        list.add_found(Path::new("/s/c.pdf"), 1, "Stats", sheet("Projekt"));
+        let titles: Vec<&str> = list.items.iter().map(|d| d.title.as_str()).collect();
+        assert_eq!(titles, ["Statistik_I", "Serie 5", "Projekt"]);
+    }
+
+    #[test]
+    fn categories_from_words_and_rules() {
+        let mut categories = Category::defaults();
+        let mut excursion = Category::custom("Exkursion", &categories);
+        excursion.keywords = vec!["exkursion".into(), "field trip".into()];
+        categories.push(excursion);
+        let of = |text: &str| {
+            let f = find_in(text, day(2026, 10, 20), &categories);
+            f.into_iter().map(|f| (f.category, f.kind)).collect::<Vec<_>>()
+        };
+        assert_eq!(of("Abgabe Serie 5: 7.11.2026"), [("exercise".to_string(), Kind::Due)]);
+        assert_eq!(of("Klausur: 20.01.2027, 14:00"), [("exam".to_string(), Kind::Exam)]);
+        assert_eq!(of("Anmeldung zur Prüfung bis 15.11.2026"), [("registration".to_string(), Kind::Due)]);
+        assert_eq!(of("Abgabe der Seminararbeit: 30.11.2026"), [("project".to_string(), Kind::Due)]);
+        // The user's own words come first.
+        assert_eq!(of("Abgabe Exkursionsbericht bis 10.11.2026"), [("c1".to_string(), Kind::Exam)]);
+        // A removed category counts as «other».
+        categories.retain(|c| c.id != "project");
+        assert_eq!(category(&categories, "project").map(|c| c.id.as_str()), Some("other"));
+    }
+
+    #[test]
+    fn old_lists_get_categories_and_titles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(DEADLINES_FILE);
+        let old = r#"{"items": [
+            {"id": 1, "title": "Klausur", "module": "", "file": null, "date": "2027-01-20", "time": null,
+             "context": "", "done": false, "deleted": false, "kind": "exam"},
+            {"id": 2, "title": "Seminararbeit", "module": "", "file": null, "date": "2026-11-30", "time": null,
+             "context": "", "done": false, "deleted": false, "kind": "due"},
+            {"id": 3, "title": "", "module": "", "file": "/s/Statistik_I.pdf", "date": "2027-01-04", "time": null,
+             "context": "", "done": false, "deleted": false, "kind": "exam", "ai": true}
+        ], "scanned": [], "finder": 3, "seen": 0}"#;
+        fs::write(&file, old).unwrap();
+        let list = Deadlines::load(&file);
+        let got: Vec<(&str, &str)> = list.items.iter().map(|d| (d.title.as_str(), d.category.as_str())).collect();
+        assert_eq!(got, [("Klausur", "exam"), ("Seminararbeit", "project"), ("Statistik_I", "exam")]);
+    }
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()
@@ -1857,7 +2158,7 @@ mod tests {
         assert_eq!(list.items[0].title, "Klausur");
         // The user corrects the date: the one read before isn't added again.
         let id = list.items[0].id;
-        list.edit(id, "Klausur Statistik", "Stats", Kind::Exam, day(2027, 1, 21), None);
+        list.edit(id, "Klausur Statistik", "Stats", &cat("exam"), day(2027, 1, 21), None);
         list.forget_scanned();
         assert_eq!(list.add_found(file, 1, "Stats", found), 0);
         assert_eq!(list.items[0].date, "2027-01-21");
@@ -1884,8 +2185,8 @@ mod tests {
         assert_eq!(list.add_found(file, 11, "Prog", found), 0, "deleted stays deleted");
         let now = day(2026, 10, 20).and_hms_opt(12, 0, 0).unwrap();
         assert!(list.upcoming(now, 7, 14).is_empty());
-        list.add_manual("Vortrag", "Stats", Kind::Exam, day(2026, 10, 22), None);
-        list.add_manual("Später", "Stats", Kind::Due, day(2026, 12, 22), None);
+        list.add_manual("Vortrag", "Stats", &cat("exam"), day(2026, 10, 22), None);
+        list.add_manual("Später", "Stats", &cat("exercise"), day(2026, 12, 22), None);
         let soon = list.upcoming(now, 7, 14);
         assert_eq!(soon.iter().map(|d| d.title.as_str()).collect::<Vec<_>>(), ["Vortrag"]);
     }
@@ -1903,7 +2204,7 @@ mod tests {
         list.add_manual(
             "Blatt 3",
             "Informatik › Prog",
-            Kind::Due,
+            &cat("exercise"),
             day(2026, 10, 24),
             NaiveTime::from_hms_opt(23, 59, 0),
         );
@@ -1916,7 +2217,7 @@ mod tests {
     #[test]
     fn recurring_deadlines_move_on_when_done() {
         let mut list = Deadlines::default();
-        let id = list.add_manual("Wochenquiz", "Stats", Kind::Due, day(2026, 10, 23), None);
+        let id = list.add_manual("Wochenquiz", "Stats", &cat("exercise"), day(2026, 10, 23), None);
         list.set_repeat(id, Some(Repeat { every: Every::Week, until: Some("2026-11-06".into()) }));
         let ics_text = ics(&list.items[0], "Wochenquiz", "Morgen");
         assert!(ics_text.contains("RRULE:FREQ=WEEKLY;UNTIL=20261106T235959"), "{ics_text}");
@@ -1929,7 +2230,7 @@ mod tests {
         let series = list.items.iter().find(|d| d.id == id).unwrap();
         assert!(series.done && series.date == "2026-11-06", "after the last date it is done for good");
         // Monthly, without an end.
-        let id = list.add_manual("Bericht", "", Kind::Due, day(2026, 1, 31), None);
+        let id = list.add_manual("Bericht", "", &cat("exercise"), day(2026, 1, 31), None);
         list.set_repeat(id, Some(Repeat { every: Every::Month, until: None }));
         list.complete(id);
         assert_eq!(list.items.iter().find(|d| d.id == id).unwrap().date, "2026-02-28");

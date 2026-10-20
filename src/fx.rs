@@ -370,6 +370,26 @@ pub fn icon_button(ui: &mut egui::Ui, glyph: &str) -> egui::Response {
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A «⋮» button with a menu of the less used actions (glyph, text, whether it destroys
+/// something): returns the one picked.
+pub fn more_menu(ui: &mut egui::Ui, hint: &str, items: &[(&str, &str, bool)]) -> Option<usize> {
+    let p = pal(ui);
+    let button = icon_button(ui, icon::DOTS_THREE_VERTICAL).on_hover_text(hint);
+    let mut picked = None;
+    egui::Popup::menu(&button).show(|ui| {
+        ui.set_min_width(200.0);
+        for (i, (glyph, text, destroys)) in items.iter().enumerate() {
+            let colour = if *destroys { p.error } else { p.on_surface };
+            let text = egui::RichText::new(format!("{glyph}   {text}")).color(colour);
+            if ui.add(egui::Button::selectable(false, text)).clicked() {
+                picked = Some(i);
+                ui.close();
+            }
+        }
+    });
+    picked
+}
+
 /// A Material 3 switch: the thumb grows and shows a check when it is on.
 pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(52.0, 32.0), Sense::click());

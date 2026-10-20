@@ -952,9 +952,6 @@ impl Lang {
     pub fn reopen(self) -> &'static str {
         self.pick("Reopen", "Wieder öffnen")
     }
-    pub fn badge_new(self) -> &'static str {
-        self.pick("new", "neu")
-    }
     pub fn laya_title(self) -> &'static str {
         self.pick("AI model Laya (multilingual)", "KI-Modell Laya (mehrsprachig)")
     }
@@ -1015,10 +1012,10 @@ impl Lang {
     pub fn not_now(self) -> &'static str {
         self.pick("Not now", "Nicht jetzt")
     }
-    pub fn ai_badge(self) -> &'static str {
-        self.pick("AI", "KI")
+    pub fn more_actions(self) -> &'static str {
+        self.pick("More", "Mehr")
     }
-    pub fn ai_badge_hint(self) -> &'static str {
+    pub fn found_by_ai(self) -> &'static str {
         self.pick(
             "Found by the AI model Laya in a sentence the usual rules don't know – check the date.",
             "Vom KI-Modell Laya in einem Satz gefunden, den die üblichen Regeln nicht kennen – prüfe das Datum.",
@@ -1056,21 +1053,68 @@ impl Lang {
             "Im Text steht nur der Wochentag; das ist der nächste nach dem Eingang der Datei. Bitte prüfen.",
         )
     }
-    pub fn due_when(self, days: i64, late: bool, time: Option<&str>) -> String {
+    /// When a deadline is (`appointment`: a date to be there, not one to hand in by).
+    pub fn due_when(self, days: i64, late: bool, time: Option<&str>, appointment: bool) -> String {
         let at = time.map(|t| self.fmt(format!(", {t}"), format!(", {t} Uhr"))).unwrap_or_default();
-        match (late, days) {
-            (true, 0) => self.fmt(format!("was due today{at}"), format!("war heute fällig{at}")),
-            (true, d) => self.fmt(format!("overdue by {} days", -d), format!("seit {} Tagen überfällig", -d)),
-            (false, 0) => self.fmt(format!("due today{at}"), format!("heute fällig{at}")),
-            (false, 1) => self.fmt(format!("due tomorrow{at}"), format!("morgen fällig{at}")),
-            (false, d) => self.fmt(format!("in {d} days{at}"), format!("in {d} Tagen{at}")),
+        match (late, days, appointment) {
+            (true, 0, false) => self.fmt(format!("was due today{at}"), format!("war heute fällig{at}")),
+            (true, 0, true) => self.fmt(format!("was today{at}"), format!("war heute{at}")),
+            (true, d, false) => self.fmt(format!("overdue by {} days", -d), format!("seit {} Tagen überfällig", -d)),
+            (true, d, true) => self.fmt(format!("{} days ago", -d), format!("vor {} Tagen", -d)),
+            (false, 0, false) => self.fmt(format!("due today{at}"), format!("heute fällig{at}")),
+            (false, 0, true) => self.fmt(format!("today{at}"), format!("heute{at}")),
+            (false, 1, false) => self.fmt(format!("due tomorrow{at}"), format!("morgen fällig{at}")),
+            (false, 1, true) => self.fmt(format!("tomorrow{at}"), format!("morgen{at}")),
+            (false, 2, false) => self.fmt(format!("due the day after tomorrow{at}"), format!("übermorgen fällig{at}")),
+            (false, 2, true) => self.fmt(format!("the day after tomorrow{at}"), format!("übermorgen{at}")),
+            (false, d, _) => self.fmt(format!("in {d} days{at}"), format!("in {d} Tagen{at}")),
         }
     }
-    pub fn deadline_kind(self, kind: crate::deadlines::Kind) -> &'static str {
-        match kind {
-            crate::deadlines::Kind::Due => self.pick("Hand-in", "Abgabe"),
-            crate::deadlines::Kind::Exam => self.pick("Exam / date", "Prüfung / Termin"),
+    /// What a category is called (its own name, or the built-in one in this language).
+    pub fn category_name(self, category: &crate::deadlines::Category) -> String {
+        use crate::deadlines::Builtin;
+        if !category.name.trim().is_empty() {
+            return category.name.clone();
         }
+        let name = match category.builtin {
+            Some(Builtin::Exercise) => self.pick("Exercise", "Übung"),
+            Some(Builtin::Exam) => self.pick("Exam", "Prüfung"),
+            Some(Builtin::Project) => self.pick("Project / paper", "Projekt / Arbeit"),
+            Some(Builtin::Registration) => self.pick("Registration", "Anmeldung"),
+            Some(Builtin::Other) => self.pick("Other appointment", "Sonstiger Termin"),
+            None => "–",
+        };
+        name.to_string()
+    }
+    pub fn categories_title(self) -> &'static str {
+        self.pick("Categories", "Kategorien")
+    }
+    pub fn categories_hint(self) -> &'static str {
+        self.pick(
+            "Each deadline and appointment gets one. Words you add put dates whose sentence contains them into that category; the AI model Laya also reads the names.",
+            "Jeder Termin bekommt eine. Stichwörter ordnen Termine zu, in deren Satz sie vorkommen; das KI-Modell Laya liest auch die Namen.",
+        )
+    }
+    pub fn category_words_hint(self) -> &'static str {
+        self.pick("Words, e.g. excursion, field trip", "Stichwörter, z.B. Exkursion, Ausflug")
+    }
+    pub fn category_appointment(self) -> &'static str {
+        self.pick("Be there", "Dabei sein")
+    }
+    pub fn category_appointment_hint(self) -> &'static str {
+        self.pick(
+            "On: a date to be there (like an exam). Off: something to hand in by then.",
+            "An: ein Termin, an dem man da ist (wie eine Prüfung). Aus: etwas, das bis dann abzugeben ist.",
+        )
+    }
+    pub fn category_add(self) -> &'static str {
+        self.pick("Category", "Kategorie")
+    }
+    pub fn category_new_name(self) -> &'static str {
+        self.pick("New category", "Neue Kategorie")
+    }
+    pub fn category_label(self) -> &'static str {
+        self.pick("Category", "Kategorie")
     }
     pub fn save(self) -> &'static str {
         self.pick("Save", "Speichern")

@@ -33,7 +33,8 @@ pub(super) struct NewDeadline {
     title: String,
     module: usize,
     date: String,
-    kind: Kind,
+    /// The id of its category.
+    category: String,
     /// Correcting this entry instead of adding one.
     editing: Option<u64>,
     /// The file it is in (added by hand after «Check a file» found nothing).
@@ -49,7 +50,7 @@ impl NewDeadline {
             title: String::new(),
             module: usize::MAX,
             date: String::new(),
-            kind: Kind::Due,
+            category: deadlines::Builtin::Exercise.id().to_string(),
             editing: None,
             file: None,
             every: None,
@@ -130,6 +131,36 @@ fn badge(ui: &mut egui::Ui, text: &str, fill: egui::Color32, fg: egui::Color32) 
         .inner_margin(Margin::symmetric(6, 0))
         .show(ui, |ui| ui.label(RichText::new(text).small().color(fg)))
         .response
+}
+
+/// The last part of a module's label («Informatik › Programmieren» → «Programmieren»).
+pub(super) fn short_module(label: &str) -> &str {
+    label.rsplit(" › ").next().unwrap_or(label)
+}
+
+/// `text` cut to at most `max` characters, with «…».
+fn shortened(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    format!("{}…", text.chars().take(max - 1).collect::<String>().trim_end())
+}
+
+/// The colour of a deadline category: the built-in ones their own, others by their place.
+fn category_colour(p: &fx::Palette, categories: &[deadlines::Category], id: &str) -> egui::Color32 {
+    use deadlines::Builtin;
+    let Some(c) = deadlines::category(categories, id) else { return p.on_surface_variant };
+    match c.builtin {
+        Some(Builtin::Exercise) => p.primary,
+        Some(Builtin::Exam) => p.error,
+        Some(Builtin::Project) => p.success,
+        Some(Builtin::Registration) => p.warning,
+        Some(Builtin::Other) => p.on_surface_variant,
+        None => {
+            let place = categories.iter().position(|o| o.id == c.id).unwrap_or(0);
+            [p.primary, p.success, p.warning, p.error][place % 4]
+        }
+    }
 }
 
 pub(super) struct Study {
@@ -303,9 +334,13 @@ impl App {
         for d in due {
             let Some(at) = d.due() else { continue };
             let days = (at.date() - Local::now().date_naive()).num_days();
-            let when = lang.due_when(days, false, d.time.as_deref());
-            let title = format!("{}: {}", lang.deadline_kind(d.kind), d.title);
-            let module = d.module.rsplit(" › ").next().unwrap_or(&d.module).to_string();
+            let when = lang.due_when(days, false, d.time.as_deref(), d.kind == Kind::Exam);
+            let category = deadlines::category(&self.config.features.deadline_categories, &d.category);
+            let title = match category {
+                Some(c) => format!("{}: {}", lang.category_name(c), d.title),
+                None => d.title.clone(),
+            };
+            let module = short_module(&d.module).to_string();
             let body = if module.is_empty() { when.clone() } else { format!("{module} · {when}") };
             crate::reminders::notify(&title, &body);
             self.note(super::Note::Reminder { title, details: body });
@@ -423,10 +458,11 @@ impl App {
         }
         let tx = self.study.scan_tx.clone();
         let ctx = self.ctx.clone();
+        let categories = self.config.features.deadline_categories.clone();
         std::thread::spawn(move || {
             // Just downloaded: dates without a year are the next ones from today.
-            let found =
-                deadlines::find_with_ai(&crate::extract::first_pages(&file, SCAN_PAGES), Local::now().date_naive());
+            let text = crate::extract::first_pages(&file, SCAN_PAGES);
+            let found = deadlines::find_in(&text, Local::now().date_naive(), &categories);
             let _ = tx.send(Scanned { file, size: meta.len(), module, found });
             ctx.request_repaint();
         });
@@ -456,6 +492,7 @@ impl App {
         let folders: Vec<(PathBuf, String)> =
             self.config.courses.iter().map(|c| (self.config.course_folder(c), c.label())).collect();
         let (tx, ctx, flag) = (self.study.scan_tx.clone(), self.ctx.clone(), self.study.scanning.clone());
+        let categories = self.config.features.deadline_categories.clone();
         flag.store(true, Ordering::Relaxed);
         std::thread::spawn(move || {
             for (file, size, modified, text) in docs {
@@ -467,7 +504,7 @@ impl App {
                 let reference = DateTime::from_timestamp(modified, 0)
                     .map(|t| t.with_timezone(&Local).date_naive())
                     .unwrap_or_else(|| Local::now().date_naive());
-                let found = deadlines::find_with_ai(&text, reference);
+                let found = deadlines::find_in(&text, reference, &categories);
                 if tx.send(Scanned { file, size, module, found }).is_err() {
                     break;
                 }
@@ -689,7 +726,7 @@ impl App {
                 let response = fx::card(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(icon::NOTE_PENCIL).size(18.0).color(p.primary));
-                        let short = module.rsplit(" › ").next().unwrap_or(module);
+                        let short = short_module(module);
                         ui.label(fx::title(lang.note_hit(short), 15.0).color(p.on_surface));
                     });
                     ui.add(egui::Label::new(RichText::new(passage).color(p.on_surface_variant)).wrap());
@@ -828,8 +865,10 @@ impl App {
         let Some(file) = dialog.pick_file() else { return };
         let (tx, rx) = channel();
         let ctx = self.ctx.clone();
+        let categories = self.config.features.deadline_categories.clone();
         std::thread::spawn(move || {
-            let found = deadlines::find_with_ai(&crate::extract::first_pages(&file, SCAN_PAGES), reference_date(&file));
+            let text = crate::extract::first_pages(&file, SCAN_PAGES);
+            let found = deadlines::find_in(&text, reference_date(&file), &categories);
             let _ = tx.send((file, found));
             ctx.request_repaint();
         });
@@ -1074,11 +1113,7 @@ impl App {
                 let dots = due.len().min(4);
                 for (k, d) in due.iter().take(dots).enumerate() {
                     let x = rect.center().x + (k as f32 - (dots as f32 - 1.0) / 2.0) * 10.0;
-                    let color = match d.kind {
-                        Kind::Exam => p.error,
-                        Kind::Due if day <= today + chrono::Duration::days(2) => p.warning,
-                        Kind::Due => p.primary,
-                    };
+                    let color = category_colour(&p, &self.config.features.deadline_categories, &d.category);
                     painter.circle_filled(egui::pos2(x, rect.bottom() - 11.0), 3.5, color);
                 }
                 if !due.is_empty() {
@@ -1124,64 +1159,82 @@ impl App {
                 fg,
             );
             ui.add_space(6.0);
+            let categories = &self.config.features.deadline_categories;
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
+                    // New since the last visit: a small dot.
+                    if d.added > self.study.new_since && self.study.new_since > 0 {
+                        let (rect, _) = ui.allocate_exact_size(vec2(7.0, 7.0), Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 3.5, p.primary);
+                    }
                     let title = ui.label(fx::title(&d.title, 15.0).color(p.on_surface));
                     // Where it was found, to check it was read right.
                     if !d.context.is_empty() {
-                        title.on_hover_text(format!("«{}»", d.context));
-                    }
-                    if d.added > self.study.new_since && self.study.new_since > 0 {
-                        badge(ui, lang.badge_new(), p.primary, p.on_primary);
+                        let ai = if d.ai { format!("\n\n{}", lang.found_by_ai()) } else { String::new() };
+                        title.on_hover_text(format!("«{}»{ai}", d.context));
                     }
                     if d.estimated {
                         badge(ui, lang.estimated(), p.warning_container, p.on_warning_container)
                             .on_hover_text(lang.estimated_hint());
                     }
-                    if d.ai {
-                        badge(ui, lang.ai_badge(), p.primary_container, p.on_primary_container)
-                            .on_hover_text(lang.ai_badge_hint());
+                });
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let small = |text: String, colour| RichText::new(text).small().color(colour);
+                    let category = deadlines::category(categories, &d.category);
+                    if let Some(c) = category {
+                        let colour = category_colour(&p, categories, &c.id);
+                        ui.label(small(lang.category_name(c), colour).strong());
+                    }
+                    let mut rest = vec![lang.due_when(days, late, d.time.as_deref(), d.kind == Kind::Exam)];
+                    if !d.module.is_empty() {
+                        rest.push(short_module(&d.module).to_string());
                     }
                     if let Some(repeat) = &d.repeat {
-                        let text = format!("{} {}", icon::REPEAT, lang.repeat_every(repeat.every));
-                        let until =
-                            repeat.until_day().map(|u| lang.repeat_until_day(&u.format("%d.%m.%Y").to_string()));
-                        let chip = badge(ui, &text, p.secondary_container, p.on_secondary_container);
-                        if let Some(until) = until {
-                            chip.on_hover_text(until);
+                        rest.push(format!("{} {}", icon::REPEAT, lang.repeat_every(repeat.every)));
+                    }
+                    let rest = rest.join(" · ");
+                    let line = if category.is_some() { format!(" · {rest}") } else { rest };
+                    let line = ui.label(small(line, if late { p.error } else { p.on_surface_variant }));
+                    if let Some(until) = d.repeat.as_ref().and_then(Repeat::until_day) {
+                        line.on_hover_text(lang.repeat_until_day(&until.format("%d.%m.%Y").to_string()));
+                    }
+                    // The document it is from, to open it right away.
+                    if let Some(file) = &d.file {
+                        let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        ui.label(small(" · ".into(), p.on_surface_variant));
+                        let link =
+                            egui::Label::new(small(format!("{} {}", icon::FILE_TEXT, shortened(&name, 40)), p.primary))
+                                .sense(Sense::click());
+                        let link = ui.add(link).on_hover_text(format!("{}\n{}", lang.open_file(), file.display()));
+                        if link.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            crate::desktop::open(file);
                         }
                     }
                 });
-                let when = lang.due_when(days, late, d.time.as_deref());
-                let kind = lang.deadline_kind(d.kind);
-                let line = if d.module.is_empty() {
-                    format!("{kind} · {when}")
-                } else {
-                    let short = d.module.rsplit(" › ").next().unwrap_or(&d.module);
-                    format!("{kind} · {when} · {short}")
-                };
-                ui.label(RichText::new(line).small().color(if late { p.error } else { p.on_surface_variant }));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if fx::icon_button(ui, icon::TRASH).on_hover_text(lang.delete()).clicked() {
-                    change = Some((d.id, "delete"));
+                let mut items = vec![
+                    (icon::PENCIL_SIMPLE, lang.correct(), false),
+                    (icon::CALENDAR_PLUS, lang.to_calendar(), false),
+                ];
+                if d.file.is_some() {
+                    items.push((icon::FOLDER_OPEN, lang.show_in_folder(), false));
                 }
-                if fx::icon_button(ui, icon::CALENDAR_PLUS).on_hover_text(lang.to_calendar()).clicked() {
-                    change = Some((d.id, "calendar"));
-                }
-                if fx::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(lang.correct()).clicked() {
-                    change = Some((d.id, "edit"));
-                }
-                if let Some(file) = &d.file {
-                    if fx::icon_button(ui, icon::FOLDER_OPEN).on_hover_text(lang.show_in_folder()).clicked() {
-                        crate::desktop::reveal(file);
+                items.push((icon::TRASH, lang.delete(), true));
+                match fx::more_menu(ui, lang.more_actions(), &items).map(|i| items[i].0) {
+                    Some(icon::PENCIL_SIMPLE) => change = Some((d.id, "edit")),
+                    Some(icon::CALENDAR_PLUS) => change = Some((d.id, "calendar")),
+                    Some(icon::FOLDER_OPEN) => {
+                        if let Some(file) = &d.file {
+                            crate::desktop::reveal(file);
+                        }
                     }
-                    if fx::icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(lang.open_file()).clicked() {
-                        crate::desktop::open(file);
-                    }
+                    Some(icon::TRASH) => change = Some((d.id, "delete")),
+                    _ => {}
                 }
                 ui.add_space(4.0);
                 if fx::button(ui, ButtonStyle::Tonal, icon::CHECK, lang.done()).clicked() {
@@ -1205,7 +1258,7 @@ impl App {
                     title: d.title.clone(),
                     module,
                     date,
-                    kind: d.kind,
+                    category: d.category.clone(),
                     editing: Some(id),
                     file: None,
                     every: d.repeat.as_ref().map(|r| r.every),
@@ -1220,7 +1273,7 @@ impl App {
                 let summary = if d.module.is_empty() {
                     lang.deadline_summary(&d.title, "")
                 } else {
-                    let short = d.module.rsplit(" › ").next().unwrap_or(&d.module).to_string();
+                    let short = short_module(&d.module).to_string();
                     lang.deadline_summary(&d.title, &short)
                 };
                 let text = deadlines::ics(d, &summary, lang.reminder_tomorrow());
@@ -1239,6 +1292,7 @@ impl App {
     fn deadline_dialog(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
         let Some(new) = &mut self.study.new_deadline else { return };
+        let categories = &self.config.features.deadline_categories;
         let modules: Vec<String> = self.config.courses.iter().map(|c| c.label()).collect();
         let today = Local::now().date_naive();
         let parsed = deadlines::parse_typed(&new.date, today);
@@ -1251,11 +1305,15 @@ impl App {
             let title = if new.editing.is_some() { lang.correct() } else { lang.add_deadline() };
             ui.label(fx::title(title, 22.0).color(p.on_surface));
             ui.add_space(12.0);
-            let kinds = [
-                (Kind::Due, lang.deadline_kind(Kind::Due).to_string()),
-                (Kind::Exam, lang.deadline_kind(Kind::Exam).to_string()),
-            ];
-            fx::segmented(ui, "deadline-kind", &mut new.kind, &kinds);
+            ui.label(RichText::new(lang.category_label()).small().color(p.on_surface_variant));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                for c in categories {
+                    if fx::chip(ui, new.category == c.id, &lang.category_name(c)).clicked() {
+                        new.category = c.id.clone();
+                    }
+                }
+            });
             ui.add_space(8.0);
             ui.label(RichText::new(lang.what_is_due()).small().color(p.on_surface_variant));
             ui.add(
@@ -1321,15 +1379,18 @@ impl App {
                 }
             });
         });
-        if add && let Some((date, time)) = parsed {
+        if add
+            && let Some((date, time)) = parsed
+            && let Some(category) = deadlines::category(categories, &new.category)
+        {
             let module = modules.get(new.module).cloned().unwrap_or_default();
             let id = match new.editing {
                 Some(id) => {
-                    self.study.deadlines.edit(id, &new.title, &module, new.kind, date, time);
+                    self.study.deadlines.edit(id, &new.title, &module, category, date, time);
                     id
                 }
                 None => {
-                    let id = self.study.deadlines.add_manual(&new.title, &module, new.kind, date, time);
+                    let id = self.study.deadlines.add_manual(&new.title, &module, category, date, time);
                     if let Some(item) = self.study.deadlines.items.iter_mut().find(|d| d.id == id) {
                         item.file = new.file.clone();
                     }

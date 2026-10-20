@@ -334,11 +334,20 @@ fn laya_command(args: &Args) -> ExitCode {
             "L'examen final aura lieu le 20 janvier 2027 en salle B12.".to_string(),
             "Version du 3 octobre 2026.".to_string(),
         ];
-        let kinds = laya::date_kinds(&sentences);
+        let categories = deadlines::Category::defaults();
+        let options: Vec<(String, String)> = categories.iter().map(|c| (c.id.clone(), c.about())).collect();
+        let kinds = laya::date_categories(&sentences, &options);
         log::info!("Laya: French date sentences → {kinds:?}");
+        let subfolders = categories::subfolder_options(&config::Subfolder::defaults(), &[]);
+        let sheet = "Analysis I, Herbstsemester 2026. Blatt 4. Aufgabe 1: Zeigen Sie, dass die Folge konvergiert. \
+                     Aufgabe 2: Bestimmen Sie den Grenzwert.";
+        let subfolder = laya::subfolder_for("scan_0042.pdf", sheet, &subfolders);
+        log::info!("Laya: scan_0042.pdf (an exercise sheet) → {subfolder:?}");
         let module_ok = module.is_some_and(|(m, _)| m == "Statistik");
-        let kinds_ok = kinds.is_some_and(|k| k[0].0 == laya::DateKind::Due && k[1].0 == laya::DateKind::Exam);
-        if !(module_ok && kinds_ok) {
+        let kinds_ok =
+            kinds.is_some_and(|k| k[0].0.as_deref() == Some("exercise") && k[1].0.as_deref() == Some("exam"));
+        let subfolder_ok = subfolder.is_some_and(|(f, _)| f == "Übungen");
+        if !(module_ok && kinds_ok && subfolder_ok) {
             log::error!("Laya's answers were not as expected");
             return ExitCode::FAILURE;
         }

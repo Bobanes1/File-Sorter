@@ -484,7 +484,7 @@ pub(crate) fn activity_row(
                                     if let Outcome::Left(LeftReason::Unsure { candidates }) = &result.outcome {
                                         for label in candidates.iter().rev() {
                                             let Some(i) = modules.iter().position(|m| m == label) else { continue };
-                                            let short = label.rsplit(" › ").next().unwrap_or(label);
+                                            let short = super::study::short_module(label);
                                             let button = fx::button(ui, ButtonStyle::Tonal, icon::ARROW_RIGHT, short);
                                             if button.on_hover_text(lang.move_to(label)).clicked() {
                                                 action = RowAction::Assign(i);

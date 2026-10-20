@@ -1,4 +1,5 @@
-//! Look for a new version of File Sorter on GitHub and, on Windows, install it.
+//! Look for a new version of File Sorter on GitHub and install it: on Windows, and on
+//! Linux when running as an AppImage (the AppImage file is replaced).
 //!
 //! The release is read with the system's `curl` (part of Windows 10 and 11), so File
 //! Sorter needs no network code of its own. A new exe is only used if its size and its
@@ -20,6 +21,23 @@ const LATEST: &str = "https://api.github.com/repos/Bobanes1/File-Sorter/releases
 const ASSET: &str = "FileSorter.exe";
 #[cfg(not(windows))]
 const ASSET: &str = "FileSorter-linux-x86_64.tar.gz";
+#[cfg_attr(windows, allow(dead_code))]
+const APPIMAGE_ASSET: &str = "FileSorter-x86_64.AppImage";
+
+/// Running as an AppImage (Linux), which can replace itself.
+fn appimage() -> bool {
+    cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some_and(|a| !a.is_empty())
+}
+
+/// The release file for this system.
+fn asset() -> &'static str {
+    if appimage() { APPIMAGE_ASSET } else { ASSET }
+}
+
+/// Whether an update can be installed here (else the release page is shown).
+pub fn can_install() -> bool {
+    cfg!(windows) || appimage()
+}
 /// Name of the previous exe after an update, removed at the next start.
 const OLD_EXE: &str = "FileSorter.old.exe";
 /// The new exe while it is put next to the running one.
@@ -87,7 +105,7 @@ fn parse_release(json: &str) -> Result<Release, String> {
     if api.draft || api.prerelease {
         return Err("no published release".into());
     }
-    let download = api.assets.into_iter().find(|a| a.name.eq_ignore_ascii_case(ASSET)).and_then(|a| {
+    let download = api.assets.into_iter().find(|a| a.name.eq_ignore_ascii_case(asset())).and_then(|a| {
         let sha256 = a.digest?.strip_prefix("sha256:")?.to_lowercase();
         (sha256.len() == 64).then_some(Download { url: a.browser_download_url, size: a.size, sha256 })
     });
@@ -151,9 +169,9 @@ fn verified(file: &Path, download: &Download) -> Result<(), String> {
 
 /// Download the new exe into `dir` and check it. Returns where it is.
 pub fn download(release: &Release, dir: &Path) -> Result<PathBuf, String> {
-    let download = release.download.as_ref().ok_or("this release has no FileSorter.exe with a checksum")?;
+    let download = release.download.as_ref().ok_or("this release has no download with a checksum")?;
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let file = dir.join(format!("FileSorter-{}.exe.part", release.version));
+    let file = dir.join(format!("FileSorter-{}.download.part", release.version));
     let _ = fs::remove_file(&file);
     let status = curl()
         .args(["--max-time", "600", "-H", "User-Agent: File-Sorter", "--output"])
@@ -197,17 +215,22 @@ pub fn swap(new: &Path, current: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Download, check and install `release` (Windows). Afterwards the next start runs it.
+/// Download, check and install `release` (Windows, AppImage). Afterwards the next start runs it.
 pub fn install(release: &Release, state_dir: &Path) -> Result<(), String> {
-    if !cfg!(windows) {
-        return Err("installing is only done on Windows".into());
+    if !can_install() {
+        return Err("installing is only done on Windows and for the AppImage".into());
     }
-    let current = std::env::current_exe().map_err(|e| e.to_string())?;
+    let current = crate::desktop::program_file().map_err(|e| e.to_string())?;
     let downloaded = download(release, state_dir)?;
     // Next to the program (maybe on another drive), checked again, then swapped by renaming.
     let new = current.with_file_name(NEW_EXE);
     let placed = fs::copy(&downloaded, &new).map_err(|e| format!("can't write next to the program ({e})"));
     let _ = fs::remove_file(&downloaded);
+    #[cfg(unix)]
+    let placed = placed.and_then(|n| {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&new, fs::Permissions::from_mode(0o755)).map(|_| n).map_err(|e| e.to_string())
+    });
     let result = placed
         .and_then(|_| verified(&new, release.download.as_ref().ok_or("no download")?))
         .and_then(|_| swap(&new, &current));
@@ -217,7 +240,7 @@ pub fn install(release: &Release, state_dir: &Path) -> Result<(), String> {
 
 /// Start the (new) exe again with the same arguments; it waits until this process is gone.
 pub fn restart() -> std::io::Result<()> {
-    let exe = std::env::current_exe()?;
+    let exe = crate::desktop::program_file()?;
     let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--autostart").collect();
     Command::new(exe).args(args).arg("--wait-for").arg(std::process::id().to_string()).spawn().map(drop)
 }
@@ -246,7 +269,7 @@ pub fn wait_for(pid: u32) {
 
 /// Remove the exe left over from the last update.
 pub fn clean_up() {
-    if let Ok(current) = std::env::current_exe() {
+    if let Ok(current) = crate::desktop::program_file() {
         let old = current.with_file_name(OLD_EXE);
         if old.exists() && old != current {
             let _ = fs::remove_file(old);
@@ -275,7 +298,7 @@ mod tests {
             "assets":[{"name":"ASSET","browser_download_url":"https://x/ASSET","size":5,
             "digest":"sha256:2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824"},
             {"name":"other.zip","browser_download_url":"https://x/other.zip","size":9}]}"#
-            .replace("ASSET", ASSET);
+            .replace("ASSET", asset());
         let json = json.as_str();
         let release = parse_release(json).unwrap();
         assert_eq!(release.version, "0.10");
@@ -283,7 +306,7 @@ mod tests {
         assert_eq!(download.sha256, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
         let without =
             r#"{"tag_name":"v0.10","html_url":"u","assets":[{"name":"ASSET","browser_download_url":"x","size":5}]}"#
-                .replace("ASSET", ASSET);
+                .replace("ASSET", asset());
         assert_eq!(parse_release(&without).unwrap().download, None, "no checksum, no install");
         assert!(parse_release(r#"{"tag_name":"v1","html_url":"u","prerelease":true}"#).is_err());
 

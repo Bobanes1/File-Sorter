@@ -47,7 +47,7 @@ impl App {
                 Message::Checked(Ok(Some(release))) => {
                     log::info!("File Sorter {} is available", release.version);
                     let auto = self.config.features.update_install == UpdateMode::Auto;
-                    if auto && cfg!(windows) && release.download.is_some() {
+                    if auto && crate::update::can_install() && release.download.is_some() {
                         self.start_install(release, false);
                     } else {
                         self.update.available = Some(release);
@@ -171,7 +171,7 @@ impl App {
                                     if fx::button(ui, ButtonStyle::Text, "", lang.whats_new()).clicked() {
                                         crate::desktop::open_url(&release.page);
                                     }
-                                    if cfg!(windows)
+                                    if crate::update::can_install()
                                         && release.download.is_some()
                                         && fx::button(ui, ButtonStyle::Filled, "", lang.update_now()).clicked()
                                     {

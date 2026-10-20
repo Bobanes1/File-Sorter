@@ -20,6 +20,15 @@ pub fn autostart_command(exe: &Path) -> String {
     format!("\"{}\" --autostart", exe.display())
 }
 
+/// The program file to start File Sorter by: the AppImage when running from one (its inside
+/// is mounted somewhere new at every start), else this executable.
+pub fn program_file() -> io::Result<PathBuf> {
+    match std::env::var_os("APPIMAGE") {
+        Some(image) if !image.is_empty() && cfg!(target_os = "linux") => Ok(PathBuf::from(image)),
+        _ => std::env::current_exe(),
+    }
+}
+
 /// Where Windows keeps the programs that start at sign-in, and our entry's name.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -176,7 +185,7 @@ pub fn set_autostart(enabled: bool) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         let file = linux_autostart_file().ok_or_else(|| io::Error::other("no config folder"))?;
-        set_linux_autostart(&file, &std::env::current_exe()?, enabled)
+        set_linux_autostart(&file, &program_file()?, enabled)
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {

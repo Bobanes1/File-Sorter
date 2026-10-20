@@ -507,7 +507,8 @@ jobs:
             **Windows:** download **FileSorter.exe** below and double-click it – nothing else to install.
             Windows SmartScreen may warn because the exe isn't signed: click *More info → Run anyway*.
 
-            **Linux:** download **FileSorter-linux-x86_64.tar.gz**, unpack it and run `./file-sorter`
+            **Linux:** download **FileSorter-x86_64.AppImage**, make it executable and start it
+            (it updates itself), or **FileSorter-linux-x86_64.tar.gz** to unpack and run `./file-sorter`
             (see the README for the menu entry and text recognition with tesseract).
 
             See the README for setup and autostart instructions.
@@ -545,6 +546,45 @@ jobs:
           tar -C dist -czf dist/FileSorter-linux-x86_64.tar.gz FileSorter
           ls -la dist
 
+      - name: Build the AppImage
+        run: scripts/build-appimage.sh target/release/file-sorter dist
+
+      - name: Smoke-test the AppImage (sort once)
+        run: |
+          root=$RUNNER_TEMP/appimage
+          mkdir -p "$root/Downloads"
+          cp tests/fixtures/programming.pptx "$root/Downloads/week1.pptx"
+          cat > "$root/config.json" <<JSON
+          {"watch_folder": "$root/Downloads", "destination_root": "$root/Studium",
+           "courses": [{"name": "Programmierung 1", "subject": "Informatik", "keywords": ["programming"]}]}
+          JSON
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/FileSorter-x86_64.AppImage --sort-now --config "$root/config.json"
+          test -f "$root/Studium/Informatik/Programmierung 1/week1.pptx"
+          echo "the AppImage sorts"
+
+      - name: Smoke-test the right-click entry (Files/Nautilus script)
+        run: |
+          root=$RUNNER_TEMP/rightclick
+          mkdir -p "$root/home" "$root/bin" "$root/Downloads"
+          # A file manager «installed» (only its name on PATH matters).
+          printf '#!/bin/sh\n' > "$root/bin/nautilus"; chmod +x "$root/bin/nautilus"
+          cp tests/fixtures/programming.pptx "$root/Downloads/lecture one.pptx"
+          export HOME="$root/home" XDG_DATA_HOME="$root/home/.local/share" XDG_CONFIG_HOME="$root/home/.config"
+          # The settings where the entry's File Sorter looks for them.
+          mkdir -p "$XDG_CONFIG_HOME/file-sorter"
+          cat > "$XDG_CONFIG_HOME/file-sorter/config.json" <<JSON
+          {"watch_folder": "$root/Downloads", "destination_root": "$root/Studium", "results_window": false,
+           "courses": [{"name": "Programmierung 1", "subject": "Informatik", "keywords": ["programming"]}]}
+          JSON
+          PATH="$root/bin:$PATH" dist/FileSorter/file-sorter --register-menu
+          script=$(ls "$XDG_DATA_HOME/nautilus/scripts/"*)
+          cat "$script"
+          test -f "$XDG_DATA_HOME/applications/file-sorter-sort.desktop"
+          # What Files does when the entry is clicked: the chosen files in an environment variable.
+          NAUTILUS_SCRIPT_SELECTED_FILE_PATHS="$root/Downloads/lecture one.pptx" "$script"
+          test -f "$root/Studium/Informatik/Programmierung 1/lecture one.pptx"
+          echo "right-click sorting works on Linux"
+
       - name: Smoke-test sorting and text recognition
         run: |
           root=$RUNNER_TEMP/smoke
@@ -574,7 +614,9 @@ jobs:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           name: File Sorter ${{ inputs.release_tag || github.ref_name }}
-          files: dist/FileSorter-linux-x86_64.tar.gz
+          files: |
+            dist/FileSorter-linux-x86_64.tar.gz
+            dist/FileSorter-x86_64.AppImage
           body: |
             **Windows:** download **FileSorter.exe** below and double-click it – nothing else to install.
             Windows SmartScreen may warn because the exe isn't signed: click *More info → Run anyway*.

@@ -9,15 +9,6 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The program the entries start: the AppImage when running from one (its inside is
-/// mounted somewhere new at every start), else this executable.
-fn program() -> io::Result<PathBuf> {
-    match std::env::var_os("APPIMAGE") {
-        Some(image) if !image.is_empty() => Ok(PathBuf::from(image)),
-        _ => std::env::current_exe(),
-    }
-}
-
 /// Where each kind of entry goes.
 #[derive(Debug, Clone)]
 pub struct Places {
@@ -138,7 +129,7 @@ application/x-ipynb+json;image/png;image/jpeg;inode/directory;";
 /// Add (or refresh) the entries for `label`, removing ones made for an earlier label.
 pub fn register(places: &Places, label: &str) -> io::Result<()> {
     unregister(places)?;
-    let program = program()?;
+    let program = crate::desktop::program_file()?;
     let exec = format!("{} --sort %F", exec_quoted(&program));
     let has = |m: &str| places.installed.contains(&m);
     if has("nautilus") {

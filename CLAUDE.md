@@ -34,8 +34,10 @@ Test fixtures in `tests/fixtures/` are binary (`.gitattributes`); don't let them
 
 **Sort pipeline.** `watcher.rs` (notify + 10 s rescan, waits for `.crdownload`/`.part`/Firefox
 placeholders to finish) → `sorter::sort_file*` → `choose_course` decides the module, in order:
-0. `laya.rs` (opt-in `features.laya`): the downloaded Laya model (candle port of its ModernBERT + decision
-   head, files pinned by revision + SHA-256 in `state_dir/laya/`); only when clearly sure, else on to 1.
+0. `laya.rs` (opt-in `features.laya`): the downloaded laya-uni model (candle port of Laya's ModernBERT +
+   decision head; release assets of NilsBriggen/laya-uni pinned by SHA-256, kept in `state_dir/laya-uni/`);
+   only when clearly sure, else on to 1. Training rows come from `--laya-rows` (`laya_rows.rs`), and the
+   data, scripts and evaluation live in `training/laya-uni/`.
 1. `matcher::decide`: keyword/module-name scoring on the file name, then on extracted text
    (`extract.rs`, `ocr.rs` for scans). Returns Clear / Unsure (within `UNSURE_MARGIN`) / Nothing.
 2. `classifier.rs` (naive Bayes over module folders, `module-model.json`), only when sure.

@@ -1435,8 +1435,8 @@ impl Lang {
         use crate::laya::Status;
         let mb = crate::laya::total_size() / 1_000_000;
         let about = self.fmt(
-            format!("Reads a file's name and text with a language model that runs on this computer, instead of only counting keywords. Downloads {mb} MB once and needs about 1.3 GB of memory; the keywords decide while it isn't sure. Not trained on course files, so it may guess poorly."),
-            format!("Liest Name und Text einer Datei mit einem Sprachmodell, das auf diesem Computer läuft, statt nur Stichwörter zu zählen. Lädt einmal {mb} MB herunter und braucht etwa 1,3 GB Arbeitsspeicher; solange es unsicher ist, entscheiden die Stichwörter. Nicht auf Kursdateien trainiert, kann also danebenliegen."),
+            format!("Reads a file's name and text with a language model that runs on this computer, instead of only counting keywords. Downloads {mb} MB once and needs about 1.3 GB of memory; the keywords decide while it isn't sure. Trained on course files of all faculties; it sorts only when clearly sure."),
+            format!("Liest Name und Text einer Datei mit einem Sprachmodell, das auf diesem Computer läuft, statt nur Stichwörter zu zählen. Lädt einmal {mb} MB herunter und braucht etwa 1,3 GB Arbeitsspeicher; solange es unsicher ist, entscheiden die Stichwörter. Auf Kursdateien aller Fakultäten trainiert; es sortiert nur, wenn es klar sicher ist."),
         );
         let state = match status {
             Status::Missing => return about,

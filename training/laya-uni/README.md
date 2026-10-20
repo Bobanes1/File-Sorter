@@ -75,8 +75,8 @@ bucket (else its choice temperature), without the [0.5, 5] clamp laya's own runt
 
 ## 5. Publish
 
-1. Upload the four files in `dist/` as assets of a release tagged `laya-uni-1` on bobanes1/file-sorter.
-2. Paste `dist/FILES.rs` over `FILES` in `src/laya.rs` and point the download at the release.
+1. Upload the four files in `dist/` as assets of a new release of [NilsBriggen/laya-uni](https://github.com/NilsBriggen/laya-uni) (`laya-uni-1` is the first), and update its README's numbers.
+2. Put the files' sizes and SHA-256s from `dist/FILES.rs` into `FILES` in `src/laya.rs` and point `RELEASE` at the new release.
 3. Set `MIN_PROBABILITY` / `MIN_LEAD` to the recommended ones.
 
 `pack.py` writes `tokenizer.json` without the 48-token truncation the saved tokenizer carries from
@@ -110,3 +110,18 @@ python3 smoke_rows.py smoke && DATA=smoke TORCH_INDEX=https://download.pytorch.o
 About two minutes after the install. It only shows that everything runs: the 40 rows are made up
 and the validation rows are also in training. laya warns that the calibration rests on 4 items and
 that the question differs between rows; both are expected (every file has its own options).
+
+## laya-uni-1 (October 2026)
+
+Trained on an RTX 4090 in about 20 minutes on 3,789 rows (`results/report*`, not in git). The model is
+published as [laya-uni-1](https://github.com/NilsBriggen/laya-uni/releases/tag/laya-uni-1).
+
+| | base | laya-uni |
+|---|---|---|
+| unseen programs: right module first | 57.5 % | 81.8 % |
+| unseen programs: precision at 0.6 / 2.0 | 77.6 % | 93.2 % |
+| real OER PDFs: right module first | 59.6 % | 78.8 % |
+| real OER PDFs: precision at 0.6 / 2.0 | 75.9 % | 94.7 % |
+
+The app uses 0.7 / 2.0 (on validation: 76 % sorted at 96.5 % precision). Weak spots are formula-heavy
+maths PDFs (no gain on 15 real files) and French (only 16 test files).

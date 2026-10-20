@@ -140,6 +140,9 @@ pub fn category<'a>(categories: &'a [Category], id: &str) -> Option<&'a Category
         .or(categories.first())
 }
 
+/// Word beginnings saying a date is an exam (folded), in the languages dates are read in.
+const EXAM_WORDS: &[&str] =
+    &["klausur", "prufung", "pruefung", "exam", "esame", "examen", "test", "quiz", "midterm", "endterm", "testat"];
 /// Words saying a date is a registration deadline (folded).
 const REGISTRATION_WORDS: &[&str] = &["anmeld", "registr", "einschreib", "sign up", "signup", "inscri", "iscriz"];
 
@@ -160,7 +163,9 @@ fn category_by_rules(f: &Found, categories: &[Category]) -> Option<String> {
     let title: Vec<&str> = title.split(' ').collect();
     let builtin = if REGISTRATION_WORDS.iter().any(|w| text.contains(w)) {
         Builtin::Registration
-    } else if f.kind == Kind::Exam && !f.word.is_empty() {
+    } else if f.kind == Kind::Exam
+        && (!f.word.is_empty() || words.iter().any(|w| EXAM_WORDS.iter().any(|e| w.starts_with(e))))
+    {
         Builtin::Exam
     } else if title.iter().any(|w| WORKS.iter().any(|work| w.starts_with(work))) {
         Builtin::Project
@@ -1938,6 +1943,14 @@ mod tests {
         assert_eq!(of("Abgabe der Seminararbeit: 30.11.2026"), [("project".to_string(), Kind::Due)]);
         // The user's own words come first.
         assert_eq!(of("Abgabe Exkursionsbericht bis 10.11.2026"), [("c1".to_string(), Kind::Exam)]);
+        // Found by the AI model as an appointment: an exam by its word in any language, else asked.
+        let mut f = found(day(2027, 1, 20), Kind::Exam, "", None);
+        f.context = "L'examen final aura lieu le 20 janvier 2027 en salle B12.".into();
+        assert_eq!(category_by_rules(&f, &categories).as_deref(), Some("exam"));
+        f.context = "Exkursion ins Museum am 12. November 2026.".into();
+        assert_eq!(category_by_rules(&f, &categories).as_deref(), Some("c1"), "the user's words");
+        f.context = "Gastvortrag von Prof. Muster am 12. November 2026.".into();
+        assert_eq!(category_by_rules(&f, &categories), None, "nothing says it: the model is asked");
         // A removed category counts as «other».
         categories.retain(|c| c.id != "project");
         assert_eq!(category(&categories, "project").map(|c| c.id.as_str()), Some("other"));

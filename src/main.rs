@@ -341,6 +341,15 @@ fn laya_command(args: &Args) -> ExitCode {
         let categories = deadlines::Category::defaults();
         let sentences: Vec<String> = dates.iter().map(|(s, _, _)| s.to_string()).collect();
         log::info!("Laya (raw): what the dates are → {:?}", laya::date_kinds(&sentences));
+        let appointments: Vec<(String, String)> =
+            categories.iter().filter(|c| c.appointment).map(|c| (c.id.clone(), c.about())).collect();
+        let hand_ins: Vec<(String, String)> =
+            categories.iter().filter(|c| !c.appointment).map(|c| (c.id.clone(), c.about())).collect();
+        log::info!(
+            "Laya (raw): which appointment → {:?}; which hand-in → {:?}",
+            laya::date_categories(&sentences, &appointments),
+            laya::date_categories(&sentences, &hand_ins)
+        );
         let reference = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap_or_default();
         let mut ok = module.is_some_and(|(m, _)| m == "Statistik");
         for (sentence, expected, must) in dates {

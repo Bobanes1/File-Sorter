@@ -1541,6 +1541,9 @@ impl Deadlines {
                 };
                 d.category = category_by_rules(&f, &defaults);
             }
+            if d.title.trim().is_empty() && d.ai && !d.context.is_empty() {
+                d.title = shortened(&d.context, 60);
+            }
             if d.title.trim().is_empty() {
                 d.title = d
                     .file
@@ -1923,12 +1926,17 @@ mod tests {
             {"id": 2, "title": "Seminararbeit", "module": "", "file": null, "date": "2026-11-30", "time": null,
              "context": "", "done": false, "deleted": false, "kind": "due"},
             {"id": 3, "title": "", "module": "", "file": "/s/Statistik_I.pdf", "date": "2027-01-04", "time": null,
-             "context": "", "done": false, "deleted": false, "kind": "exam", "ai": true}
+             "context": "", "done": false, "deleted": false, "kind": "exam", "ai": true},
+            {"id": 4, "title": "", "module": "", "file": "/s/Statistik_I.pdf", "date": "2027-02-01", "time": null,
+             "context": "L'examen de rattrapage aura lieu le 1er février 2027 en salle B12, de 9h à 11h.",
+             "done": false, "deleted": false, "kind": "exam", "ai": true}
         ], "scanned": [], "finder": 3, "seen": 0}"#;
         fs::write(&file, old).unwrap();
         let list = Deadlines::load(&file);
         let got: Vec<(&str, &str)> = list.items.iter().map(|d| (d.title.as_str(), d.category.as_str())).collect();
-        assert_eq!(got, [("Klausur", "exam"), ("Seminararbeit", "project"), ("Statistik_I", "exam")]);
+        let named = "L'examen de rattrapage aura lieu le 1er février 2027 en…";
+        let expected = [("Klausur", "exam"), ("Seminararbeit", "project"), ("Statistik_I", "exam"), (named, "exam")];
+        assert_eq!(got, expected);
     }
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {

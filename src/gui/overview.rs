@@ -196,11 +196,11 @@ impl App {
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if fx::icon_button(ui, icon::TRASH).on_hover_text(lang.delete()).clicked() {
-                    self.confirm_delete = Some(i);
-                }
-                if fx::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(lang.edit()).clicked() {
-                    self.open_edit(i);
+                let items = [(icon::PENCIL_SIMPLE, lang.edit(), false), (icon::TRASH, lang.delete(), true)];
+                match fx::more_menu(ui, lang.more_actions(), &items) {
+                    Some(0) => self.open_edit(i),
+                    Some(_) => self.confirm_delete = Some(i),
+                    None => {}
                 }
                 let folder = self.config.course_folder(&course);
                 if fx::icon_button(ui, icon::FOLDER_OPEN)

@@ -758,7 +758,7 @@ impl App {
                             ui.label(RichText::new(lang.recognised_hit()).small().color(p.outline));
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if fx::button(ui, ButtonStyle::Text, icon::FOLDER_OPEN, lang.show_in_folder()).clicked() {
+                            if fx::icon_button(ui, icon::FOLDER_OPEN).on_hover_text(lang.show_in_folder()).clicked() {
                                 reveal = Some(hit.path.clone());
                             }
                         });
@@ -1447,10 +1447,6 @@ impl App {
                                 if fx::icon_button(ui, icon::FOLDER_OPEN).on_hover_text(lang.show_in_folder()).clicked()
                                 {
                                     reveal = Some(path.clone());
-                                }
-                                if fx::icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(lang.open_file()).clicked()
-                                {
-                                    open = Some(path.clone());
                                 }
                                 let when = format!("{} {}", weekday(lang, time.date_naive()), time.format("%H:%M"));
                                 ui.label(RichText::new(when).small().color(p.on_surface_variant));

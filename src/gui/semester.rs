@@ -313,8 +313,9 @@ impl App {
             self.week_grid(ui, week, today);
         });
         if !self.semester.table.subscriptions.is_empty() {
-            let links: Vec<String> = self.semester.table.subscriptions.iter().map(|s| s.url.clone()).collect();
-            ui.label(RichText::new(lang.subscribed(&links.join(", "))).small().color(p.outline));
+            let links: Vec<&str> = self.semester.table.subscriptions.iter().map(|s| s.url.as_str()).collect();
+            let text = RichText::new(lang.subscribed(links.len())).small().color(p.outline);
+            ui.label(text).on_hover_text(links.join("\n"));
         }
         ui.label(RichText::new(lang.timetable_sorting_note()).small().color(p.outline));
     }

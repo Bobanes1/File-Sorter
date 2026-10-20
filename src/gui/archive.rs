@@ -82,10 +82,7 @@ impl App {
                         if clicked {
                             restore = Some(i);
                         }
-                        if fx::button(ui, ButtonStyle::Text, icon::FOLDER_OPEN, "")
-                            .on_hover_text(lang.open_folder_hint())
-                            .clicked()
-                        {
+                        if fx::icon_button(ui, icon::FOLDER_OPEN).on_hover_text(lang.open_folder_hint()).clicked() {
                             crate::desktop::open(&a.folder);
                         }
                     });

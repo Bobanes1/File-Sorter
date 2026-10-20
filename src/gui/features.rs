@@ -159,18 +159,21 @@ fn categories_ui(ui: &mut egui::Ui, lang: Lang, list: &mut Vec<Category>) -> boo
                 c.name = if name.trim() == shown && c.builtin.is_some() { String::new() } else { name };
                 changed = true;
             }
-            let id = Id::new(("category-words", i));
-            let width = (ui.available_width() - 150.0).max(120.0);
-            changed |= words_field(ui, id, lang.category_words_hint(), &mut c.keywords, width);
-            let be_there = fx::chip(ui, c.appointment, lang.category_appointment());
-            if be_there.on_hover_text(lang.category_appointment_hint()).clicked() {
-                c.appointment = !c.appointment;
-                changed = true;
-            }
-            let trash = ui.add_enabled_ui(!only_one, |ui| fx::icon_button(ui, icon::TRASH)).inner;
-            if trash.on_hover_text(lang.delete()).clicked() {
-                remove = Some(i);
-            }
+            // On the right, so they stay aligned: delete, «be there», then the words.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let trash = ui.add_enabled_ui(!only_one, |ui| fx::icon_button(ui, icon::TRASH)).inner;
+                if trash.on_hover_text(lang.delete()).clicked() {
+                    remove = Some(i);
+                }
+                let be_there = fx::chip(ui, c.appointment, lang.category_appointment());
+                if be_there.on_hover_text(lang.category_appointment_hint()).clicked() {
+                    c.appointment = !c.appointment;
+                    changed = true;
+                }
+                let id = Id::new(("category-words", i));
+                let width = ui.available_width();
+                changed |= words_field(ui, id, lang.category_words_hint(), &mut c.keywords, width);
+            });
         });
     }
     if let Some(i) = remove {

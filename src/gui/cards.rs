@@ -492,19 +492,13 @@ pub(crate) fn activity_row(
                                         }
                                     }
                                 }
-                                if let Some(location) = card.location() {
-                                    if fx::icon_button(ui, icon::FOLDER_OPEN)
+                                // (A click on the row opens the file.)
+                                if let Some(location) = card.location()
+                                    && fx::icon_button(ui, icon::FOLDER_OPEN)
                                         .on_hover_text(lang.show_in_folder())
                                         .clicked()
-                                    {
-                                        action = RowAction::ShowFolder(location.to_path_buf());
-                                    }
-                                    if fx::icon_button(ui, icon::ARROW_SQUARE_OUT)
-                                        .on_hover_text(lang.open_file())
-                                        .clicked()
-                                    {
-                                        action = RowAction::OpenFile(location.to_path_buf());
-                                    }
+                                {
+                                    action = RowAction::ShowFolder(location.to_path_buf());
                                 }
                                 ui.label(RichText::new(&card.clock).small().color(p.on_surface_variant));
                                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {

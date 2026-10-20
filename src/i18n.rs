@@ -602,8 +602,16 @@ impl Lang {
     pub fn unsubscribe(self) -> &'static str {
         self.pick("Remove this link and its lessons", "Diesen Link und seine Lektionen entfernen")
     }
-    pub fn subscribed(self, links: &str) -> String {
-        self.fmt(format!("Read daily from: {links}"), format!("Täglich gelesen von: {links}"))
+    pub fn subscribed(self, count: usize) -> String {
+        match count {
+            1 => self
+                .pick("Read daily from one linked calendar", "Täglich aus einem verknüpften Kalender gelesen")
+                .into(),
+            n => self.fmt(
+                format!("Read daily from {n} linked calendars"),
+                format!("Täglich aus {n} verknüpften Kalendern gelesen"),
+            ),
+        }
     }
     pub fn import_calendar(self) -> &'static str {
         self.pick("Import calendar…", "Kalender importieren…")
@@ -898,7 +906,7 @@ impl Lang {
         )
     }
     pub fn deadlines_title(self) -> &'static str {
-        self.pick("Deadlines & exams", "Abgaben & Prüfungen")
+        self.pick("Deadlines & appointments", "Abgaben & Termine")
     }
     pub fn check_file(self) -> &'static str {
         self.pick("Check a file…", "Datei durchsuchen…")
@@ -1912,12 +1920,12 @@ impl Lang {
         )
     }
     pub fn feature_deadlines(self) -> &'static str {
-        self.pick("Deadlines", "Abgabetermine")
+        self.pick("Deadlines & appointments", "Abgaben & Termine")
     }
     pub fn feature_deadlines_hint(self) -> &'static str {
         self.pick(
-            "Find due dates in exercise sheets and show what is due soon.",
-            "Abgabetermine in Übungsblättern erkennen und anzeigen, was bald fällig ist.",
+            "Find hand-ins, exams and other dates in your documents and show what is coming up.",
+            "Abgaben, Prüfungen und andere Termine in deinen Dokumenten erkennen und anzeigen, was ansteht.",
         )
     }
     pub fn feature_weekly(self) -> &'static str {

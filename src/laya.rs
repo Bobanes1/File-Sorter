@@ -50,7 +50,7 @@ const FILES: [(&str, &str, u64, &str); 4] = [
         "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
     ),
 ];
-const INSTRUCTIONS: &str = "Which university module does this file belong to?";
+pub const INSTRUCTIONS: &str = "Which university module does this file belong to?";
 /// Enough text for the model's 1024 tokens; tokenizing a whole book would only cost time.
 const MAX_TEXT_CHARS: usize = 6000;
 // shortcut: untuned thresholds (the model card says it ships over-confident), tune on real files.
@@ -214,8 +214,7 @@ pub fn guess(config: &Config, path: &Path, text: Option<&str>) -> Option<(usize,
     let model = load(&dir(config)?)?;
     let options: Vec<String> = config.courses.iter().map(option_text).collect();
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let text: String = text.unwrap_or("").chars().take(MAX_TEXT_CHARS).collect();
-    let state = format!("File name: {name}\n\n{text}");
+    let state = state_for(&name, text.unwrap_or(""));
     match model.choose(&options, &state) {
         Ok(Some(p)) => confident(&p),
         Ok(None) => None,
@@ -226,10 +225,20 @@ pub fn guess(config: &Config, path: &Path, text: Option<&str>) -> Option<(usize,
     }
 }
 
-/// "Programmieren: Java, OOP" – the module and its keywords, as one answer option.
+/// What the model reads about a file (training rows are made the same way: `laya_rows.rs`).
+pub fn state_for(name: &str, text: &str) -> String {
+    let text: String = text.chars().take(MAX_TEXT_CHARS).collect();
+    format!("File name: {name}\n\n{text}")
+}
+
 fn option_text(course: &Course) -> String {
-    let label = course.label();
-    if course.keywords.is_empty() { label } else { format!("{label}: {}", course.keywords.join(", ")) }
+    option(&course.label(), &course.keywords)
+}
+
+/// "Programmieren: Java, OOP" – a module and its keywords, as one answer option. Laya's
+/// own code renders a criterion `{label: keywords}` the same way.
+pub fn option(label: &str, keywords: &[String]) -> String {
+    if keywords.is_empty() { label.to_string() } else { format!("{label}: {}", keywords.join(", ")) }
 }
 
 /// The best option if the model is clearly sure of it.

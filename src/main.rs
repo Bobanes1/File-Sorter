@@ -22,6 +22,7 @@ mod i18n;
 mod index;
 mod keywords;
 mod laya;
+mod laya_rows;
 mod lean;
 mod ledger;
 mod logger;
@@ -67,6 +68,7 @@ Usage: file-sorter [--config PATH] [--headless | --sort-now | [--sort] FILE... [
   --list-clouds     write the cloud folders found (OneDrive, Dropbox, …) to the log
   --check-update    write whether a newer File Sorter is available to the log
   --read-text FILE  write the text read from FILE (with text recognition for scans) to the log
+  --laya-rows IN OUT  write training rows for the Laya model (see training/laya-uni)
   --config PATH     settings file (default: per-user config.json)";
 
 struct Args {
@@ -86,6 +88,8 @@ struct Args {
     check_update: bool,
     /// Print the text read from this file (with text recognition for scans), and exit.
     read_text: Option<PathBuf>,
+    /// `--laya-rows IN OUT`: write fine-tuning rows for the Laya model, and exit.
+    laya_rows: Option<(PathBuf, PathBuf)>,
     /// Started again after an update: wait until the old process (this id) has ended.
     wait_for: Option<u32>,
 }
@@ -104,6 +108,7 @@ fn parse_args() -> Result<Args, String> {
         list_clouds: false,
         check_update: false,
         read_text: None,
+        laya_rows: None,
         wait_for: None,
     };
     let mut it = std::env::args().skip(1);
@@ -120,6 +125,11 @@ fn parse_args() -> Result<Args, String> {
             "--list-clouds" => args.list_clouds = true,
             "--check-update" => args.check_update = true,
             "--read-text" => args.read_text = Some(it.next().ok_or("--read-text needs a file")?.into()),
+            "--laya-rows" => {
+                let input = it.next().ok_or("--laya-rows needs an input folder and an output file")?;
+                let output = it.next().ok_or("--laya-rows needs an output file")?;
+                args.laya_rows = Some((input.into(), output.into()));
+            }
             "--wait-for" => args.wait_for = it.next().and_then(|pid| pid.parse().ok()),
             "--config" => args.config = it.next().ok_or("--config needs a path")?.into(),
             "--days" | "--hours" => {
@@ -187,6 +197,18 @@ fn main() -> ExitCode {
         log::info!("Text recognition: {:?}", ocr::available());
         log::info!("Text of {}:\n{text}", file.display());
         return if ocr::letters(&text) > 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+    }
+    if let Some((input, output)) = &args.laya_rows {
+        return match laya_rows::run(input, output) {
+            Ok(n) => {
+                println!("{n} rows written to {}", output.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
     }
     if args.check_update {
         return match update::check() {

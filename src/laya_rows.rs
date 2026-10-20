@@ -42,7 +42,8 @@ struct Module {
 
 #[derive(Deserialize)]
 struct Record {
-    program: String,
+    /// May be left out for a "nothing fits" file: it then goes with any program.
+    program: Option<String>,
     module: Option<String>,
     #[serde(default)]
     lang: String,
@@ -142,10 +143,15 @@ fn from_synthetic(dir: &Path) -> Result<(Vec<Program>, Vec<Example>), String> {
                 }
                 let where_ = format!("{}:{}", records.display(), i + 1);
                 let r: Record = serde_json::from_str(line).map_err(|e| format!("{where_}: {e}"))?;
-                let program = programs
-                    .iter()
-                    .position(|p| p.program == r.program)
-                    .ok_or(format!("{where_}: unknown program {}", r.program))?;
+                let program = match (&r.program, &r.module) {
+                    (Some(name), _) => programs
+                        .iter()
+                        .position(|p| p.program == *name)
+                        .ok_or(format!("{where_}: unknown program {name}"))?,
+                    // Nothing fits and no program given: any program's modules will do (by line, so it stays the same).
+                    (None, None) => (i * 7919) % programs.len().max(1),
+                    (None, Some(_)) => return Err(format!("{where_}: a module without a program")),
+                };
                 let module = match &r.module {
                     None => None,
                     Some(m) => Some(
@@ -331,14 +337,16 @@ mod tests {
         write(&mixed.join("programs.json"), "[]");
         write(
             &mixed.join("records-mixed.jsonl"),
-            "{\"program\": \"Jus\", \"module\": \"Strafrecht BT\", \"lang\": \"en\", \"file_name\": \"paper.pdf\", \"text\": \"Theft\"}\n",
+            "{\"program\": \"Jus\", \"module\": \"Strafrecht BT\", \"lang\": \"en\", \"file_name\": \"paper.pdf\", \"text\": \"Theft\"}\n\
+             {\"program\": null, \"module\": null, \"file_name\": \"Erasmus.pdf\", \"text\": \"Info\"}\n",
         );
         let out = tmp.path().join("rows.jsonl");
-        assert_eq!(run(tmp.path(), &out).unwrap(), 6);
+        assert_eq!(run(tmp.path(), &out).unwrap(), 8);
         let rows: Vec<Value> =
             fs::read_to_string(&out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         assert_eq!((&rows[0]["meta"]["faculty"], &rows[0]["meta"]["mixed"]), (&json!("law"), &json!(true)));
-        let rows = &rows[2..];
+        assert!(rows[2].get("gold").is_some() && rows[2]["meta"]["program"] == "Jus");
+        let rows = &rows[4..];
         let first = &rows[0];
         assert_eq!(first["state"], laya::state_for("Fall3.pdf", "Irrtum über Tatumstände"));
         let q = &first["questions"]["module"];

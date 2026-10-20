@@ -737,6 +737,61 @@ impl Lang {
         self.pick("needed:", "nötig:")
     }
 
+    pub fn average_simple(self) -> &'static str {
+        self.pick("Plain average", "Einfacher Schnitt")
+    }
+    pub fn graded_count(self, n: usize) -> String {
+        match n {
+            1 => self.pick("1 module graded", "1 Modul benotet").into(),
+            n => self.fmt(format!("{n} modules graded"), format!("{n} Module benotet")),
+        }
+    }
+    pub fn add_grade_module(self) -> &'static str {
+        self.pick("Module", "Modul")
+    }
+    pub fn new_grade_module(self) -> &'static str {
+        self.pick("New module", "Neues Modul")
+    }
+    pub fn tests(self, n: usize) -> String {
+        self.fmt(format!("Tests ({n})"), format!("Prüfungen ({n})"))
+    }
+    pub fn add_test(self) -> &'static str {
+        self.pick("Test", "Prüfung")
+    }
+    pub fn test_name_hint(self) -> &'static str {
+        self.pick("e.g. Midterm", "z. B. Zwischenprüfung")
+    }
+    pub fn weight_hint(self) -> &'static str {
+        self.pick(
+            "How much it counts: «1/6», «30 %», «0.25» or a relative weight like «2».",
+            "Wie viel sie zählt: «1/6», «30 %», «0,25» oder ein relatives Gewicht wie «2».",
+        )
+    }
+    pub fn provisional(self) -> &'static str {
+        self.pick("provisional", "vorläufig")
+    }
+    pub fn from_tests(self) -> &'static str {
+        self.pick("from the tests", "aus den Prüfungen")
+    }
+    pub fn archived_tag(self) -> &'static str {
+        self.pick("archived", "archiviert")
+    }
+    pub fn hide_from_grades(self) -> &'static str {
+        self.pick(
+            "Take out of the grades (the module stays for sorting)",
+            "Aus den Noten nehmen (das Modul bleibt zum Sortieren)",
+        )
+    }
+    pub fn delete_grade_module(self) -> &'static str {
+        self.pick("Delete", "Löschen")
+    }
+    pub fn show_hidden_grades(self, n: usize) -> String {
+        self.fmt(format!("Show taken out ({n})"), format!("Herausgenommene zeigen ({n})"))
+    }
+    pub fn show_again(self) -> &'static str {
+        self.pick("Show again", "Wieder zeigen")
+    }
+
     // ---------- notes ----------
     pub fn notes_title(self) -> &'static str {
         self.pick("Notes", "Notizen")

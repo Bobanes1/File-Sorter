@@ -49,6 +49,9 @@ pub(super) struct Semester {
     /// Reading a link: (link, whether by itself, the text or why not).
     fetching: Option<Fetching>,
     error: Option<String>,
+    /// Grades: the rows whose tests are shown, and whether taken-out modules are shown.
+    pub(super) grades_open: std::collections::HashSet<GradeRow>,
+    pub(super) show_hidden: bool,
 }
 
 fn monday_of(date: NaiveDate) -> NaiveDate {
@@ -79,6 +82,8 @@ impl Semester {
             link: None,
             fetching: None,
             error: None,
+            grades_open: Default::default(),
+            show_hidden: false,
         }
     }
 }
@@ -785,11 +790,10 @@ impl App {
 impl App {
     /// The grades and ECTS of every module, the weighted average and the credit points earned.
     fn grades_ui(&mut self, ui: &mut egui::Ui) {
-        use crate::config::{GradeScale, Status};
+        use crate::config::{Course, GradeScale};
         let p = fx::pal(ui);
         let lang = self.lang;
         let scale = self.config.features.grade_scale;
-        let (low, high) = scale.range();
         ui.horizontal(|ui| {
             ui.label(fx::title(lang.grades_title(), 20.0).color(p.on_surface));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -804,77 +808,186 @@ impl App {
         });
         ui.add_space(6.0);
         let mut changed = false;
+        let mut remove: Option<GradeRow> = None;
         fx::card(ui, |ui| {
-            if self.config.courses.is_empty() {
-                ui.label(RichText::new(lang.no_modules_yet()).color(p.on_surface_variant));
-                return;
-            }
-            egui::Grid::new("grades").num_columns(5).spacing(vec2(14.0, 8.0)).striped(false).show(ui, |ui| {
-                for head in
-                    [lang.module_label(), lang.semester_label(), "ECTS", lang.grade_label(), lang.status_label()]
-                {
-                    ui.label(RichText::new(head).small().color(p.on_surface_variant));
+            // Header.
+            ui.horizontal(|ui| {
+                cell(ui, CARET_W, |_| {});
+                for (head, width) in [
+                    (lang.module_label(), NAME_W),
+                    (lang.semester_label(), SEMESTER_W),
+                    ("ECTS", NUMBER_W),
+                    (lang.grade_label(), GRADE_W),
+                    (lang.status_label(), 120.0),
+                ] {
+                    cell(ui, width, |ui| {
+                        ui.label(RichText::new(head).small().color(p.on_surface_variant));
+                    });
                 }
-                ui.end_row();
-                for (i, course) in self.config.courses.iter_mut().enumerate() {
-                    ui.label(RichText::new(&course.name).color(p.on_surface));
-                    changed |= ui
-                        .add(
-                            egui::TextEdit::singleline(&mut course.semester)
-                                .hint_text("HS 2026")
-                                .desired_width(96.0)
-                                .min_size(vec2(96.0, 0.0))
-                                .margin(Margin::symmetric(8, 4)),
-                        )
-                        .changed();
-                    changed |= number_field(ui, ("ects", i), &mut course.ects, 0.0, 60.0, "6");
-                    let hint = if scale == GradeScale::Swiss { "5.25" } else { "1.7" };
-                    changed |= number_field(ui, ("grade", i), &mut course.grade, low, high, hint);
-                    let status = match course.grade {
-                        Some(g) if scale.passed(g) => (lang.passed(), p.success),
-                        Some(_) => (lang.failed(), p.error),
-                        None => match course.status {
-                            Status::Passed => (lang.passed(), p.success),
-                            Status::Failed => (lang.failed(), p.error),
-                            Status::Open => (lang.open_status(), p.on_surface_variant),
-                        },
-                    };
-                    if course.grade.is_some() {
-                        ui.label(RichText::new(status.0).color(status.1));
-                    } else {
-                        // Without a grade (pass/fail modules): set by hand.
-                        egui::ComboBox::from_id_salt(("status", i))
-                            .selected_text(RichText::new(status.0).color(status.1))
-                            .width(120.0)
-                            .show_ui(ui, |ui| {
-                                for (s, label) in [
-                                    (Status::Open, lang.open_status()),
-                                    (Status::Passed, lang.passed()),
-                                    (Status::Failed, lang.failed()),
-                                ] {
-                                    changed |= ui.selectable_value(&mut course.status, s, label).changed();
-                                }
-                            });
+            });
+            let rows = self.grade_rows();
+            if rows.is_empty() {
+                ui.label(RichText::new(lang.no_modules_yet()).color(p.on_surface_variant));
+            }
+            for row in rows {
+                let open = self.semester.grades_open.contains(&row);
+                let Some(course) = course_at(&mut self.config, row) else { continue };
+                let hidden = course.hide_grades;
+                if hidden && !self.semester.show_hidden {
+                    continue;
+                }
+                let mut toggle = false;
+                ui.horizontal(|ui| {
+                    if hidden {
+                        ui.set_opacity(0.5);
                     }
-                    ui.end_row();
+                    let caret = if open { icon::CARET_DOWN } else { icon::CARET_RIGHT };
+                    cell(ui, CARET_W, |ui| {
+                        if fx::icon_button(ui, caret).on_hover_text(lang.tests(course.assessments.len())).clicked() {
+                            toggle = true;
+                        }
+                    });
+                    // Name: typed for modules only in the grades, else the module's.
+                    cell(ui, NAME_W, |ui| {
+                        if let GradeRow::Extra(_) = row {
+                            changed |= ui
+                                .add_sized(
+                                    [NAME_W - 8.0, 26.0],
+                                    egui::TextEdit::singleline(&mut course.name)
+                                        .hint_text(lang.new_grade_module())
+                                        .margin(Margin::symmetric(8, 4)),
+                                )
+                                .changed();
+                        } else {
+                            ui.add(egui::Label::new(RichText::new(&course.name).color(p.on_surface)).truncate());
+                            if let GradeRow::Archived(_) = row {
+                                ui.label(RichText::new(lang.archived_tag()).small().color(p.outline));
+                            }
+                        }
+                    });
+                    cell(ui, SEMESTER_W, |ui| {
+                        changed |= ui
+                            .add_sized(
+                                [SEMESTER_W - 8.0, 26.0],
+                                egui::TextEdit::singleline(&mut course.semester)
+                                    .hint_text("HS 2026")
+                                    .margin(Margin::symmetric(8, 4)),
+                            )
+                            .changed();
+                    });
+                    cell(ui, NUMBER_W, |ui| {
+                        changed |= number_field(ui, (row, "ects"), &mut course.ects, 0.0, 60.0, "6");
+                    });
+                    // With tests, the grade comes from them.
+                    let computed = course.final_grade().filter(|_| !course.assessments.is_empty());
+                    cell(ui, GRADE_W, |ui| match computed {
+                        Some((grade, done)) => {
+                            let text = format!("{grade:.2}");
+                            let label = ui.add_sized(
+                                [64.0, 26.0],
+                                egui::Label::new(RichText::new(text).color(p.primary).strong()),
+                            );
+                            let hint = if done { lang.from_tests() } else { lang.provisional() };
+                            label.on_hover_text(hint);
+                        }
+                        None => {
+                            let hint = if scale == GradeScale::Swiss { "5.25" } else { "1.7" };
+                            let (low, high) = scale.range();
+                            changed |= number_field(ui, (row, "grade"), &mut course.grade, low, high, hint);
+                        }
+                    });
+                    cell(ui, 130.0, |ui| changed |= status_ui(ui, lang, scale, course, row));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        match row {
+                            GradeRow::Extra(_) => {
+                                if fx::icon_button(ui, icon::TRASH).on_hover_text(lang.delete_grade_module()).clicked()
+                                {
+                                    remove = Some(row);
+                                }
+                            }
+                            _ if hidden => {
+                                if fx::button(ui, ButtonStyle::Text, icon::EYE, lang.show_again()).clicked() {
+                                    course.hide_grades = false;
+                                    changed = true;
+                                }
+                            }
+                            _ => {
+                                if fx::icon_button(ui, icon::EYE_SLASH).on_hover_text(lang.hide_from_grades()).clicked()
+                                {
+                                    course.hide_grades = true;
+                                    changed = true;
+                                }
+                            }
+                        }
+                        if !course.assessments.is_empty() && !open {
+                            ui.label(RichText::new(lang.tests(course.assessments.len())).small().color(p.outline));
+                        }
+                    });
+                });
+                if open {
+                    changed |= tests_ui(ui, lang, scale, course, row);
+                }
+                if toggle {
+                    if open {
+                        self.semester.grades_open.remove(&row);
+                    } else {
+                        self.semester.grades_open.insert(row);
+                    }
+                }
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if fx::button(ui, ButtonStyle::Tonal, icon::PLUS, lang.add_grade_module()).clicked() {
+                    let mut course = Course::new(String::new(), &[]);
+                    course.semester = crate::archive::current_semester(Local::now().date_naive());
+                    self.config.grade_modules.push(course);
+                    let row = GradeRow::Extra(self.config.grade_modules.len() - 1);
+                    self.semester.grades_open.insert(row);
+                    changed = true;
+                }
+                let hidden = self
+                    .grade_rows()
+                    .into_iter()
+                    .filter_map(|r| course_ref(&self.config, r))
+                    .filter(|c| c.hide_grades)
+                    .count();
+                if hidden > 0 {
+                    let show = &mut self.semester.show_hidden;
+                    let label = lang.show_hidden_grades(hidden);
+                    let icon = if *show { icon::EYE_SLASH } else { icon::EYE };
+                    if fx::button(ui, ButtonStyle::Text, icon, &label).clicked() {
+                        *show = !*show;
+                    }
                 }
             });
             ui.add_space(8.0);
             super::settings::divider(ui);
-            let courses: Vec<&crate::config::Course> = self.config.courses.iter().collect();
-            let (average, earned, _) = crate::config::grade_summary(&courses, scale);
+            let all: Vec<Course> = self
+                .grade_rows()
+                .into_iter()
+                .filter_map(|r| course_ref(&self.config, r).cloned())
+                .filter(|c| !c.hide_grades)
+                .collect();
+            let refs: Vec<&Course> = all.iter().collect();
+            let sum = crate::config::grade_summary(&refs, scale);
             let target = self.config.features.ects_target.max(1.0);
-            ui.horizontal(|ui| {
+            let shown = |a: Option<f32>| a.map_or("–".to_string(), |a| format!("{a:.2}"));
+            let color = |a: Option<f32>| match a {
+                Some(a) if !scale.passed(a) => p.error,
+                _ => p.primary,
+            };
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(lang.average()).color(p.on_surface_variant));
-                let text = average.map_or("–".to_string(), |a| format!("{a:.2}"));
-                let color = match average {
-                    Some(a) if !scale.passed(a) => p.error,
-                    _ => p.primary,
-                };
-                ui.label(fx::title(text, 18.0).color(color));
-                ui.add_space(20.0);
+                ui.label(fx::title(shown(sum.weighted), 18.0).color(color(sum.weighted)));
+                ui.add_space(16.0);
+                ui.label(RichText::new(lang.average_simple()).color(p.on_surface_variant));
+                ui.label(fx::title(shown(sum.simple), 18.0).color(color(sum.simple)));
+                ui.add_space(16.0);
+                ui.label(RichText::new(lang.graded_count(sum.graded)).color(p.on_surface_variant));
+            });
+            ui.horizontal(|ui| {
                 ui.label(RichText::new(lang.ects_earned()).color(p.on_surface_variant));
-                ui.label(fx::title(format!("{earned:.0} / {target:.0}"), 18.0).color(p.on_surface));
+                ui.label(fx::title(format!("{:.0} / {target:.0}", sum.earned), 18.0).color(p.on_surface));
                 let mut target_value = Some(self.config.features.ects_target);
                 ui.label(RichText::new(lang.ects_target()).small().color(p.outline));
                 if number_field(ui, "ects-target", &mut target_value, 1.0, 600.0, "180") {
@@ -882,32 +995,198 @@ impl App {
                     changed = true;
                 }
             });
-            fx::progress_bar(ui, Id::new("ects-progress"), Some((earned / target).clamp(0.0, 1.0)));
+            fx::progress_bar(ui, Id::new("ects-progress"), Some((sum.earned / target).clamp(0.0, 1.0)));
             // Per semester.
-            let mut semesters: Vec<String> =
-                self.config.courses.iter().map(|c| c.semester.clone()).filter(|s| !s.is_empty()).collect();
+            let mut semesters: Vec<String> = all.iter().map(|c| c.semester.clone()).filter(|s| !s.is_empty()).collect();
             semesters.sort();
             semesters.dedup();
             if semesters.len() > 1 {
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     for s in &semesters {
-                        let these: Vec<&crate::config::Course> =
-                            self.config.courses.iter().filter(|c| c.semester == *s).collect();
-                        let (avg, ects, _) = crate::config::grade_summary(&these, scale);
-                        let avg = avg.map_or("–".to_string(), |a| format!("{a:.2}"));
-                        ui.label(
-                            RichText::new(format!("{s}: {avg} · {ects:.0} ECTS")).small().color(p.on_surface_variant),
-                        );
+                        let these: Vec<&Course> = all.iter().filter(|c| c.semester == *s).collect();
+                        let sum = crate::config::grade_summary(&these, scale);
+                        let text = format!("{s}: {} · {:.0} ECTS", shown(sum.weighted), sum.earned);
+                        ui.label(RichText::new(text).small().color(p.on_surface_variant));
                         ui.add_space(10.0);
                     }
                 });
             }
         });
+        if let Some(GradeRow::Extra(i)) = remove
+            && i < self.config.grade_modules.len()
+        {
+            self.config.grade_modules.remove(i);
+            // The rows after it moved up.
+            self.semester.grades_open = self
+                .semester
+                .grades_open
+                .iter()
+                .filter_map(|r| match *r {
+                    GradeRow::Extra(j) if j == i => None,
+                    GradeRow::Extra(j) if j > i => Some(GradeRow::Extra(j - 1)),
+                    other => Some(other),
+                })
+                .collect();
+            changed = true;
+        }
         if changed {
             self.settings_changed();
         }
     }
+
+    /// The modules in the grades list: the current ones, the archived ones and the ones only
+    /// in the grades.
+    fn grade_rows(&self) -> Vec<GradeRow> {
+        let mut rows: Vec<GradeRow> = (0..self.config.courses.len()).map(GradeRow::Course).collect();
+        rows.extend((0..self.config.archived.len()).map(GradeRow::Archived));
+        rows.extend((0..self.config.grade_modules.len()).map(GradeRow::Extra));
+        rows
+    }
+}
+
+fn course_at(config: &mut crate::config::Config, row: GradeRow) -> Option<&mut crate::config::Course> {
+    match row {
+        GradeRow::Course(i) => config.courses.get_mut(i),
+        GradeRow::Archived(i) => config.archived.get_mut(i).map(|a| &mut a.course),
+        GradeRow::Extra(i) => config.grade_modules.get_mut(i),
+    }
+}
+
+fn course_ref(config: &crate::config::Config, row: GradeRow) -> Option<&crate::config::Course> {
+    match row {
+        GradeRow::Course(i) => config.courses.get(i),
+        GradeRow::Archived(i) => config.archived.get(i).map(|a| &a.course),
+        GradeRow::Extra(i) => config.grade_modules.get(i),
+    }
+}
+
+/// A cell of the grades list: `width` wide, whatever is in it.
+fn cell(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(vec2(width, 28.0), Layout::left_to_right(Align::Center), |ui| {
+        ui.set_min_width(width);
+        add(ui);
+    });
+}
+
+/// Column widths in the grades list.
+const CARET_W: f32 = 28.0;
+const NAME_W: f32 = 230.0;
+const SEMESTER_W: f32 = 104.0;
+const NUMBER_W: f32 = 72.0;
+const GRADE_W: f32 = 80.0;
+
+/// A row of the grades list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum GradeRow {
+    Course(usize),
+    Archived(usize),
+    Extra(usize),
+}
+
+/// Passed / failed / open: from the grade, or chosen for modules without one.
+fn status_ui(
+    ui: &mut egui::Ui,
+    lang: crate::i18n::Lang,
+    scale: crate::config::GradeScale,
+    course: &mut crate::config::Course,
+    row: GradeRow,
+) -> bool {
+    use crate::config::Status;
+    let p = fx::pal(ui);
+    let mut changed = false;
+    match course.final_grade() {
+        Some((g, true)) => {
+            let (text, color) = if scale.passed(g) { (lang.passed(), p.success) } else { (lang.failed(), p.error) };
+            ui.label(RichText::new(text).color(color));
+        }
+        Some((_, false)) => {
+            ui.label(RichText::new(lang.provisional()).color(p.on_surface_variant));
+        }
+        None => {
+            let (text, color) = match course.status {
+                Status::Passed => (lang.passed(), p.success),
+                Status::Failed => (lang.failed(), p.error),
+                Status::Open => (lang.open_status(), p.on_surface_variant),
+            };
+            egui::ComboBox::from_id_salt((row, "status"))
+                .selected_text(RichText::new(text).color(color))
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for (s, label) in [
+                        (Status::Open, lang.open_status()),
+                        (Status::Passed, lang.passed()),
+                        (Status::Failed, lang.failed()),
+                    ] {
+                        changed |= ui.selectable_value(&mut course.status, s, label).changed();
+                    }
+                });
+        }
+    }
+    changed
+}
+
+/// A module's tests: name, weight and grade each, and «+ Test».
+fn tests_ui(
+    ui: &mut egui::Ui,
+    lang: crate::i18n::Lang,
+    scale: crate::config::GradeScale,
+    course: &mut crate::config::Course,
+    row: GradeRow,
+) -> bool {
+    use crate::config::Assessment;
+    let p = fx::pal(ui);
+    let mut changed = false;
+    let total: f32 = course.assessments.iter().filter_map(Assessment::weight_value).sum();
+    let mut remove = None;
+    for (k, test) in course.assessments.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            cell(ui, CARET_W + 16.0, |_| {});
+            changed |= ui
+                .add_sized(
+                    [NAME_W - 24.0, 24.0],
+                    egui::TextEdit::singleline(&mut test.name)
+                        .hint_text(lang.test_name_hint())
+                        .margin(Margin::symmetric(8, 3)),
+                )
+                .changed();
+            ui.add_space(8.0);
+            let valid = test.weight_value().is_some();
+            let weight = ui
+                .add_sized(
+                    [70.0, 24.0],
+                    egui::TextEdit::singleline(&mut test.weight)
+                        .hint_text("1/6")
+                        .margin(Margin::symmetric(8, 3))
+                        .text_color_opt((!valid).then_some(p.error)),
+                )
+                .on_hover_text(lang.weight_hint());
+            changed |= weight.changed();
+            let share = test.weight_value().filter(|_| total > 0.0).map(|w| w / total * 100.0);
+            let share = share.map_or(String::new(), |s| format!("{s:.0} %"));
+            ui.add_sized([40.0, 24.0], egui::Label::new(RichText::new(share).small().color(p.outline)));
+            let hint = if scale == crate::config::GradeScale::Swiss { "4.5" } else { "2.3" };
+            let (low, high) = scale.range();
+            changed |= number_field(ui, (row, "test", k), &mut test.grade, low, high, hint);
+            if fx::icon_button(ui, icon::X).on_hover_text(lang.delete_grade_module()).clicked() {
+                remove = Some(k);
+            }
+        });
+    }
+    if let Some(k) = remove {
+        course.assessments.remove(k);
+        changed = true;
+    }
+    ui.horizontal(|ui| {
+        ui.add_space(46.0);
+        if fx::button(ui, ButtonStyle::Text, icon::PLUS, lang.add_test()).clicked() {
+            course.assessments.push(Assessment::default());
+            changed = true;
+        }
+        ui.label(RichText::new(lang.weight_hint()).small().color(p.outline));
+    });
+    ui.add_space(4.0);
+    changed
 }
 
 /// A number field (with «,» or «.»), kept while typing; `None` when empty. Out of range

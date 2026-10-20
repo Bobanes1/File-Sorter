@@ -72,6 +72,49 @@ pub struct Course {
     /// When it was taken («HS 2026»).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub semester: String,
+    /// The tests, papers, … that make up the grade, each with its weight.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assessments: Vec<Assessment>,
+    /// Taken out of the grades list (the module itself stays for sorting).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_grades: bool,
+}
+
+/// One test, paper or project of a module, and how much it counts.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Assessment {
+    pub name: String,
+    /// As typed: «1/6», «30 %», «0.25» or a relative weight like «2»; empty counts as 1.
+    pub weight: String,
+    pub grade: Option<f32>,
+}
+
+impl Assessment {
+    /// The weight as a number (relative to the others), if it can be read.
+    pub fn weight_value(&self) -> Option<f32> {
+        parse_weight(&self.weight)
+    }
+}
+
+/// «1/6» → 0.1667, «30 %» → 0.3, «0,25» → 0.25, «2» → 2, empty → 1.
+pub fn parse_weight(text: &str) -> Option<f32> {
+    let text = text.trim().replace(',', ".");
+    if text.is_empty() {
+        return Some(1.0);
+    }
+    let value = if let Some(percent) = text.strip_suffix('%') {
+        percent.trim().parse::<f32>().ok()? / 100.0
+    } else if let Some((a, b)) = text.split_once('/') {
+        let (a, b) = (a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?);
+        if b == 0.0 {
+            return None;
+        }
+        a / b
+    } else {
+        text.parse::<f32>().ok()?
+    };
+    (value.is_finite() && value > 0.0).then_some(value)
 }
 
 /// Where a module stands.
@@ -117,22 +160,42 @@ impl GradeScale {
     }
 }
 
-/// The ECTS-weighted average of the graded modules, the ECTS earned (passed modules), and
-/// the ECTS of modules with a grade.
-pub fn grade_summary(courses: &[&Course], scale: GradeScale) -> (Option<f32>, f32, f32) {
-    let graded: Vec<(f32, f32)> =
-        courses.iter().filter_map(|c| Some((c.grade?, c.ects.unwrap_or(0.0)))).filter(|(_, e)| *e > 0.0).collect();
-    let weight: f32 = graded.iter().map(|(_, e)| e).sum();
-    let average = (weight > 0.0).then(|| graded.iter().map(|(g, e)| g * e).sum::<f32>() / weight);
+/// What the grades add up to.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GradeSummary {
+    /// The ECTS-weighted average of the graded modules (with ECTS).
+    pub weighted: Option<f32>,
+    /// The plain average of all graded modules.
+    pub simple: Option<f32>,
+    /// Modules with a grade.
+    pub graded: usize,
+    /// ECTS of passed modules.
+    pub earned: f32,
+    /// ECTS of the modules with a grade.
+    pub ects_graded: f32,
+}
+
+/// The averages, the number of graded modules and the ECTS earned. A module's grade is its
+/// own, or the one its tests give.
+pub fn grade_summary(courses: &[&Course], scale: GradeScale) -> GradeSummary {
+    let grades: Vec<(f32, f32)> =
+        courses.iter().filter_map(|c| Some((c.final_grade()?.0, c.ects.unwrap_or(0.0)))).collect();
+    let with_ects: Vec<&(f32, f32)> = grades.iter().filter(|(_, e)| *e > 0.0).collect();
+    // (`+ 0.0`: an empty float sum is -0.)
+    let ects_graded: f32 = with_ects.iter().map(|(_, e)| e).sum::<f32>() + 0.0;
+    let weighted = (ects_graded > 0.0).then(|| with_ects.iter().map(|(g, e)| g * e).sum::<f32>() / ects_graded);
+    let simple = (!grades.is_empty()).then(|| grades.iter().map(|(g, _)| g).sum::<f32>() / grades.len() as f32);
     let earned: f32 = courses
         .iter()
-        .filter(|c| match c.grade {
-            Some(g) => scale.passed(g),
+        .filter(|c| match c.final_grade() {
+            Some((g, true)) => scale.passed(g),
+            Some((_, false)) => false,
             None => c.status == Status::Passed,
         })
         .filter_map(|c| c.ects)
-        .sum();
-    (average, earned, weight)
+        .sum::<f32>()
+        + 0.0;
+    GradeSummary { weighted, simple, graded: grades.len(), earned, ects_graded }
 }
 
 impl Course {
@@ -146,7 +209,22 @@ impl Course {
             grade: None,
             status: Status::Open,
             semester: String::new(),
+            assessments: Vec::new(),
+            hide_grades: false,
         }
+    }
+
+    /// The module's grade: from its tests if it has graded ones (weighted; `false` while
+    /// some are still open), else the one entered.
+    pub fn final_grade(&self) -> Option<(f32, bool)> {
+        let graded: Vec<(f32, f32)> =
+            self.assessments.iter().filter_map(|a| Some((a.grade?, a.weight_value()?))).collect();
+        if graded.is_empty() {
+            return self.grade.map(|g| (g, true));
+        }
+        let total: f32 = graded.iter().map(|(_, w)| w).sum();
+        let grade = graded.iter().map(|(g, w)| g * w).sum::<f32>() / total;
+        Some((grade, graded.len() == self.assessments.len()))
     }
 
     pub fn with_subject(mut self, subject: impl Into<String>) -> Self {
@@ -209,6 +287,9 @@ pub struct Config {
     pub features: Features,
     /// Modules of finished semesters, moved into the archive (they can be brought back).
     pub archived: Vec<crate::archive::Archived>,
+    /// Modules only in the grades list (no folder, nothing sorted into them).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub grade_modules: Vec<Course>,
     /// Folder for File Sorter's own lists (copied files, files to leave alone, history):
     /// the folder of config.json. Set at runtime, not saved.
     #[serde(skip)]
@@ -481,6 +562,7 @@ impl Default for Config {
             gdrive: Default::default(),
             features: Features::default(),
             archived: Vec::new(),
+            grade_modules: Vec::new(),
             state_dir: None,
         }
     }
@@ -845,13 +927,45 @@ mod tests {
             course(None, 2.0, Status::Passed),
         ];
         let refs: Vec<&Course> = swiss.iter().collect();
-        let (average, earned, graded) = grade_summary(&refs, GradeScale::Swiss);
-        assert_eq!(average, Some((5.5 * 6.0 + 4.0 * 3.0 + 3.5 * 3.0) / 12.0));
-        assert_eq!((earned, graded), (11.0, 12.0), "3.5 failed; the pass/fail module counts");
+        let sum = grade_summary(&refs, GradeScale::Swiss);
+        assert_eq!(sum.weighted, Some((5.5 * 6.0 + 4.0 * 3.0 + 3.5 * 3.0) / 12.0));
+        assert_eq!(sum.simple, Some((5.5 + 4.0 + 3.5) / 3.0));
+        assert_eq!((sum.earned, sum.ects_graded, sum.graded), (11.0, 12.0, 3), "3.5 failed; pass/fail counts");
         let german = [course(Some(1.3), 6.0, Status::Open), course(Some(4.3), 6.0, Status::Open)];
         let refs: Vec<&Course> = german.iter().collect();
-        assert_eq!(grade_summary(&refs, GradeScale::German).1, 6.0, "4.3 failed");
+        assert_eq!(grade_summary(&refs, GradeScale::German).earned, 6.0, "4.3 failed");
         assert!(GradeScale::German.passed(4.0) && !GradeScale::Swiss.passed(3.9));
+        // Nothing yet: 0, not -0.
+        let none = grade_summary(&[], GradeScale::Swiss);
+        assert_eq!(format!("{:.0}", none.earned), "0");
+        assert_eq!(none.weighted, None);
+    }
+
+    #[test]
+    fn grades_from_weighted_tests() {
+        assert_eq!(parse_weight("1/6"), Some(1.0 / 6.0));
+        assert_eq!(parse_weight("30 %"), Some(0.3));
+        assert_eq!(parse_weight("0,25"), Some(0.25));
+        assert_eq!(parse_weight(""), Some(1.0));
+        assert_eq!(parse_weight("1/0"), None);
+        assert_eq!(parse_weight("abc"), None);
+        let test = |name: &str, weight: &str, grade: Option<f32>| Assessment {
+            name: name.into(),
+            weight: weight.into(),
+            grade,
+        };
+        let mut stats = Course::new("Statistik", &[]);
+        stats.ects = Some(6.0);
+        stats.assessments = vec![test("Zwischenprüfung", "1/6", Some(4.0)), test("Schlussprüfung", "5/6", None)];
+        assert_eq!(stats.final_grade(), Some((4.0, false)), "only one graded so far: provisional");
+        stats.assessments[1].grade = Some(5.5);
+        let (grade, done) = stats.final_grade().unwrap();
+        assert!((grade - (4.0 / 6.0 + 5.5 * 5.0 / 6.0)).abs() < 1e-5 && done);
+        let refs = [&stats];
+        assert_eq!(grade_summary(&refs, GradeScale::Swiss).earned, 6.0);
+        // Provisional grades don't count as passed yet.
+        stats.assessments[1].grade = None;
+        assert_eq!(grade_summary(&[&stats], GradeScale::Swiss).earned, 0.0);
     }
 
     #[test]

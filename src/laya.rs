@@ -546,39 +546,63 @@ pub fn subfolder_for(name: &str, text: &str, options: &[(String, String)]) -> Op
     )
 }
 
-/// For each sentence with a date: which of the `categories` (id, what such a date is) the
-/// date is, or `None` when it is not a date to note, and how sure Laya is.
-pub fn date_categories(sentences: &[String], categories: &[(String, String)]) -> Option<Vec<(Option<String>, f64)>> {
+/// What a date in a sentence is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateKind {
+    /// Something has to be handed in (or registered for) by then.
+    Due,
+    /// An exam or another event takes place then.
+    Event,
+    Other,
+}
+
+/// For each sentence with a date: what the date is, and how sure Laya is.
+pub fn date_kinds(sentences: &[String]) -> Option<Vec<(DateKind, f64)>> {
     if sentences.is_empty() {
+        return Some(Vec::new());
+    }
+    let questions = json!({
+        "kind": {
+            "type": "choice",
+            "instructions": "What is the date in this sentence from a university course document?",
+            "criteria": {
+                "due": "a deadline: something must be handed in, submitted, uploaded or registered for by then",
+                "event": "an exam, test, quiz, presentation, excursion or workshop takes place then",
+                "other": "anything else: a lecture, a publication or version date, a holiday, a past event",
+            },
+        }
+    });
+    let answers = ask(sentences, &questions, Some(256))?;
+    let kind = |a: &Value| match choice(&a["kind"]) {
+        Some((k, p, _)) if k == "due" => (DateKind::Due, p),
+        Some((k, p, _)) if k == "event" => (DateKind::Event, p),
+        Some((_, p, _)) => (DateKind::Other, p),
+        None => (DateKind::Other, 0.0),
+    };
+    Some(answers.iter().map(kind).collect())
+}
+
+/// For each sentence with a date (known to be a hand-in, or an appointment): which of the
+/// `categories` (id, what such a date is) it is, when Laya is clearly sure.
+pub fn date_categories(sentences: &[String], categories: &[(String, String)]) -> Option<Vec<Option<String>>> {
+    if sentences.is_empty() || categories.is_empty() {
         return Some(Vec::new());
     }
     let mut criteria = serde_json::Map::new();
     for (id, about) in categories {
         criteria.entry(id.clone()).or_insert_with(|| Value::String(about.clone()));
     }
-    criteria.insert(
-        NONE.into(),
-        Value::String(
-            "not a date to note: a publication or version date, a past event, a holiday or a regular lecture".into(),
-        ),
-    );
     let questions = json!({
-        "kind": {
+        "category": {
             "type": "choice",
-            "instructions": "What is the date in this sentence from a university course document?",
+            "instructions": "Which kind of date is in this sentence from a university course document?",
             "criteria": criteria,
         }
     });
     let answers = ask(sentences, &questions, Some(256))?;
-    Some(
-        answers
-            .iter()
-            .map(|a| match choice(&a["kind"]) {
-                Some((id, p, _)) => ((id != NONE).then_some(id), p),
-                None => (None, 0.0),
-            })
-            .collect(),
-    )
+    let sure =
+        |a: &Value| choice(&a["category"]).and_then(|(id, p, second)| (p >= 0.6 && p >= 2.0 * second).then_some(id));
+    Some(answers.iter().map(sure).collect())
 }
 
 #[cfg(test)]
@@ -618,6 +642,10 @@ class Agent:
                 pick = None
                 if qid == "pick" and "varianz" in low:
                     pick = next((k for k in keys if "statistik" in k.lower()), None)
+                elif qid == "kind":
+                    due = any(w in low for w in ("abgabe", "due", "rendre"))
+                    event = any(w in low for w in ("prüfung", "exam", "exkursion"))
+                    pick = "due" if due else ("event" if event else "other")
                 elif qid != "pick" or "folder" in q.get("instructions", ""):
                     pick = next((k for k in keys if k != "none" and named(k)), None)
                     if pick is None and any(w in low for w in ("abgabe", "due", "rendre", "aufgabe 1")):
@@ -664,7 +692,7 @@ def load(*args, **kwargs):
         let Some(place) = fake_place(tmp.path()) else { return };
         let mut helper = Helper::start(&place).unwrap();
         let questions = json!({"kind": {"type": "choice", "instructions": "?",
-            "criteria": {"exercise": "a", "exam": "b", "none": "c"}}});
+            "criteria": {"due": "a", "event": "b", "other": "c"}}});
         let answers = helper
             .ask(
                 &["Abgabe bis 3. November".into(), "Prüfung am 20. Januar".into(), "Stand: 1. Oktober".into()],
@@ -673,7 +701,7 @@ def load(*args, **kwargs):
             )
             .unwrap();
         let picks: Vec<String> = answers.iter().map(|a| choice(&a["kind"]).unwrap().0).collect();
-        assert_eq!(picks, ["exercise", "exam", "none"]);
+        assert_eq!(picks, ["due", "event", "other"]);
         // A bad request gets an error, and the helper goes on.
         assert!(helper.ask(&["x".into()], &json!({"q": 1}), None).is_err());
         assert_eq!(helper.ask(&["Abgabe".into()], &questions, None).unwrap().len(), 1);

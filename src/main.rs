@@ -329,63 +329,72 @@ fn laya_command(args: &Args) -> ExitCode {
                     t-Test und p-Werte für die Koeffizienten.";
         let module = laya::module_for(&config, "kapitel4.pdf", text, &[]);
         log::info!("Laya: kapitel4.pdf (regression, variance) → {module:?}");
-        // Dates: (sentence, the category it is; None: not a date to note).
+        // Dates: (sentence, the category it gets; None: no entry; «must» be found).
         let dates = [
-            ("Le devoir 3 est à rendre avant le vendredi 7 novembre 2026 à 18h.", Some("exercise")),
-            ("L'examen final aura lieu le 20 janvier 2027 en salle B12.", Some("exam")),
-            ("Version du 3 octobre 2026.", None),
-            ("Die Anmeldung zur Klausur ist bis zum 15. November 2026 im Portal möglich.", Some("registration")),
-            ("Abgabe der Seminararbeit: 30. November 2026.", Some("project")),
-            ("Exkursion ins Naturhistorische Museum am 12. November 2026, Treffpunkt 9 Uhr.", Some("other")),
+            ("Le devoir 3 est à rendre avant le vendredi 7 novembre 2026 à 18h.", Some("exercise"), true),
+            ("L'examen final aura lieu le 20 janvier 2027 en salle B12.", Some("exam"), true),
+            ("Version du 3 octobre 2026.", None, true),
+            ("Die Anmeldung zur Klausur ist bis zum 15. November 2026 im Portal möglich.", Some("registration"), false),
+            ("Abgabe der Seminararbeit: 30. November 2026.", Some("project"), true),
+            ("Exkursion ins Naturhistorische Museum am 12. November 2026, Treffpunkt 9 Uhr.", Some("other"), false),
         ];
         let categories = deadlines::Category::defaults();
-        let options: Vec<(String, String)> = categories.iter().map(|c| (c.id.clone(), c.about())).collect();
-        let sentences: Vec<String> = dates.iter().map(|(s, _)| s.to_string()).collect();
-        let kinds = laya::date_categories(&sentences, &options).unwrap_or_default();
-        // Documents whose name says nothing: (text, the subfolder it goes in).
+        let sentences: Vec<String> = dates.iter().map(|(s, _, _)| s.to_string()).collect();
+        log::info!("Laya (raw): what the dates are → {:?}", laya::date_kinds(&sentences));
+        let reference = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap_or_default();
+        let mut ok = module.is_some_and(|(m, _)| m == "Statistik");
+        for (sentence, expected, must) in dates {
+            let found = deadlines::find_in(sentence, reference, &categories);
+            let got: Vec<&str> = found.iter().map(|f| f.category.as_str()).collect();
+            // A wrong category or a date that isn't one is an error; missing one only where it must be found.
+            let right = match expected {
+                Some(e) => got == [e] || got.is_empty() && !must,
+                None => got.is_empty(),
+            };
+            log::info!("Laya: «{sentence}» → {got:?}{}", if right { "" } else { "  ✗" });
+            ok &= right;
+        }
+        // Documents whose name says nothing: (text, the subfolder it goes in; None: the module folder).
         let documents = [
             (
                 "Analysis I, Herbstsemester 2026. Blatt 4. Aufgabe 1: Zeigen Sie, dass die Folge konvergiert. \
                  Aufgabe 2: Bestimmen Sie den Grenzwert.",
-                "Übungen",
+                Some("Übungen"),
             ),
             (
                 "Analysis I – Lösungen zu Blatt 4. Aufgabe 1: Da die Folge monoton wachsend und nach oben \
                  beschränkt ist, konvergiert sie. Aufgabe 2: Der Grenzwert ist 2, denn …",
-                "Lösungen",
+                Some("Lösungen"),
             ),
             (
                 "Kapitel 3: Folgen und Reihen. Definition 3.1: Eine Folge heisst konvergent, wenn es eine Zahl a \
                  gibt, so dass … Satz 3.2: Jede konvergente Folge ist beschränkt. Beweis: …",
-                "Vorlesung",
+                Some("Vorlesung"),
             ),
             (
                 "Klausur Analysis I, 2. Februar 2026. Bearbeitungszeit: 120 Minuten. Erlaubte Hilfsmittel: keine. \
                  Aufgabe 1 (10 Punkte): …",
-                "Prüfungen",
+                Some("Prüfungen"),
+            ),
+            (
+                "Analysis I, Herbstsemester 2026. Organisatorisches: Sprechstunde nach Vereinbarung, Raum HG G 5, \
+                 Kontakt per E-Mail an die Assistierenden. Bewertung: eine schriftliche Klausur am Ende des \
+                 Semesters.",
+                None,
             ),
         ];
-        let subfolders = categories::subfolder_options(&config::Subfolder::defaults(), &[]);
-        let mut ok = module.is_some_and(|(m, _)| m == "Statistik");
-        for ((sentence, expected), (got, p)) in dates.iter().zip(&kinds) {
-            // Wrong and sure enough to be used: that would put a date in the wrong place.
-            let right = got.as_deref() == *expected;
-            let used = got.is_some() && *p >= 0.75 || got.is_none() && *p >= 0.9;
-            log::info!("Laya: «{sentence}» → {got:?} {:.0} %{}", p * 100.0, if right { "" } else { "  ✗" });
-            ok &= right || !used;
-        }
-        // The French hand-in and exam must be found.
-        ok &= kinds.len() == dates.len()
-            && kinds[0].0.as_deref() == Some("exercise")
-            && kinds[1].0.as_deref() == Some("exam");
+        let list = config::Subfolder::defaults();
+        let subfolders = categories::subfolder_options(&list, &[]);
         for (text, expected) in documents {
-            let got = laya::subfolder_for("scan_0042.pdf", text, &subfolders);
-            let right = got.as_ref().is_some_and(|(f, _)| f == expected);
-            log::info!("Laya: a document for «{expected}» → {got:?}{}", if right { "" } else { "  ✗" });
-            // Not sure is fine (the rules decide then); a wrong folder is not.
-            ok &= right || got.is_none();
+            let raw = laya::subfolder_for("scan_0042.pdf", text, &subfolders);
+            let ask = |text: &str| laya::subfolder_for("scan_0042.pdf", text, &subfolders).map(|(f, _)| f);
+            let got = categories::pick_subfolder("scan_0042", &list, &[], &[], || Some(text.to_string()), ask);
+            // The rules decide where they can; the model must not put a document in a wrong folder.
+            let right = got.as_deref() == expected || got.is_none() && expected.is_none();
+            let note = if right { "" } else { "  ✗" };
+            log::info!("Laya: a document for {expected:?} → {got:?} (the model alone: {raw:?}){note}");
+            ok &= right;
         }
-        ok &= laya::subfolder_for("scan_0042.pdf", documents[0].0, &subfolders).is_some_and(|(f, _)| f == "Übungen");
         if !ok {
             log::error!("Laya's answers were not as expected");
             return ExitCode::FAILURE;

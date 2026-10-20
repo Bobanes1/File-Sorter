@@ -109,8 +109,9 @@ pub fn existing_subfolders(module: &Path, versions_folder: &str) -> Vec<String> 
 /// whose learned words are (learned from the files already in the subfolders), else the kind
 /// the name says (lecture, exercise, solution, exam), else a folder already in the module
 /// whose name is in the file name ("Projekt" for "Projekt_Anleitung.pdf"); and only if the
-/// name says nothing, the AI model's choice from the text (`ask`, when it is there), else the
-/// same rules on the start of the text (`text`, read only then).
+/// name says nothing, the same on the start of the text (`text`, read only then), and only if
+/// that says nothing either, the AI model's choice (`ask`; it took an exercise sheet for
+/// solutions, so the rules come first).
 pub fn pick_subfolder(
     stem: &str,
     list: &[Subfolder],
@@ -139,11 +140,11 @@ pub fn pick_subfolder(
         return Some(dir.clone());
     }
     let text = text()?;
-    if let Some(folder) = ask(&text) {
-        return Some(folder);
-    }
     let start = normalise(&text).split(' ').take(TITLE_WORDS).collect::<Vec<_>>().join(" ");
-    by_words(&start).or_else(|| by_learned(&start)).or_else(|| of_words(start.split(' ')).and_then(by_kind))
+    by_words(&start)
+        .or_else(|| by_learned(&start))
+        .or_else(|| of_words(start.split(' ')).and_then(by_kind))
+        .or_else(|| ask(&text))
 }
 
 /// The folders a file can go in, for the AI model: those of the list (what goes there) and
@@ -218,12 +219,12 @@ mod tests {
         };
         assert_eq!(pick_subfolder("Übungsblatt3", &list, &[], &[], || None, ask).as_deref(), Some("Übungen"));
         assert!(!asked.get());
-        // The name says nothing: the model before the start of the text.
-        let text = || Some("Übungsblatt 3 – Musterlösung".to_string());
-        assert_eq!(pick_subfolder("scan_0042", &list, &[], &[], text, laya).as_deref(), Some("Lösungen"));
-        // Not sure: the start of the text.
+        // The name says nothing: the start of the text before the model.
         let text = || Some("Übungsblatt 3".to_string());
-        assert_eq!(pick_subfolder("scan_0042", &list, &[], &[], text, |_| None).as_deref(), Some("Übungen"));
+        assert_eq!(pick_subfolder("scan_0042", &list, &[], &[], text, laya).as_deref(), Some("Übungen"));
+        // The text's start says nothing either: the model.
+        let text = || Some("Analysis I, Herbstsemester 2026, Prof. Muster, Seite 1 von 2".to_string());
+        assert_eq!(pick_subfolder("scan_0042", &list, &[], &[], text, laya).as_deref(), Some("Lösungen"));
         // Its choices: the list's folders and the module's own.
         let options = subfolder_options(&list, &["Projekt".to_string(), "übungen".to_string()]);
         let names: Vec<&str> = options.iter().map(|(n, _)| n.as_str()).collect();

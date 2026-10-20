@@ -143,9 +143,9 @@ pub fn category<'a>(categories: &'a [Category], id: &str) -> Option<&'a Category
 /// Words saying a date is a registration deadline (folded).
 const REGISTRATION_WORDS: &[&str] = &["anmeld", "registr", "einschreib", "sign up", "signup", "inscri", "iscriz"];
 
-/// The category of a date the rules found: the user's words for a category, else what the
-/// rules know (a registration, a project or paper, an exam, else an exercise).
-fn category_by_rules(f: &Found, categories: &[Category]) -> String {
+/// The category of a date when the words say it: the user's words for a category, else
+/// what the rules know (a registration, an exam, a project or paper, a numbered exercise).
+fn category_by_rules(f: &Found, categories: &[Category]) -> Option<String> {
     let text = fold(&format!("{} {} {}", f.context, f.title.as_deref().unwrap_or(""), f.word));
     let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
     let mentions = |keyword: &str| {
@@ -154,19 +154,22 @@ fn category_by_rules(f: &Found, categories: &[Category]) -> String {
             && (keyword.contains(' ') && text.contains(&keyword) || words.iter().any(|w| w.starts_with(&keyword)))
     };
     if let Some(c) = categories.iter().find(|c| c.keywords.iter().any(|k| mentions(k))) {
-        return c.id.clone();
+        return Some(c.id.clone());
     }
     let title = fold(f.title.as_deref().unwrap_or(""));
+    let title: Vec<&str> = title.split(' ').collect();
     let builtin = if REGISTRATION_WORDS.iter().any(|w| text.contains(w)) {
         Builtin::Registration
-    } else if f.kind == Kind::Exam {
+    } else if f.kind == Kind::Exam && !f.word.is_empty() {
         Builtin::Exam
-    } else if title.split(' ').any(|w| WORKS.iter().any(|work| w.starts_with(work))) {
+    } else if title.iter().any(|w| WORKS.iter().any(|work| w.starts_with(work))) {
         Builtin::Project
-    } else {
+    } else if f.kind == Kind::Due && title.iter().any(|w| NUMBERED_WORKS.contains(w)) {
         Builtin::Exercise
+    } else {
+        return None;
     };
-    category(categories, builtin.id()).map(|c| c.id.clone()).unwrap_or_default()
+    category(categories, builtin.id()).map(|c| c.id.clone())
 }
 
 /// Where the date is, seen from the word.
@@ -1131,39 +1134,51 @@ pub fn dated_sentences(text: &str, reference: NaiveDate) -> Vec<(NaiveDate, Opti
     out
 }
 
-/// What [`find`] finds, each in one of `categories`. With the AI model there it is also
-/// asked: dates in sentences the rules here don't know (other languages, unusual wording) that
-/// it is sure about are added, found dates it is very sure are something else are left out,
-/// and it decides the category.
+/// What [`find`] finds, each in one of `categories`. With the AI model there, dates in
+/// sentences the rules here don't know (other languages, unusual wording) that it is sure are
+/// a hand-in or an appointment are added. It never takes away what the rules found (it took
+/// «Abgabe der Seminararbeit: 30. November» for no deadline at all).
 pub fn find_in(text: &str, reference: NaiveDate, categories: &[Category]) -> Vec<Found> {
     let mut found = find(text, reference);
-    if let Some(verdicts) = ask_ai(text, reference, categories) {
-        // A date the rules found, but every sentence it is in is clearly about something else.
-        found.retain(|f| {
-            let about: Vec<_> = verdicts.iter().filter(|v| v.0 == f.date).collect();
-            about.is_empty() || !about.iter().all(|v| v.3.is_none() && v.4 >= 0.9)
-        });
-        for f in &mut found {
-            if let Some(v) = verdicts.iter().find(|v| v.0 == f.date && v.3.is_some() && v.4 >= SURE) {
-                f.category = v.3.clone().unwrap_or_default();
-            }
+    for (date, time, sentence, kind) in ai_dates(text, reference) {
+        if found.iter().any(|f| f.date == date) {
+            continue;
         }
-        for (date, time, sentence, category, p) in verdicts {
-            let Some(category) = category else { continue };
-            if p < SURE || found.iter().any(|f| f.date == date) {
-                continue;
-            }
-            let raw: Vec<char> = sentence.chars().collect();
-            let title = work_name(&raw, 0, raw.len()).map(|(t, _)| t).or_else(|| Some(shortened(&sentence, 60)));
-            let context: String = sentence.chars().take(CONTEXT * 2).collect();
-            let (word, estimated, ai) = (String::new(), false, true);
-            found.push(Found { date, time, context, kind: Kind::Due, word, title, estimated, ai, category });
+        let raw: Vec<char> = sentence.chars().collect();
+        let title = work_name(&raw, 0, raw.len()).map(|(t, _)| t).or_else(|| Some(shortened(&sentence, 60)));
+        let context: String = sentence.chars().take(CONTEXT * 2).collect();
+        let (word, estimated, ai, category) = (String::new(), false, true, String::new());
+        found.push(Found { date, time, context, kind, word, title, estimated, ai, category });
+    }
+    // The category: the user's words, then what the rules know, then the AI model (only
+    // among the categories of its kind: hand-ins or appointments), else the usual one.
+    let mut unsure: Vec<usize> = Vec::new();
+    for (i, f) in found.iter_mut().enumerate() {
+        match category_by_rules(f, categories) {
+            Some(id) => f.category = id,
+            None => unsure.push(i),
+        }
+    }
+    for appointment in [false, true] {
+        let asked: Vec<usize> =
+            unsure.iter().copied().filter(|&i| (found[i].kind == Kind::Exam) == appointment).collect();
+        if asked.is_empty() {
+            continue;
+        }
+        let options: Vec<(String, String)> =
+            categories.iter().filter(|c| c.appointment == appointment).map(|c| (c.id.clone(), c.about())).collect();
+        let sentences: Vec<String> = asked.iter().map(|&i| found[i].context.clone()).collect();
+        let picks = match options.len() {
+            1 => vec![Some(options[0].0.clone()); asked.len()],
+            _ => crate::laya::date_categories(&sentences, &options).unwrap_or_default(),
+        };
+        let usual = if appointment { Builtin::Other } else { Builtin::Exercise };
+        let usual = category(categories, usual.id()).map(|c| c.id.clone()).unwrap_or_default();
+        for (n, &i) in asked.iter().enumerate() {
+            found[i].category = picks.get(n).cloned().flatten().unwrap_or_else(|| usual.clone());
         }
     }
     for f in &mut found {
-        if f.category.is_empty() {
-            f.category = category_by_rules(f, categories);
-        }
         if let Some(c) = category(categories, &f.category) {
             f.kind = if c.appointment { Kind::Exam } else { Kind::Due };
         }
@@ -1171,26 +1186,31 @@ pub fn find_in(text: &str, reference: NaiveDate, categories: &[Category]) -> Vec
     found
 }
 
-/// How sure the AI model must be to add a date or decide its category.
+/// How sure the AI model must be to add a date.
 const SURE: f64 = 0.75;
 
-/// The AI model's verdict on each dated sentence: the date, its time, the sentence, the
-/// category (`None`: not a date to note) and how sure it is.
-type Verdict = (NaiveDate, Option<NaiveTime>, String, Option<String>, f64);
-
-fn ask_ai(text: &str, reference: NaiveDate, categories: &[Category]) -> Option<Vec<Verdict>> {
-    if !crate::laya::available() || categories.is_empty() {
-        return None;
+/// Dated sentences the AI model is sure are a hand-in or an appointment: the date, its time,
+/// the sentence and which of the two.
+fn ai_dates(text: &str, reference: NaiveDate) -> Vec<(NaiveDate, Option<NaiveTime>, String, Kind)> {
+    if !crate::laya::available() {
+        return Vec::new();
     }
     let mut sentences = dated_sentences(text, reference);
     sentences.truncate(MAX_ASKED);
-    if sentences.is_empty() {
-        return None;
-    }
     let texts: Vec<String> = sentences.iter().map(|(_, _, s)| s.clone()).collect();
-    let options: Vec<(String, String)> = categories.iter().map(|c| (c.id.clone(), c.about())).collect();
-    let answers = crate::laya::date_categories(&texts, &options)?;
-    Some(sentences.into_iter().zip(answers).map(|((d, t, s), (c, p))| (d, t, s, c, p)).collect())
+    let Some(kinds) = crate::laya::date_kinds(&texts) else { return Vec::new() };
+    sentences
+        .into_iter()
+        .zip(kinds)
+        .filter_map(|((date, time, sentence), (kind, p))| {
+            let kind = match kind {
+                crate::laya::DateKind::Due => Kind::Due,
+                crate::laya::DateKind::Event => Kind::Exam,
+                crate::laya::DateKind::Other => return None,
+            };
+            (p >= SURE).then_some((date, time, sentence, kind))
+        })
+        .collect()
 }
 
 /// `text` cut after at most `max` characters, at a word, with «…».
@@ -1545,7 +1565,8 @@ impl Deadlines {
                     ai: false,
                     category: String::new(),
                 };
-                d.category = category_by_rules(&f, &defaults);
+                let usual = if d.kind == Kind::Exam { Builtin::Exam } else { Builtin::Exercise };
+                d.category = category_by_rules(&f, &defaults).unwrap_or_else(|| usual.id().to_string());
             }
             if d.title.trim().is_empty() && d.ai && !d.context.is_empty() {
                 d.title = shortened(&d.context, 60);

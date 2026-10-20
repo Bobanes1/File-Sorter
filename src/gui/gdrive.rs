@@ -210,7 +210,9 @@ impl App {
         let mut changed = false;
         setting_row(ui, icon::GOOGLE_DRIVE_LOGO, lang.gdrive_title(), lang.gdrive_hint(), |ui| {
             if signed_in {
-                ui.label(RichText::new(format!("{}  {}", icon::CHECK_CIRCLE, lang.gdrive_connected())).color(p.success));
+                ui.label(
+                    RichText::new(format!("{}  {}", icon::CHECK_CIRCLE, lang.gdrive_connected())).color(p.success),
+                );
             } else if self.gdrive.installing || self.gdrive.sign_in.is_some() {
                 ui.add(egui::Spinner::new());
             } else {
@@ -296,7 +298,9 @@ impl App {
                     crate::desktop::open(&backups);
                 }
                 if ui
-                    .add_enabled_ui(!busy, |ui| fx::button(ui, ButtonStyle::Text, icon::SIGN_OUT, lang.gdrive_disconnect()))
+                    .add_enabled_ui(!busy, |ui| {
+                        fx::button(ui, ButtonStyle::Text, icon::SIGN_OUT, lang.gdrive_disconnect())
+                    })
                     .inner
                     .clicked()
                 {

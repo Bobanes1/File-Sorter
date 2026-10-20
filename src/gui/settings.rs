@@ -173,9 +173,15 @@ impl App {
                     divider(ui);
                     changed |= self.flat_setting_ui(ui);
                     divider(ui);
-                    setting_row(ui, icon::APP_WINDOW, lang.auto_results_window(), lang.auto_results_window_hint(), |ui| {
-                        changed |= fx::toggle(ui, &mut self.config.auto_results_window).changed();
-                    });
+                    setting_row(
+                        ui,
+                        icon::APP_WINDOW,
+                        lang.auto_results_window(),
+                        lang.auto_results_window_hint(),
+                        |ui| {
+                            changed |= fx::toggle(ui, &mut self.config.auto_results_window).changed();
+                        },
+                    );
                     divider(ui);
                     changed |= self.file_types_ui(ui);
                 });

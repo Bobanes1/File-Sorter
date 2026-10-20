@@ -478,7 +478,12 @@ mod tests {
     #[test]
     fn failures_are_told_plainly() {
         assert_eq!(explain_failure("ERROR : too many deletes - aborting"), "too many deletes");
-        assert_eq!(explain_failure("Bisync critical error: cannot find prior Path1 or Path2 listings, likely due to critical error on prior run\nMust run --resync to recover."), "resync needed");
+        assert_eq!(
+            explain_failure(
+                "Bisync critical error: cannot find prior Path1 or Path2 listings, likely due to critical error on prior run\nMust run --resync to recover."
+            ),
+            "resync needed"
+        );
     }
 
     /// Downloads rclone from its GitHub releases and checks it.
@@ -508,7 +513,8 @@ mod tests {
         // A "drive" that is a folder here.
         let drive = tmp.path().join("drive");
         fs::create_dir_all(&drive).unwrap();
-        fs::write(place.conf(), format!("[{REMOTE}]\ntype = alias\nremote = {}\ntoken = x\n", drive.display())).unwrap();
+        fs::write(place.conf(), format!("[{REMOTE}]\ntype = alias\nremote = {}\ntoken = x\n", drive.display()))
+            .unwrap();
         let local = tmp.path().join("Studium");
         fs::create_dir_all(local.join("Statistik")).unwrap();
         fs::write(local.join("Statistik/a.pdf"), "a").unwrap();

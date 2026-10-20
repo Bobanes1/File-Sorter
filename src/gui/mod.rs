@@ -736,7 +736,8 @@ impl App {
 
     /// The modules in the study folder, read as the chosen layout says.
     fn scan_modules(&self) -> Vec<Course> {
-        let programs: Vec<String> = self.config.courses.iter().map(|c| c.subject.clone()).filter(|s| !s.is_empty()).collect();
+        let programs: Vec<String> =
+            self.config.courses.iter().map(|c| c.subject.clone()).filter(|s| !s.is_empty()).collect();
         scan_study_folder(&self.study_root(), self.config.flat_modules, &programs)
     }
 
@@ -1176,10 +1177,8 @@ impl eframe::App for App {
         self.semester_logic();
         let minimised = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        self.in_front = !self.in_tray()
-            && !minimised
-            && focused
-            && std::env::var_os("FILE_SORTER_TEST_HIDDEN").is_none();
+        self.in_front =
+            !self.in_tray() && !minimised && focused && std::env::var_os("FILE_SORTER_TEST_HIDDEN").is_none();
         while let Ok(event) = self.events_rx.try_recv() {
             self.handle_event(event);
         }

@@ -1082,10 +1082,9 @@ impl Lang {
     pub fn gdrive_last(self, time: &str, down: usize, up: usize, conflicts: usize) -> String {
         let mut text = self.fmt(format!("Synced at {time}"), format!("Synchronisiert um {time}"));
         if down + up > 0 {
-            text.push_str(&self.fmt(
-                format!(" · {down} down, {up} up"),
-                format!(" · {down} heruntergeladen, {up} hochgeladen"),
-            ));
+            text.push_str(
+                &self.fmt(format!(" · {down} down, {up} up"), format!(" · {down} heruntergeladen, {up} hochgeladen")),
+            );
         }
         if conflicts > 0 {
             text.push_str(&self.fmt(
@@ -1115,7 +1114,9 @@ impl Lang {
     pub fn gdrive_conflict_note(self, count: usize) -> String {
         self.fmt(
             format!("Google Drive: {count} file(s) changed on both sides – both versions kept («….conflict1»)"),
-            format!("Google Drive: {count} Datei(en) auf beiden Seiten geändert – beide Versionen behalten («….conflict1»)"),
+            format!(
+                "Google Drive: {count} Datei(en) auf beiden Seiten geändert – beide Versionen behalten («….conflict1»)"
+            ),
         )
     }
     pub fn gdrive_app_folder(self) -> &'static str {
@@ -1188,7 +1189,9 @@ impl Lang {
     }
     pub fn flatten_done(self, count: usize) -> String {
         match count {
-            1 => self.pick("1 module is now directly in the study folder", "1 Modul liegt jetzt direkt im Studienordner").into(),
+            1 => self
+                .pick("1 module is now directly in the study folder", "1 Modul liegt jetzt direkt im Studienordner")
+                .into(),
             n => self.fmt(
                 format!("{n} modules are now directly in the study folder"),
                 format!("{n} Module liegen jetzt direkt im Studienordner"),

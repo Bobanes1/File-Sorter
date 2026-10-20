@@ -85,8 +85,7 @@ impl App {
                         }
                     }
                     ui.label(RichText::new(lang.layout_label()).small().color(p.on_surface_variant));
-                    let layouts =
-                        [(false, lang.layout_programs().to_string()), (true, lang.layout_flat().to_string())];
+                    let layouts = [(false, lang.layout_programs().to_string()), (true, lang.layout_flat().to_string())];
                     changed |= fx::segmented(ui, "wizard-layout", &mut self.config.flat_modules, &layouts);
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {

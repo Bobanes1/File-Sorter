@@ -182,7 +182,6 @@ fn pages_up_to(path: &Path, count: usize) -> (Vec<String>, bool) {
     (pages, recognised)
 }
 
-
 fn pdf_pages(data: &[u8], count: usize) -> Option<Vec<String>> {
     let mut doc = load_pdf(data)?;
     if doc.is_encrypted() && doc.decrypt("").is_err() {

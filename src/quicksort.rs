@@ -63,8 +63,12 @@ impl Inbox {
     fn take_lines(&self) -> io::Result<Vec<String>> {
         self.with_queue(|file| {
             file.seek(SeekFrom::Start(0))?;
-            let lines: Vec<String> =
-                BufReader::new(&*file).lines().collect::<io::Result<Vec<_>>>()?.into_iter().filter(|l| !l.is_empty()).collect();
+            let lines: Vec<String> = BufReader::new(&*file)
+                .lines()
+                .collect::<io::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|l| !l.is_empty())
+                .collect();
             file.set_len(0)?;
             Ok(lines)
         })
@@ -212,10 +216,8 @@ const STARTING: Duration = Duration::from_secs(4);
 pub fn show_results(config_path: &Path, state_dir: &Path, results: &[SortResult]) {
     static STARTED: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
     let inbox = Inbox::results(state_dir);
-    let lines: Vec<String> = results
-        .iter()
-        .filter_map(|r| serde_json::to_string(&Queued { id: r.id, result: r.clone() }).ok())
-        .collect();
+    let lines: Vec<String> =
+        results.iter().filter_map(|r| serde_json::to_string(&Queued { id: r.id, result: r.clone() }).ok()).collect();
     if let Err(e) = inbox.submit_lines(&lines) {
         log::info!("Could not hand the results to the results window: {e}");
         return;

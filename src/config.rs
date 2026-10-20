@@ -717,9 +717,28 @@ pub fn looks_flat(root: &Path, subfolders: &[Subfolder]) -> bool {
         return false;
     }
     const USUAL: &[&str] = &[
-        "vorlesung", "vorlesungen", "vl", "folien", "skript", "ubung", "ubungen", "uebungen", "serien", "blatter",
-        "losungen", "loesungen", "prufungen", "altklausuren", "notizen", "literatur", "lectures", "slides",
-        "exercises", "solutions", "exams", "notes",
+        "vorlesung",
+        "vorlesungen",
+        "vl",
+        "folien",
+        "skript",
+        "ubung",
+        "ubungen",
+        "uebungen",
+        "serien",
+        "blatter",
+        "losungen",
+        "loesungen",
+        "prufungen",
+        "altklausuren",
+        "notizen",
+        "literatur",
+        "lectures",
+        "slides",
+        "exercises",
+        "solutions",
+        "exams",
+        "notes",
     ];
     let is_subfolder = |name: &str| {
         let name = normalise(name);
@@ -865,7 +884,8 @@ mod tests {
     fn flat_study_folders_have_the_modules_directly() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("Uni");
-        for dir in ["Statistik/Vorlesung", "Statistik/Übungen", "Programmieren", "Informatik/Datenbanken", "Archiv/HS2025"]
+        for dir in
+            ["Statistik/Vorlesung", "Statistik/Übungen", "Programmieren", "Informatik/Datenbanken", "Archiv/HS2025"]
         {
             fs::create_dir_all(root.join(dir)).unwrap();
         }

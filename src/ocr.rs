@@ -196,10 +196,8 @@ pub fn tidy(text: &str) -> String {
     let mut lines = text.lines().peekable();
     while let Some(line) = lines.next() {
         let line = line.trim_end();
-        let next_starts_small = lines
-            .peek()
-            .and_then(|next| next.trim_start().chars().next())
-            .is_some_and(|c| c.is_lowercase());
+        let next_starts_small =
+            lines.peek().and_then(|next| next.trim_start().chars().next()).is_some_and(|c| c.is_lowercase());
         // "Rekur-" but not "-" alone or "Ein- und Ausgabe".
         let split = line.strip_suffix('-').filter(|rest| rest.chars().last().is_some_and(char::is_alphabetic));
         match split {
@@ -426,7 +424,10 @@ mod tests {
 
     #[test]
     fn recognised_text_joins_words_split_at_line_ends() {
-        assert_eq!(tidy("Die Rekur-\nsion ist\nEin- und Ausgabe\n-\nTeil-\nAufgabe"), "Die Rekursion ist\nEin- und Ausgabe\n-\nTeil-\nAufgabe\n");
+        assert_eq!(
+            tidy("Die Rekur-\nsion ist\nEin- und Ausgabe\n-\nTeil-\nAufgabe"),
+            "Die Rekursion ist\nEin- und Ausgabe\n-\nTeil-\nAufgabe\n"
+        );
         assert_eq!(tidy("Auf\u{fb01}ndbar"), "Auffindbar\n");
     }
 

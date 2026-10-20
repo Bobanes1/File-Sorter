@@ -887,7 +887,7 @@ impl App {
                                 [64.0, 26.0],
                                 egui::Label::new(RichText::new(text).color(p.primary).strong()),
                             );
-                            let hint = if done { lang.from_tests() } else { lang.provisional() };
+                            let hint = if done { lang.grade_from_tests() } else { lang.provisional() };
                             label.on_hover_text(hint);
                         }
                         None => {

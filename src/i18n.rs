@@ -770,7 +770,7 @@ impl Lang {
     pub fn provisional(self) -> &'static str {
         self.pick("provisional", "vorläufig")
     }
-    pub fn from_tests(self) -> &'static str {
+    pub fn grade_from_tests(self) -> &'static str {
         self.pick("from the tests", "aus den Prüfungen")
     }
     pub fn archived_tag(self) -> &'static str {

@@ -642,7 +642,8 @@ jobs:
             **Windows:** download **FileSorter.exe** below and double-click it – nothing else to install.
             Windows SmartScreen may warn because the exe isn't signed: click *More info → Run anyway*.
 
-            **Linux:** download **FileSorter-linux-x86_64.tar.gz**, unpack it and run `./file-sorter`
+            **Linux:** download **FileSorter-x86_64.AppImage**, make it executable and start it (it updates
+            itself). Or download **FileSorter-linux-x86_64.tar.gz**, unpack it and run `./file-sorter`
             (see the README for the menu entry and text recognition with tesseract).
 
             See the README for setup and autostart instructions.

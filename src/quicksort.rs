@@ -1,5 +1,6 @@
 //! Right-click → "Sort with File Sorter": sorts the chosen files and shows a small
-//! results window.
+//! results window. The same window shows what the main window sorted by itself while it
+//! wasn't in front (`--show-results`).
 //!
 //! Explorer starts one File Sorter per selected file. They all drop their file into a
 //! shared inbox; the first one becomes the leader, sorts everything that arrives and
@@ -42,6 +43,44 @@ pub struct Inbox {
 impl Inbox {
     pub fn new(dir: &Path) -> Inbox {
         Inbox { queue: dir.join("sort-queue.txt"), lock: dir.join("sort.lock") }
+    }
+
+    /// Results of automatic sorting waiting to be shown (one JSON line each).
+    pub fn results(dir: &Path) -> Inbox {
+        Inbox { queue: dir.join("results-queue.txt"), lock: dir.join("results.lock") }
+    }
+
+    fn submit_lines(&self, lines: &[String]) -> io::Result<()> {
+        self.with_queue(|file| {
+            file.seek(SeekFrom::End(0))?;
+            for line in lines {
+                writeln!(file, "{line}")?;
+            }
+            file.flush()
+        })
+    }
+
+    fn take_lines(&self) -> io::Result<Vec<String>> {
+        self.with_queue(|file| {
+            file.seek(SeekFrom::Start(0))?;
+            let lines: Vec<String> =
+                BufReader::new(&*file).lines().collect::<io::Result<Vec<_>>>()?.into_iter().filter(|l| !l.is_empty()).collect();
+            file.set_len(0)?;
+            Ok(lines)
+        })
+    }
+
+    /// The lock, if no other process holds it.
+    fn try_lead(&self) -> io::Result<Option<File>> {
+        if let Some(dir) = self.lock.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let lock = OpenOptions::new().write(true).create(true).truncate(false).open(&self.lock)?;
+        match lock.try_lock() {
+            Ok(()) => Ok(Some(lock)),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(e)) => Err(e),
+        }
     }
 
     fn with_queue<T>(&self, f: impl FnOnce(&mut File) -> io::Result<T>) -> io::Result<T> {
@@ -132,8 +171,6 @@ pub fn run(config_path: &Path, paths: Vec<PathBuf>, quiet: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let lang = Lang::from_setting(config.language.as_deref());
-    let (theme, motion) = (config.theme, config.animations);
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = channel::<Vec<SortResult>>();
     let worker = {
@@ -154,6 +191,109 @@ pub fn run(config_path: &Path, paths: Vec<PathBuf>, quiet: bool) -> ExitCode {
             }
         })
     };
+    show_window(config, rx, &stop);
+    stop.store(true, Ordering::SeqCst);
+    let _ = worker.join(); // let a move that is in progress finish
+    ExitCode::SUCCESS
+}
+
+/// A result handed to the results window, with its history entry (to undo it).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Queued {
+    id: Option<u64>,
+    result: SortResult,
+}
+
+/// Don't start another results window within this long of the last (it is still starting).
+const STARTING: Duration = Duration::from_secs(4);
+
+/// Show `results` (sorted by the main window while it wasn't in front) in the results
+/// window, starting one if none is open.
+pub fn show_results(config_path: &Path, state_dir: &Path, results: &[SortResult]) {
+    static STARTED: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    let inbox = Inbox::results(state_dir);
+    let lines: Vec<String> = results
+        .iter()
+        .filter_map(|r| serde_json::to_string(&Queued { id: r.id, result: r.clone() }).ok())
+        .collect();
+    if let Err(e) = inbox.submit_lines(&lines) {
+        log::info!("Could not hand the results to the results window: {e}");
+        return;
+    }
+    let mut started = STARTED.lock().unwrap_or_else(|e| e.into_inner());
+    if started.is_some_and(|t| t.elapsed() < STARTING) {
+        return;
+    }
+    // One is open: it takes them from the queue.
+    match inbox.try_lead() {
+        Ok(Some(lock)) => drop(lock),
+        _ => return,
+    }
+    let Ok(exe) = std::env::current_exe() else { return };
+    match std::process::Command::new(exe).arg("--config").arg(config_path).arg("--show-results").spawn() {
+        Ok(_) => *started = Some(Instant::now()),
+        Err(e) => log::info!("Could not open the results window: {e}"),
+    }
+}
+
+/// `--show-results`: the results window for what the main window sorted by itself.
+pub fn run_results(config_path: &Path) -> ExitCode {
+    let config = match load_config(config_path) {
+        Ok(config) => config,
+        Err(e) => {
+            log::error!("Could not read {}: {e}", config_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let dir = config.state_dir.clone().unwrap_or_else(|| config_path.parent().unwrap_or(Path::new(".")).into());
+    let inbox = Inbox::results(&dir);
+    let lock = match inbox.try_lead() {
+        Ok(Some(lock)) => lock,
+        Ok(None) => return ExitCode::SUCCESS, // one is open already
+        Err(e) => {
+            log::error!("Could not open the results window: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = channel::<Vec<SortResult>>();
+    let worker = {
+        let stop = Arc::clone(&stop);
+        let inbox = Inbox::results(&dir);
+        thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                let batch: Vec<SortResult> = inbox
+                    .take_lines()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|l| serde_json::from_str::<Queued>(l).ok())
+                    .map(|q| SortResult { id: q.id, ..q.result })
+                    .collect();
+                if batch.is_empty() {
+                    thread::sleep(Duration::from_millis(200));
+                } else if tx.send(batch).is_err() {
+                    break;
+                }
+            }
+        })
+    };
+    show_window(config, rx, &stop);
+    stop.store(true, Ordering::SeqCst);
+    let _ = worker.join();
+    drop(lock);
+    // Results that came in just as the window closed: show them in a new one.
+    if fs::metadata(&inbox.queue).is_ok_and(|m| m.len() > 0)
+        && let Ok(exe) = std::env::current_exe()
+    {
+        let _ = std::process::Command::new(exe).arg("--config").arg(config_path).arg("--show-results").spawn();
+    }
+    ExitCode::SUCCESS
+}
+
+/// The results window, showing what arrives on `rx` until it closes.
+fn show_window(config: Config, rx: Receiver<Vec<SortResult>>, stop: &Arc<AtomicBool>) {
+    let lang = Lang::from_setting(config.language.as_deref());
+    let (theme, motion) = (config.theme, config.animations);
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("File Sorter")
         .with_icon(Arc::new(app_icon()))
@@ -168,7 +308,7 @@ pub fn run(config_path: &Path, paths: Vec<PathBuf>, quiet: bool) -> ExitCode {
             viewport.with_position([right / scale - POPUP_SIZE[0] - 24.0, bottom / scale - POPUP_SIZE[1] - 56.0]);
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    let window_stop = Arc::clone(&stop);
+    let window_stop = Arc::clone(stop);
     let shown = eframe::run_native(
         "File Sorter",
         options,
@@ -179,16 +319,13 @@ pub fn run(config_path: &Path, paths: Vec<PathBuf>, quiet: bool) -> ExitCode {
             Ok(Box::new(ResultsWindow::new(lang, config, rx, window_stop)))
         }),
     );
-    stop.store(true, Ordering::SeqCst);
-    let _ = worker.join(); // let a move that is in progress finish
     if let Err(e) = shown {
         log::error!("Could not open the results window: {e}");
     }
-    ExitCode::SUCCESS
 }
 
 /// Logical size of the results window.
-const POPUP_SIZE: [f32; 2] = [400.0, 330.0];
+const POPUP_SIZE: [f32; 2] = [500.0, 340.0];
 
 fn log_results(results: &[SortResult]) {
     for result in results {
@@ -426,6 +563,30 @@ mod tests {
     use super::*;
     use crate::config::save_config;
     use crate::sorter::tests::{make_pdf, test_config};
+
+    #[test]
+    fn results_are_handed_over_with_their_history_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inbox = Inbox::results(tmp.path());
+        let mut result = SortResult::new(
+            PathBuf::from("/dl/a.pdf"),
+            crate::sorter::Outcome::Moved {
+                course: "Statistik".into(),
+                destination: PathBuf::from("/uni/Statistik/a.pdf"),
+                reason: crate::matcher::Reason::Chosen,
+            },
+        );
+        result.id = Some(42);
+        let line = serde_json::to_string(&Queued { id: result.id, result: result.clone() }).unwrap();
+        inbox.submit_lines(&[line]).unwrap();
+        let lines = inbox.take_lines().unwrap();
+        let back: Queued = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(SortResult { id: back.id, ..back.result }, result);
+        assert!(inbox.take_lines().unwrap().is_empty());
+        // Only one results window: the second can't take the lock.
+        let first = inbox.try_lead().unwrap();
+        assert!(first.is_some() && inbox.try_lead().unwrap().is_none());
+    }
 
     #[test]
     fn inbox_queues_and_drains() {

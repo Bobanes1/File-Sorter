@@ -474,7 +474,10 @@ pub(crate) fn activity_row(
                                     action = RowAction::Undo;
                                 }
                                 if let Some(result) = card.assignable().filter(|_| !modules.is_empty()) {
-                                    if let Some(i) = assign_menu(ui, lang, result, modules, running) {
+                                    // In a narrow window (the results window) «Other module»
+                                    // is an icon, so the file's name keeps its room.
+                                    let compact = width < 620.0 && result.sorted();
+                                    if let Some(i) = assign_menu(ui, lang, result, modules, running, compact) {
                                         action = RowAction::Assign(i);
                                     }
                                     // Unsure: one button per module in question (right to left).
@@ -542,11 +545,15 @@ fn assign_menu(
     result: &SortResult,
     modules: &[String],
     running: Option<&str>,
+    compact: bool,
 ) -> Option<usize> {
     let p = fx::pal(ui);
     let text = if result.sorted() { lang.other_module() } else { lang.assign() };
-    let button = fx::button(ui, ButtonStyle::Text, icon::CARET_DOWN, text);
-    let button = button.on_hover_text(lang.assign_hint());
+    let button = if compact {
+        fx::icon_button(ui, icon::SWAP).on_hover_text(text)
+    } else {
+        fx::button(ui, ButtonStyle::Text, icon::CARET_DOWN, text).on_hover_text(lang.assign_hint())
+    };
     let current = match &result.outcome {
         Outcome::Moved { course, .. } | Outcome::Copied { course, .. } | Outcome::DuplicateRemoved { course, .. } => {
             Some(course.as_str())

@@ -78,6 +78,8 @@ struct Args {
     /// Files to sort right away (right-click menu, or dropped onto the exe).
     files: Vec<PathBuf>,
     quiet: bool,
+    /// `--show-results`: the results window for what the main window sorted by itself.
+    show_results: bool,
     register_menu: Option<bool>,
     list_clouds: bool,
     check_update: bool,
@@ -96,6 +98,7 @@ fn parse_args() -> Result<Args, String> {
         autostart: false,
         files: Vec::new(),
         quiet: false,
+        show_results: false,
         register_menu: None,
         list_clouds: false,
         check_update: false,
@@ -110,6 +113,7 @@ fn parse_args() -> Result<Args, String> {
             "--autostart" => args.autostart = true,
             "--sort" => {}
             "--quiet" => args.quiet = true,
+            "--show-results" => args.show_results = true,
             "--register-menu" => args.register_menu = Some(true),
             "--unregister-menu" => args.register_menu = Some(false),
             "--list-clouds" => args.list_clouds = true,
@@ -226,6 +230,9 @@ fn main() -> ExitCode {
     }
     if !args.files.is_empty() {
         return quicksort::run(&args.config, args.files, args.quiet);
+    }
+    if args.show_results {
+        return quicksort::run_results(&args.config);
     }
 
     if !(args.headless || args.sort_now) {

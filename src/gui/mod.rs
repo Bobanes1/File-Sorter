@@ -197,6 +197,12 @@ pub(crate) struct App {
     /// Finishing a semester (archive).
     archive: archive::ArchiveState,
     flatten: flatten::FlattenState,
+    /// The window is shown and has the focus (results sorted otherwise go to the results window).
+    in_front: bool,
+    /// Results for the results window, handed over at the end of the frame.
+    for_popup: Vec<SortResult>,
+    /// When the newest entries were last checked for files put back elsewhere.
+    undone_checked: std::time::Instant,
     /// A new version of File Sorter.
     update: update::UpdateState,
     /// The setup steps (first start, or from the settings).
@@ -289,6 +295,9 @@ impl App {
             index_paused: false,
             archive: archive::ArchiveState::default(),
             flatten: flatten::FlattenState::default(),
+            in_front: true,
+            for_popup: Vec::new(),
+            undone_checked: std::time::Instant::now(),
             update: update::UpdateState::default(),
             wizard: first_start.then(wizard::Wizard::new),
             resort: Default::default(),
@@ -407,11 +416,24 @@ impl App {
             WatchEvent::Result(result) => {
                 self.roll_day();
                 let name = result.file_name();
-                // Put back by "undo": no entry for it.
+                // Put back by "undo": no entry for it. When it was put back from the results
+                // window, its entry here says so too.
                 if result.outcome == Outcome::Left(LeftReason::Kept) {
                     let key = self.open_file_card(&name).map(|c| c.key);
                     self.cards.retain(|c| Some(c.key) != key);
+                    if let Some(card) = self.cards.iter_mut().rev().find(|c| match &c.kind {
+                        CardKind::File { name: n, state: FileState::Done(r) } => {
+                            *n == name
+                                && matches!(&r.outcome, Outcome::Moved { destination, .. } if !destination.exists())
+                        }
+                        _ => false,
+                    }) {
+                        card.set_state(FileState::Undone { back: result.source.clone() }, now);
+                    }
                     return;
+                }
+                if self.config.auto_results_window && !self.in_front && popup_worthy(&result) {
+                    self.for_popup.push(result.clone());
                 }
                 let course = match &result.outcome {
                     Outcome::Moved { course, .. }
@@ -443,6 +465,26 @@ impl App {
                     self.flights.push(Flight { name, target: course, start: now });
                     self.snackbar = Some(Snackbar { card: key, text, can_undo: true, shown: now });
                 }
+            }
+        }
+    }
+
+    /// Files put back from the results window (or the right-click one): their entries here
+    /// say so too. (Checked every few seconds for the newest entries.)
+    fn notice_undone_elsewhere(&mut self) {
+        if self.undone_checked.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.undone_checked = std::time::Instant::now();
+        let now = self.now();
+        for card in self.cards.iter_mut().rev().take(20) {
+            let CardKind::File { state: FileState::Done(result), .. } = &card.kind else { continue };
+            if let Outcome::Moved { destination, .. } = &result.outcome
+                && !destination.exists()
+                && result.source.exists()
+            {
+                let back = result.source.clone();
+                card.set_state(FileState::Undone { back }, now);
             }
         }
     }
@@ -1125,8 +1167,21 @@ impl eframe::App for App {
         self.update_logic();
         self.resort_logic();
         self.semester_logic();
+        let minimised = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        self.in_front = !self.in_tray()
+            && !minimised
+            && focused
+            && std::env::var_os("FILE_SORTER_TEST_HIDDEN").is_none();
         while let Ok(event) = self.events_rx.try_recv() {
             self.handle_event(event);
+        }
+        self.notice_undone_elsewhere();
+        if !self.for_popup.is_empty() {
+            let results = std::mem::take(&mut self.for_popup);
+            if let Some(dir) = &self.config.state_dir {
+                crate::quicksort::show_results(&self.config_path, dir, &results);
+            }
         }
         while let Ok((key, finished)) = self.undo_rx.try_recv() {
             match finished {
@@ -1247,6 +1302,17 @@ impl eframe::App for App {
         self.cloud.finish();
         if let Err(e) = save_config(&self.config, &self.config_path) {
             log::error!("Could not save settings: {e}");
+        }
+    }
+}
+
+/// Whether a result of automatic sorting is worth showing in the results window: sorted, or
+/// waiting for the user to choose the module.
+fn popup_worthy(result: &SortResult) -> bool {
+    match &result.outcome {
+        Outcome::Moved { .. } | Outcome::Copied { .. } | Outcome::DuplicateRemoved { .. } => true,
+        Outcome::Left(reason) => {
+            matches!(reason, LeftReason::NoMatch | LeftReason::Unsure { .. } | LeftReason::Error(_))
         }
     }
 }

@@ -1,0 +1,10 @@
+# torch comes first from the PyTorch index that fits the GPU (run_remote.sh does this; cu128 by default,
+# which needs an NVIDIA driver 570 or newer and also runs on Blackwell cards). Here it only fixes the version.
+torch==2.9.1
+laya==0.4.12
+# 5.x writes encoder/config.json the way the base checkpoint has it (rope_parameters), which src/laya.rs reads.
+transformers==5.18.0
+tokenizers==0.23.3
+safetensors==0.8.0
+huggingface-hub==2.2.0
+numpy==2.5.4

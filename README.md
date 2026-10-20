@@ -38,9 +38,11 @@ The window is drawn with the graphics card (DirectX 12 or Vulkan). On PCs withou
 
 ## Linux: the ready-made download
 
-On the **Releases** page download **FileSorter-linux-x86_64.tar.gz**, unpack it and start `./file-sorter` in the unpacked `FileSorter` folder. For a menu entry, copy `file-sorter` to `~/.local/bin/`, `icon.png` to `~/.local/share/icons/file-sorter.png` and `file-sorter.desktop` to `~/.local/share/applications/`.
+On the **Releases** page download **FileSorter-x86_64.AppImage**, make it executable (file manager → *Properties* → *Allow executing*, or `chmod +x FileSorter-x86_64.AppImage`) and start it. The AppImage **updates itself** like the Windows version (the new AppImage is checked against GitHub's size and SHA-256 before it replaces the old one).
 
-Text recognition for scans uses tesseract: `sudo apt install tesseract-ocr tesseract-ocr-deu poppler-utils` (Debian/Ubuntu). Reminders use `notify-send`, which most desktops have. Updates are announced in the window with a link; on Linux they are not installed by themselves.
+Or download **FileSorter-linux-x86_64.tar.gz**, unpack it and start `./file-sorter` in the unpacked `FileSorter` folder. For a menu entry, copy `file-sorter` to `~/.local/bin/`, `icon.png` to `~/.local/share/icons/file-sorter.png` and `file-sorter.desktop` to `~/.local/share/applications/`. Updates of this version are announced in the window with a link.
+
+Text recognition for scans uses tesseract: `sudo apt install tesseract-ocr tesseract-ocr-deu poppler-utils` (Debian/Ubuntu). Reminders use `notify-send`, which most desktops have.
 
 ## Build from source (any OS)
 
@@ -87,7 +89,7 @@ Each entry in *Activity* has two buttons: **open the file** (in its usual progra
 
 ## Undo
 
-Sorted a file by mistake? Click **Undo** next to it in *Activity* (or in the bar that appears right after sorting). The file goes back where it came from – a moved file is moved back, a copy is removed again, a duplicate that went to the Recycle Bin is restored – and **it stays there**: File Sorter won't sort that file again (unless you sort it yourself with the right-click menu). Earlier sorts are still listed after a restart, so you can undo them later too. In *Copy* mode a copy you have changed since (notes added) is never removed by *Undo* or *Other module*.
+Sorted a file by mistake? Click **Undo** next to it in *Activity* (or in the bar that appears right after sorting). The file goes back where it came from – a moved file is moved back, a copy is removed again, a duplicate that went to the Recycle Bin is restored – and **it stays there**: File Sorter won't sort that file again – also not after you renamed it (it is known by its content) – unless you sort it yourself with the right-click menu. Earlier sorts are still listed after a restart, so you can undo them later too. In *Copy* mode a copy you have changed since (notes added) is never removed by *Undo* or *Other module*.
 
 ## Put a file into a module yourself
 
@@ -110,9 +112,12 @@ With **Learn from assigning** on (default), File Sorter then takes up to two ter
   - only a weekday («Abgabe: Montag, 10:15 Uhr») or a relative date («morgen», «übermorgen», «in zwei Wochen», «nächste Woche Freitag», «KW 45» – its Friday): counted from when the file came, marked **date estimated** («jeweils Montag» or «every Friday» is no deadline);
   - exams and other dates: «Klausur: 20.01.2027, 14:00», «Klausurtermin», «Zwischenprüfung am 25.11.», «Semesterendprüfung», «Sessionsprüfung», «Leistungskontrolle 1», «Zwischentest», «Testat», «Präsentation», «midterm».
 
+  Dates are read in German and English, and with French, Italian and Spanish month names («7 novembre», «20 gennaio»). With the **AI model Laya** set up, every sentence with a date is checked by it too: deadlines and exams written in any language or wording are found (marked **AI** – check the date), and dates the rules found that are clearly something else are left out.
+
   Only a date in the same sentence (or table column) counts; numbers like «Aufgabe 3.2.» and dates like «Stand: 20.10.» or «Abgabebeginn: …» don't. Each entry is named after what is due when the text says it («Serie 5», «Übungsblatt 3», «Teil A», «Projektabgabe»), else after the file.
 
   *This week* shows the week as a strip (today marked, a dot per deadline) and the deadlines in groups – **Overdue**, **This week**, **Next week**, **Later** (closed). Entries found since your last visit are marked **new**. Each has **Done**, open the file, open its folder, **Correct** (fix a date or title that was read wrong), **Add to calendar** (an `.ics` file that Outlook, Google and Apple calendars import, with a reminder the day before) and **Delete**; hover over the title for the passage it was found in. **Done** entries of the last two weeks can be opened again. **+ Deadline** adds one by hand, **Check a file…** picks one document and shows right away what is found in it (nothing found: *Add by hand* with the file and module filled in), **Look again** reads all documents again; the line below says how many documents were read. Finding dates in free text can still go wrong; a deleted or corrected entry isn't found again in the same file.
+- **Recurring deadlines**: in **+ Deadline** (and **Correct**), *Repeats* lets one come again – weekly, every two weeks or monthly, until a last date (e.g. the end of the semester) or for good. **Done** then moves it on to its next date (the done one stays in the list), and its reminders start again; after the last date it is done for good. *Add to calendar* writes it as a series.
 - **Reminders**: a notification before each deadline and exam – by default a day before and three hours before (also «the morning of the day» and «an hour before»), also while File Sorter runs in the background. Windows shows them like other apps' notifications (a click opens File Sorter); on Linux `notify-send` is used. Each is sent once; after a time away only one comes.
 - **Today** at the top of *This week*: today's lessons from the timetable.
 - **New this week**: the files sorted in the last 7 days, per module.
@@ -120,7 +125,10 @@ With **Learn from assigning** on (default), File Sorter then takes up to two ter
 ## Timetable, grades, notes
 
 - **Timetable** (tab *Timetable*): *Import calendar…* reads a calendar file (`.ics`) exported from the university portal, Outlook or Google; *Calendar link…* subscribes to the portal's timetable link (iCal/webcal), read again every day; *+ Lesson* adds one by hand. Weekly series (also every two weeks), single dates that repeat weekly, cancelled and moved dates are understood; the module of each lesson is guessed from its name and can be changed in the preview. The week grid shows the lessons in the module's colour, the running one marked and cancelled ones greyed; a click edits a lesson, cancels it for that one week or opens the module folder.
-- **Grades & ECTS** (tab *Grades*): per module the semester, ECTS and grade (or *passed*/*failed* for modules without a grade) – on the Swiss scale 1–6 (4 and up passed) or the German 1.0–5.0 (up to 4.0 passed), switchable. Below: the ECTS-weighted average, the ECTS earned towards your target (default 180) and the average per semester.
+- **Grades & ECTS** (tab *Grades*): per module the semester, ECTS and grade (or *passed*/*failed* for modules without a grade) – on the Swiss scale 1–6 (4 and up passed) or the German 1.0–5.0 (up to 4.0 passed), switchable.
+  - **Tests** (the arrow at a module): a module's midterm, final, papers … each with its weight – `1/6`, `30 %`, `0.25` or a relative weight like `2` – and grade. The module's grade is then their weighted average, *provisional* while some are still open (a provisional grade doesn't count as passed yet).
+  - **+ Module** adds a module only to the grades list (one from before you used File Sorter, say); such modules can be deleted. Your sorting modules can be taken out of the list (the eye) and shown again; archived modules are listed with their grades too.
+  - Below: the ECTS-weighted and the plain average, how many modules are graded, the ECTS earned towards your target (default 180), and the averages per semester.
 - **Notes** per module: the third view next to *Keywords* and *Subfolders* at the selected module, saved as you type and found by the search.
 
 ## Subfolders
@@ -137,9 +145,20 @@ Select a module in the overview and switch to **Subfolders** (or turn on *Settin
 
 *Settings → Semester → Finish semester…*: tick the modules that are over, check the name (`HS2026` / `FS2027`, filled in for you) and click *Archive*. Their folders move to `Studium\Archiv\HS2026\…` (same rules as moving into the cloud: nothing is overwritten, files open in another program stay and are listed), and the modules leave the list. Each archived module is listed under its semester with **Restore**, which brings the module and its folder back.
 
+## The AI model Laya
+
+[Laya](https://huggingface.co/convaiinnovations/laya) (by ConvAI Innovations, Apache 2.0) is a model that reads text in over 100 languages and answers questions with probabilities. With it, File Sorter
+
+- **sorts what the keywords don't decide**: it reads the document and picks the module (only among the ones in question, only when it is clearly sure);
+- **finds deadlines and exam dates in any sentence and language**, and leaves out dates that are clearly something else (version dates, past events).
+
+It is **optional**: the setup offers it (ticked), File Sorter asks once after the update, and *Settings → Features → AI model Laya* has **Download**, a switch and **Remove**. Setting it up downloads about 2–3 GB once, in the background, from the official sources: [uv](https://github.com/astral-sh/uv) (a fixed release, checked against its SHA-256), which installs a private Python, the `laya` package with the CPU version of PyTorch, and Laya's multilingual model – all in File Sorter's settings folder (`laya`), apart from anything else on the computer. If the download stops, *Download* goes on where it stopped.
+
+It runs only on this computer: while File Sorter needs it, a small helper keeps the model loaded (about 1–1.5 GB of memory) and ends after 15 minutes without questions, while *Save resources in the background* is on and the window is away, and with File Sorter. The right-click window doesn't wait for it.
+
 ## Updates
 
-Once a day File Sorter asks GitHub whether there is a newer version (*Settings → Features → Updates*). A bar then offers **Update now**: the new `FileSorter.exe` is downloaded, used only if its size and SHA-256 checksum are exactly those GitHub lists for the release, put in place of the old one (which is kept as `FileSorter.old.exe` and put back if anything fails) and started. With *Install automatically* it is installed in the background and runs from the next start. Installing works on Windows; elsewhere you get a link to the release.
+Once a day File Sorter asks GitHub whether there is a newer version (*Settings → Features → Updates*); on Linux the AppImage updates itself the same way. A bar then offers **Update now**: the new `FileSorter.exe` is downloaded, used only if its size and SHA-256 checksum are exactly those GitHub lists for the release, put in place of the old one (which is kept as `FileSorter.old.exe` and put back if anything fails) and started. With *Install automatically* it is installed in the background and runs from the next start. Installing works on Windows; elsewhere you get a link to the release.
 
 ## Your study folder in OneDrive, Dropbox or Google Drive
 
@@ -188,13 +207,14 @@ Files sorted **by themselves** (watching, *Include files already there*) while F
 
 ## Right-click: sort any file right away
 
-Like *Extract all…* for a zip: right-click a file and choose **Mit File Sorter sortieren** / **Sort with File Sorter**. A small window appears at the bottom right and shows where each file went (click one to open its folder, *Undo* to put it back); it closes by itself after a few seconds (it waits while the mouse is over it).
+Like *Extract all…* for a zip: right-click a file and choose **Mit File Sorter sortieren** / **Sort with File Sorter** (on Linux see below). A small window appears at the bottom right and shows where each file went (click one to open its folder, *Undo* to put it back); it closes by itself after a few seconds (it waits while the mouse is over it).
 
 - On **Windows 11** the entry is in the classic menu: right-click → **Weitere Optionen anzeigen** / **Show more options** (or hold `Shift` while right-clicking). Only signed apps can add entries to the short new menu.
 - Select **several files** (up to 15, a Windows limit for this kind of menu entry) and they are all sorted, with a single results window.
 - On a **folder** it sorts the documents inside (not its subfolders) – handy for a folder of slides you just unpacked from a zip.
 - Any file type works here, not only the document types the watcher looks at. Files that match no module stay where they are.
 - **Dragging** files onto `FileSorter.exe` (or a shortcut to it) does the same.
+- **Linux:** in Files (Nautilus) and Caja under **Scripts**, in Nemo, Dolphin and Thunar directly in the menu, and in every file manager under **Open with → Sort with File Sorter**. The entries live in your own folders (`~/.local/share/…`, `~/.config/…`), each only for the file managers that are installed, and go away with the setting.
 
 The entry is added when you open File Sorter, and it follows the exe if you move it (open it once from the new place). Turn off **Settings → Right-click menu → Show «Sort with File Sorter»** to remove it again; *Show the results window* there switches the little window off if you only want the files sorted. Nothing is installed system-wide: it lives in your own user's registry (`HKEY_CURRENT_USER\Software\Classes`).
 
@@ -215,6 +235,8 @@ The entry is added when you open File Sorter, and it follows the exe if you move
 9. **Nothing is ever overwritten.** If a *different* file with the same name is already in the module folder (e.g. updated slides, or your annotated copy), the new one is saved as `name (1).pdf`, and the activity list says so. If the **very same file** is there (downloaded twice), the download goes to the **Recycle Bin**, where you can still get it back.
 10. **Scans** (PDFs whose pages are pictures, also with a stamp or page numbers as real text) and photos of pages are read with **text recognition** (at 300 dpi): on Windows with the one built into Windows (no download; it reads the languages installed in Windows), on Linux with tesseract if installed. Only pages without text are recognised, what was recognised is remembered by the file's content, and it is used for sorting, search and deadlines alike (*Recognise text in scans*).
 11. Only one File Sorter watches at a time; starting a second one with `--headless` shows a message instead of both sorting the same files.
+
+With the **AI model Laya** set up (see [below](#the-ai-model-laya)), step 5 asks it first: it reads the document and picks the module – only among the ones in question and only when it is clearly sure (*the AI model (Laya) read it – 87 % sure*).
 
 **Tips for good keywords:** module codes (`INF-101`, `MA1`), short names used in file names (`prog1`, `linalg`), and the exact module title as it appears on the slides work best. Avoid generic words like `lecture` or `exercise` that appear in every module.
 
@@ -238,7 +260,7 @@ Everything on the **Settings** tab is saved as soon as you change it (a green *S
 | **Start when I sign in** | File Sorter opens minimised in the taskbar and starts watching right away (Windows and Linux). |
 | **Start watching right away** | Begin watching as soon as you open the window. |
 | **Keep running in the background** (Windows) | Closing the window while it watches keeps File Sorter running in the notification area (next to the clock); click the icon to open it again, right-click it → *Quit* to end it. With *Start when I sign in*, it then starts there too. |
-| **Features** | Each can be switched on or off: **Learn from assigning**, **Learn the modules from their files**, **Ask when unsure**, **Use the timetable for ties**, **Download source**, **Subfolders** (off by default – see [Subfolders](#subfolders); with **Learn from existing files by itself**, off by default), **Unpack ZIP files** (off by default), **Keep older versions apart** (off by default: when «Skript_v2.pdf» arrives, «Skript.pdf» – with your notes in it – moves into `Ältere Versionen`; an older version arriving later goes straight there), **Recognise text in scans**, **Search in files**, **Deadlines** (with **Reminders** and their times), **New this week**, **Updates** (*Ask first* or *Install automatically*). Undo also reverses subfolders, older versions and unpacking (an unpacked folder is only removed if nothing in it was changed). |
+| **Features** | **AI model Laya** (download, on/off, remove – see [above](#the-ai-model-laya)). Each of these can be switched on or off: **Learn from assigning**, **Learn the modules from their files**, **Ask when unsure**, **Use the timetable for ties**, **Download source**, **Subfolders** (off by default – see [Subfolders](#subfolders); with **Learn from existing files by itself**, off by default), **Unpack ZIP files** (off by default), **Keep older versions apart** (off by default: when «Skript_v2.pdf» arrives, «Skript.pdf» – with your notes in it – moves into `Ältere Versionen`; an older version arriving later goes straight there), **Recognise text in scans**, **Search in files**, **Deadlines** (with **Reminders** and their times), **New this week**, **Updates** (*Ask first* or *Install automatically*). Undo also reverses subfolders, older versions and unpacking (an unpacked folder is only removed if nothing in it was changed). |
 | **Semester** | Finish a semester (archive modules) and restore archived ones – see [above](#finish-a-semester). |
 | **Cloud** | Keep the study folder in OneDrive, Dropbox, Google Drive, … (moved there, or a copy), share modules with your other computers, or sync it with Google Drive without the Google app – see [above](#your-study-folder-in-onedrive-dropbox-or-google-drive). |
 | **Right-click menu** (Windows) | Show or hide «Sort with File Sorter», and whether the results window appears afterwards. |

@@ -12,6 +12,8 @@ Studium\                      ← study folder
     └── Lineare Algebra\
 ```
 
+Or, with *Modules directly in the study folder*, without a folder per study program: `Studium\Statistik\`, `Studium\Programmierung 1\`, …
+
 Download `Prog1_VL03.pdf` → it lands in `Studium\Informatik\Programmierung 1\`.
 Download `vorlesung5.pdf` whose title page says "Lineare Algebra" → it lands in `Studium\Mathematik\Lineare Algebra\`.
 Everything that doesn't belong to a module stays in Downloads, untouched.
@@ -56,10 +58,10 @@ cargo build --release      # → target/release/file-sorter(.exe)
 
 Double-click `FileSorter.exe` (or run `cargo run --release`). A window opens – in German if Windows runs in German, otherwise in English (change it under **Settings**). The first time, a short **setup** asks for the downloads folder, the study folder (also directly in OneDrive, Dropbox or Google Drive if one is found) and reads in your module folders; you can skip it and run it again later under *Settings → About → Run setup*.
 
-The window has three tabs at the top right: **Overview**, where you set up folders and modules and see the activity, **This week** (deadlines and the files that came in), and **Settings**. Next to them is the **search field** (`Ctrl+F`).
+The window has tabs at the top right: **Overview**, where you set up folders and modules and see the activity, **This week** (deadlines and the files that came in), **Timetable**, **Grades** and **Settings**. Next to them is the **search field** (`Ctrl+F`).
 
 1. **Watched folder (Downloads)** – the folder to watch, shown at the top as «Downloads → Studium». Defaults to your Downloads folder; the pencil picks another one, a click on the name opens it (hover for the whole path).
-2. **Study folder** – your `Studium` folder, containing one folder per study program with the module folders inside.
+2. **Study folder** – your `Studium` folder, containing one folder per study program with the module folders inside – or the module folders directly (*Settings → Sorting → Modules directly in the study folder*; the setup guesses which from your folders and asks).
 3. Click **Import module folders** (happens automatically the first time you pick the study folder). Every `Study program \ Module` folder becomes an entry like `Informatik › Programmierung 1`, with starter keywords taken from the folder name. Run it again after creating new module folders; existing entries and keywords are kept.
 4. Select a module: on the right you see its name with buttons to open its folder, edit and delete it, and two views, **Keywords** and **Subfolders** (see [Subfolders](#subfolders)). Add **keywords**, one per line: anything that appears in the file names or on the first slides/pages, such as
    ```
@@ -74,6 +76,8 @@ The window has three tabs at the top right: **Overview**, where you set up folde
 5. Click **▶ Start watching**. Every download appears in *Activity*: it spins while the download is still running and turns green ("Moved to Informatik › Programmierung 1", with the matching keywords) once the file is sorted. At the same time a little file card flies into the module, which lights up and counts the file, and a bar at the bottom offers **Undo**.
 
 *Add* (under the list) and the pencil (at the selected module) let you create or change a module by hand (pick the study program, type the module name; the folder is created on the first file). Modules without a study program go directly into the study folder.
+
+**Modules directly in the study folder** (*Settings → Sorting*): no folder per study program (major, minor) – `Studium\Statistik` instead of `Studium\Informatik\Statistik`, and *Add* no longer asks for a program. Switched on, it offers to move the existing module folders up, with a preview: nothing is overwritten (a module whose new folder exists already stays where it is and is listed), empty program folders are removed, and **Undo** on the note puts everything back. Notes, lessons, deadlines and learned download places stay with their modules.
 
 *Sort existing files* cleans up files that are already sitting in the folder. The menu next to it chooses between **Only the last 24 hours**, **Only the last 7 days** (files downloaded or changed in that time – handy when the Downloads folder holds years of other things) and **All files**; the choice is remembered.
 
@@ -98,6 +102,7 @@ With **Learn from assigning** on (default), File Sorter then takes up to two ter
   - The best files come first: rare words count more than common ones, the name and the title page more than the rest, newer files first when equal.
   - Filters below the field: module, kind (lecture, exercise, solution, exam), file type and period (last 7 days, month, semester).
   - `↑`/`↓` choose a result, `Enter` opens it, `Ctrl+Enter` shows it in its folder; the last searches are offered when the field is empty.
+  - **Scans** are searched by the text recognised in them (up to 40 pages each). Recognition gets a letter wrong now and then, so in recognised text a word with one wrong letter is found too (after the exact hits), words split at the end of a line («Rekur-» / «sion») are joined again, and such hits say *recognised text*. Scans that were in the search index before text recognition came (0.13) are read again once.
   - The text is read in the background and kept in `search-index.json`. The study folder is watched, so new and changed files are in the search within seconds; files that are only in the cloud (OneDrive «online only») are found by name but not downloaded.
 - **Deadlines and exam dates**: File Sorter reads the documents in the study folder (the first pages of those changed in the last five months – also files sorted with the right-click menu or copied in by hand, and also with *Search* switched off) and finds
   - hand-ins: «Abgabe: 24.10.2026, 23:59 Uhr», «Abgabe: 3.11 bis 10 Uhr», «bis zum 7.11. abzugeben», «müssen bis Freitag, den 7. November um 14 Uhr über Ilias abgegeben werden», «Bitte bis 12 Uhr am 28.10. in den Briefkasten einwerfen», «Projektabgabe», «Einreichungsfrist», «Fällig: Montag, 3. November 2026, 23:59» (Moodle), «Bearbeitungszeitraum: 27.10. – 10.11.», «due Oct 24th, 11:59 PM», «Due: 24/10/2026», «Deadline: 2026-11-05»;
@@ -112,10 +117,10 @@ With **Learn from assigning** on (default), File Sorter then takes up to two ter
 - **Today** at the top of *This week*: today's lessons from the timetable.
 - **New this week**: the files sorted in the last 7 days, per module.
 
-## Semester: timetable, grades, notes
+## Timetable, grades, notes
 
-- **Timetable** (tab *Semester*): *Import calendar…* reads a calendar file (`.ics`) exported from the university portal, Outlook or Google; *Calendar link…* subscribes to the portal's timetable link (iCal/webcal), read again every day; *+ Lesson* adds one by hand. Weekly series (also every two weeks), single dates that repeat weekly, cancelled and moved dates are understood; the module of each lesson is guessed from its name and can be changed in the preview. The week grid shows the lessons in the module's colour, the running one marked and cancelled ones greyed; a click edits a lesson, cancels it for that one week or opens the module folder.
-- **Grades & ECTS**: per module the semester, ECTS and grade (or *passed*/*failed* for modules without a grade) – on the Swiss scale 1–6 (4 and up passed) or the German 1.0–5.0 (up to 4.0 passed), switchable. Below: the ECTS-weighted average, the ECTS earned towards your target (default 180) and the average per semester.
+- **Timetable** (tab *Timetable*): *Import calendar…* reads a calendar file (`.ics`) exported from the university portal, Outlook or Google; *Calendar link…* subscribes to the portal's timetable link (iCal/webcal), read again every day; *+ Lesson* adds one by hand. Weekly series (also every two weeks), single dates that repeat weekly, cancelled and moved dates are understood; the module of each lesson is guessed from its name and can be changed in the preview. The week grid shows the lessons in the module's colour, the running one marked and cancelled ones greyed; a click edits a lesson, cancels it for that one week or opens the module folder.
+- **Grades & ECTS** (tab *Grades*): per module the semester, ECTS and grade (or *passed*/*failed* for modules without a grade) – on the Swiss scale 1–6 (4 and up passed) or the German 1.0–5.0 (up to 4.0 passed), switchable. Below: the ECTS-weighted average, the ECTS earned towards your target (default 180) and the average per semester.
 - **Notes** per module: the third view next to *Keywords* and *Subfolders* at the selected module, saved as you type and found by the search.
 
 ## Subfolders
@@ -158,7 +163,28 @@ To bring the study folder back, choose **Off**: *Bring back* moves it to its old
 
 **Several computers:** turn on **Share modules with my other computers**. Modules, keywords and file types are then kept in the study folder in the cloud (`.file-sorter.json`), so every computer sorts the same way; the newest change wins, and the first time two different sets of modules meet, File Sorter asks which to keep. Folders, language and startup settings stay per computer. On the second computer, choose the same cloud folder – if its study folder is still empty, File Sorter simply uses the one in the cloud.
 
-On your phone or tablet, open the OneDrive, Dropbox or Google Drive app (or their website). `FileSorter.exe --list-clouds` writes the cloud folders File Sorter finds into the log file.
+On your phone or tablet, open the OneDrive, Dropbox or Google Drive app (or their website).
+
+### Google Drive without the Google app
+
+**Settings → Cloud → Google Drive (without the Google app)** keeps the study folder in sync with a folder in your Google Drive – **both ways** – without installing Google's app (also on Linux, where there is none):
+
+1. Click **Connect Google Drive**. The first time, File Sorter fetches the open-source sync tool [rclone](https://rclone.org) (a fixed version from its GitHub releases, used only if its SHA-256 checksum is the published one; on Linux an installed `rclone` is used if there is one).
+2. Your browser opens: sign in with Google and allow access. (If no browser opens, *Open sign-in page*.) The access is kept in File Sorter's settings folder (`google-drive\rclone.conf`), apart from any rclone setup of your own; *Disconnect* removes it.
+3. The study folder is synced with the Drive folder of the same name (changeable under *Folder in Google Drive*): right after sorting, every 15 minutes (hourly while saving resources in the background) and at the start; *Sync now* any time. The first sync merges both sides.
+
+Nothing is lost:
+
+- A file **deleted or overwritten** on one side is first put into a backup on that side – on this computer in the settings folder (*Backups* opens it), in Drive in `File Sorter backup` – and kept for 30 days.
+- A file **changed on both sides** is kept twice: the newer one under its name, the other next to it as `name.pdf.conflict1`.
+- If **more than half of the files would be deleted** (say the study folder was emptied by mistake), nothing is synced and File Sorter says why.
+- Google Docs, Sheets and Slides (which have no file) are left out.
+
+Not offered while the study folder is in the Google Drive app's folder already (that app syncs it). `FileSorter.exe --list-clouds` writes the cloud folders File Sorter finds into the log file.
+
+## The results window
+
+Files sorted **by themselves** (watching, *Include files already there*) while File Sorter is minimised, in the notification area or behind other windows show up in a small window at the bottom right – the same one as after the right-click menu below: where each file went, **Undo**, **Other module** and **Assign** for files without a module. It closes after a few seconds (not while the mouse is over it; *Keep open* keeps it). When you look at File Sorter's window, the bar at its bottom shows them instead. *Settings → Sorting → Results window for automatic sorting* switches it off.
 
 ## Right-click: sort any file right away
 
@@ -187,7 +213,7 @@ The entry is added when you open File Sorter, and it follows the exe if you move
 7. Files are **moved** (unless you choose *Copy* in the settings): after sorting, a file exists only in its module folder.
 8. A file that is **still open** in another program (a PDF viewer you write notes in, Word, the browser) is left alone until that program closes it, so your notes are saved into the file before it is moved. The activity list says so while it waits.
 9. **Nothing is ever overwritten.** If a *different* file with the same name is already in the module folder (e.g. updated slides, or your annotated copy), the new one is saved as `name (1).pdf`, and the activity list says so. If the **very same file** is there (downloaded twice), the download goes to the **Recycle Bin**, where you can still get it back.
-10. **Scans** (PDFs whose pages are pictures) and photos of pages are read with **text recognition**: on Windows with the one built into Windows (no download), on Linux with tesseract if installed. Only pages without text are recognised, what was recognised is remembered by the file's content, and it is used for sorting, search and deadlines alike (*Recognise text in scans*).
+10. **Scans** (PDFs whose pages are pictures, also with a stamp or page numbers as real text) and photos of pages are read with **text recognition** (at 300 dpi): on Windows with the one built into Windows (no download; it reads the languages installed in Windows), on Linux with tesseract if installed. Only pages without text are recognised, what was recognised is remembered by the file's content, and it is used for sorting, search and deadlines alike (*Recognise text in scans*).
 11. Only one File Sorter watches at a time; starting a second one with `--headless` shows a message instead of both sorting the same files.
 
 **Tips for good keywords:** module codes (`INF-101`, `MA1`), short names used in file names (`prog1`, `linalg`), and the exact module title as it appears on the slides work best. Avoid generic words like `lecture` or `exercise` that appear in every module.
@@ -206,13 +232,15 @@ Everything on the **Settings** tab is saved as soon as you change it (a green *S
 | **What happens to a file** | **Move** (default): the file ends up only in its module folder and Downloads stays tidy. **Copy**: a copy goes to the module folder and the original stays where it was. Each file is copied only once – File Sorter remembers what it copied (`copied.json` next to the settings), so it doesn't copy a file again when it sorts the folder later, even if you annotated or renamed the copy. A new version with the same name is copied as `name (1).pdf`. |
 | **Read file contents** | When the file name isn't enough, read the text of PDFs, slides and Word files. |
 | **Include files already there** | When watching starts, also sort the files already in the folder: *None*, *Last 24 hours*, *Last 7 days* or *All*. |
+| **Modules directly in the study folder** | No folder per study program; offers to move the existing module folders up (with *Undo*) – see [Use it](#use-it). |
+| **Results window for automatic sorting** | Show files sorted while File Sorter isn't in front in the small window at the bottom right – see [The results window](#the-results-window). |
 | **File types** | Which types are sorted from the watched folder: tick or untick `.pdf`, `.pptx`, … or type others under *More* (e.g. `.svg, .ods`). *Defaults* restores the standard list. The right-click menu sorts any file you pick, whatever its type. |
 | **Start when I sign in** | File Sorter opens minimised in the taskbar and starts watching right away (Windows and Linux). |
 | **Start watching right away** | Begin watching as soon as you open the window. |
 | **Keep running in the background** (Windows) | Closing the window while it watches keeps File Sorter running in the notification area (next to the clock); click the icon to open it again, right-click it → *Quit* to end it. With *Start when I sign in*, it then starts there too. |
 | **Features** | Each can be switched on or off: **Learn from assigning**, **Learn the modules from their files**, **Ask when unsure**, **Use the timetable for ties**, **Download source**, **Subfolders** (off by default – see [Subfolders](#subfolders); with **Learn from existing files by itself**, off by default), **Unpack ZIP files** (off by default), **Keep older versions apart** (off by default: when «Skript_v2.pdf» arrives, «Skript.pdf» – with your notes in it – moves into `Ältere Versionen`; an older version arriving later goes straight there), **Recognise text in scans**, **Search in files**, **Deadlines** (with **Reminders** and their times), **New this week**, **Updates** (*Ask first* or *Install automatically*). Undo also reverses subfolders, older versions and unpacking (an unpacked folder is only removed if nothing in it was changed). |
 | **Semester** | Finish a semester (archive modules) and restore archived ones – see [above](#finish-a-semester). |
-| **Cloud** | Keep the study folder in OneDrive, Dropbox, Google Drive, … (moved there, or a copy), and share modules with your other computers – see [above](#your-study-folder-in-onedrive-dropbox-or-google-drive). |
+| **Cloud** | Keep the study folder in OneDrive, Dropbox, Google Drive, … (moved there, or a copy), share modules with your other computers, or sync it with Google Drive without the Google app – see [above](#your-study-folder-in-onedrive-dropbox-or-google-drive). |
 | **Right-click menu** (Windows) | Show or hide «Sort with File Sorter», and whether the results window appears afterwards. |
 | **About** | Version, and buttons to open the log file and the settings folder. |
 

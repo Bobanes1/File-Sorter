@@ -48,6 +48,11 @@ pub(crate) enum Note {
         folder: String,
     },
     ScanFailed,
+    /// A reminder of a deadline that was shown as a notification.
+    Reminder {
+        title: String,
+        details: String,
+    },
     /// Something done with folders (subfolders created, …).
     Folders {
         title: String,
@@ -221,7 +226,7 @@ pub(crate) fn note_title(lang: Lang, note: &Note) -> String {
         Note::NoFilesToScan { module, .. } => lang.no_files_to_scan(module),
         Note::ScanFailed => lang.scan_failed().into(),
         Note::Learned { module, words, undone } => lang.learned(module, words.len(), *undone),
-        Note::Folders { title, .. } => title.clone(),
+        Note::Folders { title, .. } | Note::Reminder { title, .. } => title.clone(),
         Note::FolderWords { title, undone, .. } => {
             if *undone {
                 lang.folder_words_undone().to_string()
@@ -321,6 +326,7 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
                     make(icon::FOLDER_OPEN, warn, title, Some(lang.folder_empty(folder)), None)
                 }
                 Note::ScanFailed | Note::ConfigUnreadable { .. } => make(icon::X, bad, title, None, None),
+                Note::Reminder { details, .. } => make(icon::BELL_RINGING, warn, title, Some(details.clone()), None),
                 Note::Folders { details, .. } => {
                     make(icon::FOLDERS, blue, title, (!details.is_empty()).then(|| details.clone()), None)
                 }

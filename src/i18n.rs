@@ -1057,6 +1057,24 @@ impl Lang {
             "Nicht installiert: sudo apt install tesseract-ocr tesseract-ocr-deu poppler-utils (danach File Sorter neu starten).",
         )
     }
+    pub fn feature_reminders(self) -> &'static str {
+        self.pick("Reminders", "Erinnerungen")
+    }
+    pub fn feature_reminders_hint(self) -> &'static str {
+        self.pick(
+            "A notification before each deadline and exam – also while File Sorter runs in the background.",
+            "Eine Benachrichtigung vor jeder Abgabe und Prüfung – auch wenn File Sorter im Hintergrund läuft.",
+        )
+    }
+    pub fn lead(self, lead: crate::reminders::Lead) -> &'static str {
+        use crate::reminders::Lead;
+        match lead {
+            Lead::Day => self.pick("1 day before", "1 Tag vorher"),
+            Lead::Morning => self.pick("Morning of the day (8:00)", "Am Morgen des Tages (8:00)"),
+            Lead::Hours3 => self.pick("3 hours before", "3 Stunden vorher"),
+            Lead::Hour => self.pick("1 hour before", "1 Stunde vorher"),
+        }
+    }
     pub fn feature_subfolders(self) -> &'static str {
         self.pick("Subfolders", "Unterordner")
     }

@@ -164,6 +164,8 @@ pub(super) struct Study {
     new_since: i64,
     /// When the module model (learned from the modules' files) is built next.
     model_at: f64,
+    /// When reminders are checked next.
+    remind_at: f64,
     training: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -199,6 +201,7 @@ impl Study {
             week_shown: None,
             new_since: 0,
             model_at: 30.0,
+            remind_at: 5.0,
             training: Default::default(),
         }
     }
@@ -257,9 +260,41 @@ impl App {
             self.save_deadlines();
         }
         self.train_model();
+        self.remind();
         // Search as you type, once the index answers.
         if self.study.query != self.study.searched || self.study.filter != self.study.searched_filter {
             self.run_search();
+        }
+    }
+
+    /// Remind of deadlines that come close (checked every minute, also in the background).
+    fn remind(&mut self) {
+        let features = &self.config.features;
+        if !features.deadlines || !features.reminders {
+            return;
+        }
+        let now = self.now();
+        if now < self.study.remind_at {
+            return;
+        }
+        self.study.remind_at = now + 60.0;
+        self.ctx.request_repaint_after(std::time::Duration::from_secs(60));
+        let leads = features.reminder_leads.clone();
+        let due = crate::reminders::take_due(&mut self.study.deadlines, &leads, Local::now().naive_local());
+        if due.is_empty() {
+            return;
+        }
+        self.save_deadlines();
+        let lang = self.lang;
+        for d in due {
+            let Some(at) = d.due() else { continue };
+            let days = (at.date() - Local::now().date_naive()).num_days();
+            let when = lang.due_when(days, false, d.time.as_deref());
+            let title = format!("{}: {}", lang.deadline_kind(d.kind), d.title);
+            let module = d.module.rsplit(" › ").next().unwrap_or(&d.module).to_string();
+            let body = if module.is_empty() { when.clone() } else { format!("{module} · {when}") };
+            crate::reminders::notify(&title, &body);
+            self.note(super::Note::Reminder { title, details: body });
         }
     }
 

@@ -72,6 +72,33 @@ impl App {
         divider(ui);
         let (title, hint) = (lang.feature_deadlines(), lang.feature_deadlines_hint());
         changed |= switch(ui, icon::CALENDAR_CHECK, title, hint, &mut f.deadlines);
+        if f.deadlines {
+            ui.horizontal(|ui| {
+                ui.add_space(40.0);
+                ui.vertical(|ui| {
+                    let (title, hint) = (lang.feature_reminders(), lang.feature_reminders_hint());
+                    changed |= switch(ui, icon::BELL_RINGING, title, hint, &mut f.reminders);
+                });
+            });
+            if f.reminders {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(80.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                    for lead in crate::reminders::Lead::ALL {
+                        let on = f.reminder_leads.contains(&lead);
+                        if fx::chip(ui, on, lang.lead(lead)).clicked() {
+                            if on {
+                                f.reminder_leads.retain(|l| *l != lead);
+                            } else {
+                                f.reminder_leads.push(lead);
+                            }
+                            changed = true;
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+            }
+        }
         divider(ui);
         changed |= switch(ui, icon::CALENDAR_DOTS, lang.feature_weekly(), lang.feature_weekly_hint(), &mut f.weekly);
         divider(ui);

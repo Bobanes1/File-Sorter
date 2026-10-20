@@ -26,6 +26,7 @@ mod matcher;
 mod ocr;
 mod origin;
 mod quicksort;
+mod reminders;
 mod resort;
 mod sorter;
 mod subfolder_learn;

@@ -277,6 +277,10 @@ pub struct Features {
     pub classifier: bool,
     /// Recognise the text of scanned PDFs and pictures.
     pub ocr: bool,
+    /// Remind of deadlines and exams with a system notification.
+    pub reminders: bool,
+    /// When before a deadline.
+    pub reminder_leads: Vec<crate::reminders::Lead>,
 }
 
 impl Default for Features {
@@ -300,6 +304,8 @@ impl Default for Features {
             ask_when_unsure: true,
             classifier: true,
             ocr: true,
+            reminders: true,
+            reminder_leads: crate::reminders::default_leads(),
         }
     }
 }

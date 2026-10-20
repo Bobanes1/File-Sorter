@@ -302,6 +302,9 @@ pub struct Deadline {
     /// When it was found or added (Unix seconds), to mark new entries.
     #[serde(default)]
     pub added: i64,
+    /// The reminders already sent («day», «hours3», …).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reminded: Vec<String>,
 }
 
 impl Deadline {
@@ -1267,6 +1270,7 @@ impl Deadlines {
                 found_date: None,
                 estimated: f.estimated,
                 added: chrono::Utc::now().timestamp(),
+                reminded: Vec::new(),
             });
             added += 1;
         }
@@ -1296,6 +1300,7 @@ impl Deadlines {
             found_date: None,
             estimated: false,
             added: chrono::Utc::now().timestamp(),
+            reminded: Vec::new(),
         });
         id
     }
@@ -1309,6 +1314,7 @@ impl Deadlines {
         }
         if d.date != date {
             d.estimated = false;
+            d.reminded.clear();
         }
         d.title = title.trim().to_string();
         d.module = module.to_string();

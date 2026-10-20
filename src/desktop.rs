@@ -317,6 +317,7 @@ mod path_tests {
     fn long_path_prefixes_are_removed() {
         assert_eq!(plain_text(r"\\?\C:\Users\Anna\x.pdf"), Path::new(r"C:\Users\Anna\x.pdf"));
         assert_eq!(plain_text(r"\\?\UNC\server\share\x.pdf"), Path::new(r"\\server\share\x.pdf"));
+        #[cfg(unix)]
         assert_eq!(plain_path(Path::new("/home/anna/x.pdf")), Path::new("/home/anna/x.pdf"));
     }
 

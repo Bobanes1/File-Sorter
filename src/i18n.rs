@@ -549,16 +549,82 @@ impl Lang {
     pub fn open_file(self) -> &'static str {
         self.pick("Open file", "Datei öffnen")
     }
-    pub fn due(self) -> &'static str {
-        self.pick("Due", "Fällig")
-    }
     pub fn add_deadline(self) -> &'static str {
         self.pick("Deadline", "Frist")
     }
     pub fn no_deadlines(self) -> &'static str {
         self.pick(
-            "Nothing due in the next three weeks. Deadlines in exercise sheets are found when they are sorted.",
-            "In den nächsten drei Wochen ist nichts fällig. Abgabetermine in Übungsblättern werden beim Sortieren erkannt.",
+            "Nothing open. Deadlines and exam dates in the documents of the study folder are found by themselves — \
+             or check a file, or add one with «+ Deadline».",
+            "Nichts offen. Abgabe- und Prüfungstermine in den Dokumenten des Studienordners werden von selbst \
+             erkannt – oder eine Datei durchsuchen bzw. mit «+ Frist» von Hand eintragen.",
+        )
+    }
+    pub fn deadlines_title(self) -> &'static str {
+        self.pick("Deadlines & exams", "Abgaben & Prüfungen")
+    }
+    pub fn check_file(self) -> &'static str {
+        self.pick("Check a file…", "Datei durchsuchen…")
+    }
+    pub fn check_file_hint(self) -> &'static str {
+        self.pick(
+            "Choose one document and see right away which deadlines are found in it",
+            "Ein Dokument wählen und sofort sehen, welche Termine darin erkannt werden",
+        )
+    }
+    pub fn checked_found(self, name: &str, found: usize, added: usize) -> String {
+        let new = match added {
+            0 => self.pick("already in the list", "bereits in der Liste").to_string(),
+            n => self.fmt(format!("{n} new"), format!("{n} neu")),
+        };
+        match found {
+            1 => self.fmt(format!("«{name}»: 1 date found ({new})."), format!("«{name}»: 1 Termin gefunden ({new}).")),
+            n => self
+                .fmt(format!("«{name}»: {n} dates found ({new})."), format!("«{name}»: {n} Termine gefunden ({new}).")),
+        }
+    }
+    pub fn checked_nothing(self, name: &str) -> String {
+        self.fmt(
+            format!("No deadline or exam date found in «{name}». If there is one, add it by hand."),
+            format!("In «{name}» wurde kein Abgabe- oder Prüfungstermin erkannt. Falls doch einer drinsteht: von Hand eintragen."),
+        )
+    }
+    pub fn add_by_hand(self) -> &'static str {
+        self.pick("Add by hand", "Von Hand eintragen")
+    }
+    pub fn scanned_status(self, documents: usize, scanning: bool) -> String {
+        let base =
+            self.fmt(format!("{documents} documents looked through"), format!("{documents} Dokumente durchsucht"));
+        if scanning { format!("{base} · {}", self.pick("reading…", "wird gelesen …")) } else { base }
+    }
+    pub fn overdue_group(self, n: usize) -> String {
+        self.fmt(format!("Overdue ({n})"), format!("Überfällig ({n})"))
+    }
+    pub fn this_week_group(self, n: usize) -> String {
+        self.fmt(format!("This week ({n})"), format!("Diese Woche ({n})"))
+    }
+    pub fn next_week_group(self, n: usize) -> String {
+        self.fmt(format!("Next week ({n})"), format!("Nächste Woche ({n})"))
+    }
+    pub fn later_group(self, n: usize) -> String {
+        self.fmt(format!("Later ({n})"), format!("Später ({n})"))
+    }
+    pub fn done_group(self, n: usize) -> String {
+        self.fmt(format!("Done ({n})"), format!("Erledigt ({n})"))
+    }
+    pub fn reopen(self) -> &'static str {
+        self.pick("Reopen", "Wieder öffnen")
+    }
+    pub fn badge_new(self) -> &'static str {
+        self.pick("new", "neu")
+    }
+    pub fn estimated(self) -> &'static str {
+        self.pick("date estimated", "Datum geschätzt")
+    }
+    pub fn estimated_hint(self) -> &'static str {
+        self.pick(
+            "The text only names the weekday; this is the next one after the file came. Please check.",
+            "Im Text steht nur der Wochentag; das ist der nächste nach dem Eingang der Datei. Bitte prüfen.",
         )
     }
     pub fn due_when(self, days: i64, late: bool, time: Option<&str>) -> String {

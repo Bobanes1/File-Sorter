@@ -11,7 +11,7 @@ use egui_phosphor::regular as icon;
 
 use super::dialogs::{actions, dialog_frame};
 use super::{App, Tab, section_title};
-use crate::deadlines::{self, DEADLINES_FILE, Deadlines, Found, Kind};
+use crate::deadlines::{self, DEADLINES_FILE, Deadline, Deadlines, Found, Kind};
 use crate::fx::{self, ButtonStyle};
 use crate::i18n::Lang;
 use crate::index::{Hit, Indexer};
@@ -36,10 +36,53 @@ pub(super) struct NewDeadline {
     kind: Kind,
     /// Correcting this entry instead of adding one.
     editing: Option<u64>,
+    /// The file it is in (added by hand after «Check a file» found nothing).
+    file: Option<PathBuf>,
+}
+
+impl NewDeadline {
+    fn empty() -> NewDeadline {
+        NewDeadline {
+            title: String::new(),
+            module: usize::MAX,
+            date: String::new(),
+            kind: Kind::Due,
+            editing: None,
+            file: None,
+        }
+    }
+}
+
+/// What «Check a file» found.
+struct Checked {
+    file: PathBuf,
+    module: String,
+    found: usize,
+    added: usize,
 }
 
 /// Documents changed in the last this many days are looked through for dates.
 const SCAN_DAYS: i64 = 150;
+/// How many pages of a document are looked through for dates.
+const SCAN_PAGES: usize = 12;
+
+/// About when a file came (its last change), for dates written without a year or a weekday only.
+fn reference_date(file: &Path) -> NaiveDate {
+    std::fs::metadata(file)
+        .and_then(|m| m.modified())
+        .map(|t| DateTime::<Local>::from(t).date_naive())
+        .unwrap_or_else(|_| Local::now().date_naive())
+}
+
+/// A small tinted label ("new", "date estimated").
+fn badge(ui: &mut egui::Ui, text: &str, fill: egui::Color32, fg: egui::Color32) -> egui::Response {
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(6)
+        .inner_margin(Margin::symmetric(6, 0))
+        .show(ui, |ui| ui.label(RichText::new(text).small().color(fg)))
+        .response
+}
 
 pub(super) struct Study {
     indexer: Option<Indexer>,
@@ -61,6 +104,13 @@ pub(super) struct Study {
     week: Week,
     /// When `week` was read from the history.
     week_read: f64,
+    /// «Check a file»: reading it, and what was found.
+    checking: Option<Receiver<(PathBuf, Vec<Found>)>>,
+    checked: Option<Checked>,
+    /// The frame the tab was last drawn in, to tell a new visit.
+    week_shown: Option<u64>,
+    /// Entries added after this (Unix seconds) are marked new during this visit.
+    new_since: i64,
 }
 
 impl Study {
@@ -82,6 +132,10 @@ impl Study {
             scanned_at: f64::NEG_INFINITY,
             week: Vec::new(),
             week_read: f64::NEG_INFINITY,
+            checking: None,
+            checked: None,
+            week_shown: None,
+            new_since: 0,
         }
     }
 
@@ -110,7 +164,8 @@ impl App {
     /// Every frame: keep the index pointed at the study folder, take in found deadlines.
     pub(super) fn study_logic(&mut self) {
         let features = &self.config.features;
-        if features.search && !self.config.destination_root.trim().is_empty() {
+        // The index also serves the deadlines: every document in the study folder is looked through.
+        if (features.search || features.deadlines) && !self.config.destination_root.trim().is_empty() {
             let wanted = (self.study_root(), self.config.extensions.clone());
             if self.study.indexer.is_none() {
                 let ctx = self.ctx.clone();
@@ -192,7 +247,7 @@ impl App {
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             // Just downloaded: dates without a year are the next ones from today.
-            let found = deadlines::find(&crate::extract::extract_text(&file), Local::now().date_naive());
+            let found = deadlines::find(&crate::extract::first_pages(&file, SCAN_PAGES), Local::now().date_naive());
             let _ = tx.send(Scanned { file, size: meta.len(), module, found });
             ctx.request_repaint();
         });
@@ -212,7 +267,7 @@ impl App {
             (chrono::Utc::now() - chrono::Duration::days(SCAN_DAYS)).timestamp_nanos_opt().unwrap_or(0).max(0) as u64;
         let deadlines = &self.study.deadlines;
         let docs = match indexer.index.read() {
-            Ok(index) => index.texts(since, 12, 200, |path, size| deadlines.was_scanned(path, size)),
+            Ok(index) => index.texts(since, SCAN_PAGES, 200, |path, size| deadlines.was_scanned(path, size)),
             Err(_) => return,
         };
         if docs.is_empty() {
@@ -413,6 +468,15 @@ impl App {
         if self.now() - self.study.week_read > 30.0 {
             self.read_week();
         }
+        // A new visit (the tab wasn't drawn in the last frame): entries added since the last
+        // visit are marked «new» during this one.
+        let frame = ui.ctx().cumulative_frame_nr();
+        if self.study.week_shown.is_none_or(|last| frame > last + 1) {
+            self.study.new_since = self.study.deadlines.seen;
+            self.study.deadlines.seen = chrono::Utc::now().timestamp();
+            self.save_deadlines();
+        }
+        self.study.week_shown = Some(frame);
         let width = ui.available_width().min(860.0);
         let margin = ((ui.available_width() - width) / 2.0).max(0.0);
         egui::ScrollArea::vertical().id_salt("week").auto_shrink([false, false]).show(ui, |ui| {
@@ -434,27 +498,80 @@ impl App {
         self.deadline_dialog(&ui.ctx().clone());
     }
 
+    /// Pick one file and look for deadlines in it right away (also one looked at before).
+    fn check_file(&mut self) {
+        let mut dialog = rfd::FileDialog::new().add_filter("", &["pdf", "docx", "pptx", "txt", "md"]);
+        let root = self.study_root();
+        if root.is_dir() {
+            dialog = dialog.set_directory(&root);
+        }
+        let Some(file) = dialog.pick_file() else { return };
+        let (tx, rx) = channel();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let found = deadlines::find(&crate::extract::first_pages(&file, SCAN_PAGES), reference_date(&file));
+            let _ = tx.send((file, found));
+            ctx.request_repaint();
+        });
+        self.study.checking = Some(rx);
+        self.study.checked = None;
+    }
+
+    /// Take in the result of «Check a file».
+    fn checked_logic(&mut self) {
+        let Some(rx) = &self.study.checking else { return };
+        let Ok((file, found)) = rx.try_recv() else { return };
+        self.study.checking = None;
+        let module = self.module_of(&file);
+        let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+        let count = found.len();
+        let added = self.study.deadlines.add_found(&file, size, &module, found);
+        self.save_deadlines();
+        self.study.checked = Some(Checked { file, module, found: count, added });
+    }
+
+    /// The module a file in the study folder belongs to, by its folder.
+    fn module_of(&self, file: &Path) -> String {
+        self.config
+            .courses
+            .iter()
+            .find(|c| file.starts_with(self.config.course_folder(c)))
+            .map(|c| c.label())
+            .unwrap_or_default()
+    }
+
     fn deadlines_ui(&mut self, ui: &mut egui::Ui) {
+        self.checked_logic();
         let p = fx::pal(ui);
         let lang = self.lang;
+        let now = Local::now().naive_local();
+        let today = now.date();
+        let monday = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+        let sunday = monday + chrono::Duration::days(6);
+        // Title with the week, and what can be done.
         ui.horizontal(|ui| {
-            section_title(ui, lang.due());
+            ui.label(fx::title(lang.deadlines_title(), 20.0).color(p.on_surface));
+            ui.label(
+                RichText::new(format!("{} – {}", monday.format("%d.%m."), sunday.format("%d.%m.%Y")))
+                    .color(p.on_surface_variant),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
                 if fx::button(ui, ButtonStyle::Tonal, icon::PLUS, lang.add_deadline()).clicked() {
-                    self.study.new_deadline = Some(NewDeadline {
-                        title: String::new(),
-                        module: 0,
-                        date: String::new(),
-                        kind: Kind::Due,
-                        editing: None,
-                    });
+                    self.study.new_deadline = Some(NewDeadline::empty());
+                }
+                let checking = self.study.checking.is_some();
+                let check = ui.add_enabled_ui(!checking, |ui| {
+                    fx::button(ui, ButtonStyle::Text, icon::FILE_MAGNIFYING_GLASS, lang.check_file())
+                });
+                if check.inner.on_hover_text(lang.check_file_hint()).clicked() {
+                    self.check_file();
                 }
                 let scanning = self.study.scanning.load(std::sync::atomic::Ordering::Relaxed);
-                if scanning {
-                    ui.add(egui::Spinner::new());
-                } else if fx::button(ui, ButtonStyle::Text, icon::ARROW_CLOCKWISE, lang.search_again())
-                    .on_hover_text(lang.search_again_hint())
-                    .clicked()
+                if !scanning
+                    && fx::button(ui, ButtonStyle::Text, icon::ARROW_CLOCKWISE, lang.search_again())
+                        .on_hover_text(lang.search_again_hint())
+                        .clicked()
                 {
                     self.study.deadlines.forget_scanned();
                     self.save_deadlines();
@@ -463,102 +580,283 @@ impl App {
                 }
             });
         });
-        let now = Local::now().naive_local();
-        let upcoming: Vec<_> = self.study.deadlines.upcoming(now, 7, 366).into_iter().cloned().collect();
-        let mut change: Option<(u64, &str)> = None;
-        fx::card(ui, |ui| {
-            if upcoming.is_empty() {
-                ui.label(RichText::new(lang.no_deadlines()).color(p.on_surface_variant));
-                return;
+        // How much was looked through, so a missing date can be told from a file not read yet.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let scanning = self.study.scanning.load(std::sync::atomic::Ordering::Relaxed)
+                || self.study.checking.is_some()
+                || self.study.indexer.as_ref().is_some_and(|i| i.busy());
+            if scanning {
+                ui.add(egui::Spinner::new().size(12.0));
             }
-            for (i, d) in upcoming.iter().enumerate() {
-                if i > 0 {
-                    super::settings::divider(ui);
-                }
-                let Some(due) = d.due() else { continue };
-                let days = (due.date() - now.date()).num_days();
-                let late = due < now;
-                let (fill, fg) = if late {
-                    (p.error_container, p.on_error_container)
-                } else if days <= 2 {
-                    (p.warning_container, p.on_warning_container)
-                } else {
-                    (p.secondary_container, p.on_secondary_container)
-                };
+            let status = lang.scanned_status(self.study.deadlines.scanned_count(), scanning);
+            ui.label(RichText::new(status).small().color(p.on_surface_variant));
+        });
+        ui.add_space(6.0);
+        if let Some(checked) = &self.study.checked {
+            let mut close = false;
+            let mut by_hand = false;
+            let name = checked.file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let (fill, fg) = if checked.found == 0 {
+                (p.warning_container, p.on_warning_container)
+            } else {
+                (p.secondary_container, p.on_secondary_container)
+            };
+            egui::Frame::new().fill(fill).corner_radius(12).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.set_min_height(52.0);
-                    // The day in a tinted box.
-                    let (rect, _) = ui.allocate_exact_size(vec2(64.0, 46.0), Sense::hover());
-                    ui.painter().rect_filled(rect, egui::CornerRadius::same(12), fill);
-                    let day = d.day().unwrap_or(now.date());
-                    ui.painter().text(
-                        rect.center() - vec2(0.0, 8.0),
-                        egui::Align2::CENTER_CENTER,
-                        weekday(lang, day),
-                        egui::FontId::proportional(12.0),
-                        fg,
-                    );
-                    ui.painter().text(
-                        rect.center() + vec2(0.0, 9.0),
-                        egui::Align2::CENTER_CENTER,
-                        day.format("%d.%m.").to_string(),
-                        fx::medium_font(15.0),
-                        fg,
-                    );
-                    ui.add_space(8.0);
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.label(fx::title(&d.title, 15.0).color(p.on_surface));
-                        let when = lang.due_when(days, late, d.time.as_deref());
-                        let kind = lang.deadline_kind(d.kind);
-                        let line = if d.module.is_empty() {
-                            format!("{kind} · {when}")
-                        } else {
-                            format!("{kind} · {when} · {}", d.module)
-                        };
-                        ui.label(RichText::new(line).color(if late { p.error } else { p.on_surface_variant }));
-                        if !d.context.is_empty() {
-                            ui.add(
-                                egui::Label::new(RichText::new(format!("«{}»", d.context)).small().color(p.outline))
-                                    .truncate(),
-                            );
-                        }
-                    });
+                    let text = if checked.found == 0 {
+                        lang.checked_nothing(&name)
+                    } else {
+                        lang.checked_found(&name, checked.found, checked.added)
+                    };
+                    ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if fx::button(ui, ButtonStyle::Text, icon::TRASH, "").on_hover_text(lang.delete()).clicked() {
-                            change = Some((d.id, "delete"));
+                        if fx::icon_button(ui, icon::X).on_hover_text(lang.close()).clicked() {
+                            close = true;
                         }
-                        if fx::button(ui, ButtonStyle::Text, icon::CALENDAR_PLUS, "")
-                            .on_hover_text(lang.to_calendar())
-                            .clicked()
+                        if checked.found == 0
+                            && fx::button(ui, ButtonStyle::Text, icon::PLUS, lang.add_by_hand()).clicked()
                         {
-                            change = Some((d.id, "calendar"));
-                        }
-                        if fx::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(lang.correct()).clicked() {
-                            change = Some((d.id, "edit"));
-                        }
-                        if let Some(file) = &d.file
-                            && fx::icon_button(ui, icon::FOLDER_OPEN).on_hover_text(lang.show_in_folder()).clicked()
-                        {
-                            crate::desktop::reveal(file);
-                        }
-                        if let Some(file) = &d.file
-                            && fx::icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(lang.open_file()).clicked()
-                        {
-                            crate::desktop::open(file);
-                        }
-                        if fx::button(ui, ButtonStyle::Tonal, icon::CHECK, lang.done()).clicked() {
-                            change = Some((d.id, "done"));
+                            by_hand = true;
                         }
                     });
                 });
+            });
+            ui.add_space(8.0);
+            if by_hand {
+                let module = self.config.courses.iter().position(|c| c.label() == checked.module).unwrap_or(usize::MAX);
+                let title = checked.file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                self.study.new_deadline =
+                    Some(NewDeadline { title, module, file: Some(checked.file.clone()), ..NewDeadline::empty() });
             }
-        });
+            if close || by_hand {
+                self.study.checked = None;
+            }
+        }
+        let upcoming: Vec<Deadline> = self.study.deadlines.upcoming(now, 7, 366).into_iter().cloned().collect();
+        self.week_strip(ui, monday, today, &upcoming);
+        ui.add_space(10.0);
+        let mut change: Option<(u64, &str)> = None;
+        if upcoming.is_empty() {
+            fx::card(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(lang.no_deadlines()).color(p.on_surface_variant)).wrap());
+            });
+        }
+        // Overdue, this week, next week, later (closed: far away is less urgent).
+        let next_sunday = sunday + chrono::Duration::days(7);
+        let group = |d: &Deadline| match d.due() {
+            Some(due) if due < now => 0,
+            Some(due) if due.date() <= sunday => 1,
+            Some(due) if due.date() <= next_sunday => 2,
+            _ => 3,
+        };
+        for g in 0..4 {
+            let items: Vec<&Deadline> = upcoming.iter().filter(|d| group(d) == g).collect();
+            if items.is_empty() {
+                continue;
+            }
+            let title = match g {
+                0 => lang.overdue_group(items.len()),
+                1 => lang.this_week_group(items.len()),
+                2 => lang.next_week_group(items.len()),
+                _ => lang.later_group(items.len()),
+            };
+            let header =
+                egui::CollapsingHeader::new(RichText::new(title).family(fx::medium()).size(14.0).color(if g == 0 {
+                    p.error
+                } else {
+                    p.primary
+                }))
+                .id_salt(("deadline-group", g))
+                .default_open(g < 3);
+            header.show_unindented(ui, |ui| {
+                fx::card(ui, |ui| {
+                    for (i, d) in items.iter().enumerate() {
+                        if i > 0 {
+                            super::settings::divider(ui);
+                        }
+                        if let Some(c) = self.deadline_row(ui, d, now) {
+                            change = Some(c);
+                        }
+                    }
+                });
+            });
+            ui.add_space(6.0);
+        }
+        let done: Vec<Deadline> = self.study.deadlines.recently_done(today, 14).into_iter().cloned().collect();
+        if !done.is_empty() {
+            let header = egui::CollapsingHeader::new(
+                RichText::new(lang.done_group(done.len())).family(fx::medium()).size(14.0).color(p.on_surface_variant),
+            )
+            .id_salt("deadline-done")
+            .default_open(false);
+            header.show_unindented(ui, |ui| {
+                fx::card(ui, |ui| {
+                    for (i, d) in done.iter().enumerate() {
+                        if i > 0 {
+                            super::settings::divider(ui);
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(icon::CHECK_CIRCLE).size(18.0).color(p.success));
+                            let day = d.day().map(|day| format!("{} {}", weekday(lang, day), day.format("%d.%m.")));
+                            ui.label(RichText::new(&d.title).strikethrough().color(p.on_surface_variant));
+                            ui.label(RichText::new(day.unwrap_or_default()).small().color(p.outline));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if fx::button(ui, ButtonStyle::Text, icon::ARROW_U_UP_LEFT, lang.reopen()).clicked() {
+                                    change = Some((d.id, "reopen"));
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+        }
         ui.add_space(4.0);
         ui.label(RichText::new(lang.deadlines_note()).small().color(p.outline));
         if let Some((id, what)) = change {
             self.change_deadline(id, what);
         }
+    }
+
+    /// Mon–Sun of this week, today marked, a dot per deadline in the colour of its urgency.
+    fn week_strip(&self, ui: &mut egui::Ui, monday: NaiveDate, today: NaiveDate, upcoming: &[Deadline]) {
+        let p = fx::pal(ui);
+        let lang = self.lang;
+        let gap = 8.0;
+        let width = ((ui.available_width() - gap * 6.0) / 7.0).max(40.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for i in 0..7 {
+                let day = monday + chrono::Duration::days(i);
+                let due: Vec<&Deadline> = upcoming.iter().filter(|d| d.day() == Some(day)).collect();
+                let (rect, response) = ui.allocate_exact_size(vec2(width, 62.0), Sense::hover());
+                let is_today = day == today;
+                let fill = if is_today { p.primary_container } else { p.card };
+                let fg = if is_today { p.on_primary_container } else { p.on_surface };
+                let painter = ui.painter();
+                painter.rect_filled(rect, egui::CornerRadius::same(12), fill);
+                let faded = if day < today { p.outline } else { p.on_surface_variant };
+                painter.text(
+                    rect.center_top() + vec2(0.0, 12.0),
+                    egui::Align2::CENTER_CENTER,
+                    weekday(lang, day),
+                    egui::FontId::proportional(12.0),
+                    if is_today { fg } else { faded },
+                );
+                painter.text(
+                    rect.center_top() + vec2(0.0, 30.0),
+                    egui::Align2::CENTER_CENTER,
+                    day.format("%d").to_string(),
+                    fx::medium_font(16.0),
+                    if day < today && !is_today { faded } else { fg },
+                );
+                let dots = due.len().min(4);
+                for (k, d) in due.iter().take(dots).enumerate() {
+                    let x = rect.center().x + (k as f32 - (dots as f32 - 1.0) / 2.0) * 10.0;
+                    let color = match d.kind {
+                        Kind::Exam => p.error,
+                        Kind::Due if day <= today + chrono::Duration::days(2) => p.warning,
+                        Kind::Due => p.primary,
+                    };
+                    painter.circle_filled(egui::pos2(x, rect.bottom() - 11.0), 3.5, color);
+                }
+                if !due.is_empty() {
+                    let titles = due.iter().map(|d| d.title.as_str()).collect::<Vec<_>>().join("\n");
+                    response.on_hover_text(titles);
+                }
+            }
+        });
+    }
+
+    /// One deadline: the day in a tinted box, what and when, and what can be done with it.
+    fn deadline_row(&self, ui: &mut egui::Ui, d: &Deadline, now: chrono::NaiveDateTime) -> Option<(u64, &'static str)> {
+        let p = fx::pal(ui);
+        let lang = self.lang;
+        let mut change = None;
+        let due = d.due()?;
+        let days = (due.date() - now.date()).num_days();
+        let late = due < now;
+        let (fill, fg) = if late {
+            (p.error_container, p.on_error_container)
+        } else if days <= 2 {
+            (p.warning_container, p.on_warning_container)
+        } else {
+            (p.secondary_container, p.on_secondary_container)
+        };
+        ui.horizontal(|ui| {
+            ui.set_min_height(48.0);
+            let (rect, _) = ui.allocate_exact_size(vec2(58.0, 44.0), Sense::hover());
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(12), fill);
+            let day = d.day().unwrap_or(now.date());
+            ui.painter().text(
+                rect.center() - vec2(0.0, 8.0),
+                egui::Align2::CENTER_CENTER,
+                weekday(lang, day),
+                egui::FontId::proportional(12.0),
+                fg,
+            );
+            ui.painter().text(
+                rect.center() + vec2(0.0, 9.0),
+                egui::Align2::CENTER_CENTER,
+                day.format("%d.%m.").to_string(),
+                fx::medium_font(14.0),
+                fg,
+            );
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let title = ui.label(fx::title(&d.title, 15.0).color(p.on_surface));
+                    // Where it was found, to check it was read right.
+                    if !d.context.is_empty() {
+                        title.on_hover_text(format!("«{}»", d.context));
+                    }
+                    if d.added > self.study.new_since && self.study.new_since > 0 {
+                        badge(ui, lang.badge_new(), p.primary, p.on_primary);
+                    }
+                    if d.estimated {
+                        badge(ui, lang.estimated(), p.warning_container, p.on_warning_container)
+                            .on_hover_text(lang.estimated_hint());
+                    }
+                });
+                let when = lang.due_when(days, late, d.time.as_deref());
+                let kind = lang.deadline_kind(d.kind);
+                let line = if d.module.is_empty() {
+                    format!("{kind} · {when}")
+                } else {
+                    let short = d.module.rsplit(" › ").next().unwrap_or(&d.module);
+                    format!("{kind} · {when} · {short}")
+                };
+                ui.label(RichText::new(line).small().color(if late { p.error } else { p.on_surface_variant }));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                if fx::icon_button(ui, icon::TRASH).on_hover_text(lang.delete()).clicked() {
+                    change = Some((d.id, "delete"));
+                }
+                if fx::icon_button(ui, icon::CALENDAR_PLUS).on_hover_text(lang.to_calendar()).clicked() {
+                    change = Some((d.id, "calendar"));
+                }
+                if fx::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(lang.correct()).clicked() {
+                    change = Some((d.id, "edit"));
+                }
+                if let Some(file) = &d.file {
+                    if fx::icon_button(ui, icon::FOLDER_OPEN).on_hover_text(lang.show_in_folder()).clicked() {
+                        crate::desktop::reveal(file);
+                    }
+                    if fx::icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(lang.open_file()).clicked() {
+                        crate::desktop::open(file);
+                    }
+                }
+                ui.add_space(4.0);
+                if fx::button(ui, ButtonStyle::Tonal, icon::CHECK, lang.done()).clicked() {
+                    change = Some((d.id, "done"));
+                }
+            });
+        });
+        change
     }
 
     fn change_deadline(&mut self, id: u64, what: &str) {
@@ -569,11 +867,18 @@ impl App {
                 let module = self.config.courses.iter().position(|c| c.label() == d.module).unwrap_or(usize::MAX);
                 let time = d.time.as_deref().map(|t| format!(" {t}")).unwrap_or_default();
                 let date = d.day().map(|day| format!("{}{time}", day.format("%d.%m.%Y"))).unwrap_or_default();
-                self.study.new_deadline =
-                    Some(NewDeadline { title: d.title.clone(), module, date, kind: d.kind, editing: Some(id) });
+                self.study.new_deadline = Some(NewDeadline {
+                    title: d.title.clone(),
+                    module,
+                    date,
+                    kind: d.kind,
+                    editing: Some(id),
+                    file: None,
+                });
                 return;
             }
             "done" => d.done = true,
+            "reopen" => d.done = false,
             "delete" => d.deleted = true,
             "calendar" => {
                 let summary = if d.module.is_empty() {
@@ -664,7 +969,10 @@ impl App {
             match new.editing {
                 Some(id) => self.study.deadlines.edit(id, &new.title, &module, new.kind, date, time),
                 None => {
-                    self.study.deadlines.add_manual(&new.title, &module, new.kind, date, time);
+                    let id = self.study.deadlines.add_manual(&new.title, &module, new.kind, date, time);
+                    if let Some(item) = self.study.deadlines.items.iter_mut().find(|d| d.id == id) {
+                        item.file = new.file.clone();
+                    }
                 }
             }
             self.study.new_deadline = None;

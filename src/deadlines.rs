@@ -15,7 +15,7 @@ use crate::index::fold;
 
 pub const DEADLINES_FILE: &str = "deadlines.json";
 /// Bumped when finding gets better: files are then read again (deleted entries stay deleted).
-const FINDER_VERSION: u32 = 2;
+const FINDER_VERSION: u32 = 3;
 
 /// What kind of date it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -39,49 +39,240 @@ enum Look {
     Period,
 }
 
+/// How a deadline word may be written.
+#[derive(Clone, Copy, PartialEq)]
+enum Fit {
+    /// Only as a word of its own ("due", not "residue").
+    Word,
+    /// May go on ("deadline" in "deadlines", "submit" in "submitted").
+    Starts,
+    /// German compounds: may end a longer word ("Projektabgabe", "Semesterendprüfung") and
+    /// go on with a few endings ("Abgabetermin", "Prüfungsdatum"), but not with any other
+    /// ("prüfungsrelevant", "Prüfungsordnung").
+    Compound,
+    /// Only as the end of a longer word ("Zwischentest", not "Test").
+    Tail,
+}
+
 /// Words (folded: lower-case, no accents) that announce a date, what kind it is, where the
-/// date is, and whether the word may go on ("abgabe" also finds "Abgabetermin", but
-/// "prufung" must not find "prüfungsrelevant").
-const TRIGGERS: &[(&str, Kind, Look, bool)] = &[
-    ("abgabe", Kind::Due, Look::Ahead, true),
-    ("einsendeschluss", Kind::Due, Look::Ahead, false),
-    ("einreichung", Kind::Due, Look::Ahead, false),
-    ("deadline", Kind::Due, Look::Ahead, true),
-    ("due", Kind::Due, Look::Ahead, false),
-    ("submit", Kind::Due, Look::Ahead, true),
-    ("submission", Kind::Due, Look::Ahead, false),
-    ("hand in", Kind::Due, Look::Ahead, false),
-    ("turn in", Kind::Due, Look::Ahead, false),
-    ("spatestens", Kind::Due, Look::Ahead, false),
-    ("fallig", Kind::Due, Look::Ahead, false),
-    ("faellig", Kind::Due, Look::Ahead, false),
-    ("abzugeben", Kind::Due, Look::Behind, false),
-    ("abgeben", Kind::Due, Look::Behind, false),
-    ("einzureichen", Kind::Due, Look::Behind, false),
-    ("einreichen", Kind::Due, Look::Behind, false),
-    ("hochzuladen", Kind::Due, Look::Behind, false),
-    ("hochladen", Kind::Due, Look::Behind, false),
-    ("bearbeitungszeit", Kind::Due, Look::Period, true),
-    ("klausur", Kind::Exam, Look::Ahead, false),
-    ("nachklausur", Kind::Exam, Look::Ahead, false),
-    ("probeklausur", Kind::Exam, Look::Ahead, false),
-    ("prufung", Kind::Exam, Look::Ahead, false),
-    ("pruefung", Kind::Exam, Look::Ahead, false),
-    ("zwischenprufung", Kind::Exam, Look::Ahead, false),
-    ("modulprufung", Kind::Exam, Look::Ahead, false),
-    ("endprufung", Kind::Exam, Look::Ahead, false),
-    ("exam", Kind::Exam, Look::Ahead, false),
-    ("final exam", Kind::Exam, Look::Ahead, false),
-    ("midterm", Kind::Exam, Look::Ahead, false),
-    ("testat", Kind::Exam, Look::Ahead, false),
-    ("kolloquium", Kind::Exam, Look::Ahead, false),
-    ("prasentation", Kind::Exam, Look::Ahead, false),
-    ("presentation", Kind::Exam, Look::Ahead, false),
-    ("vortrag", Kind::Exam, Look::Ahead, false),
+/// date is, and how the word may be written.
+const TRIGGERS: &[(&str, Kind, Look, Fit)] = &[
+    ("abgabe", Kind::Due, Look::Ahead, Fit::Compound),
+    ("einsendeschluss", Kind::Due, Look::Ahead, Fit::Word),
+    ("einreichung", Kind::Due, Look::Ahead, Fit::Word),
+    ("frist", Kind::Due, Look::Ahead, Fit::Compound),
+    ("deadline", Kind::Due, Look::Ahead, Fit::Starts),
+    ("due", Kind::Due, Look::Ahead, Fit::Word),
+    ("submit", Kind::Due, Look::Ahead, Fit::Starts),
+    ("submission", Kind::Due, Look::Ahead, Fit::Starts),
+    ("upload", Kind::Due, Look::Ahead, Fit::Starts),
+    ("hand in", Kind::Due, Look::Ahead, Fit::Word),
+    ("turn in", Kind::Due, Look::Ahead, Fit::Word),
+    ("spatestens", Kind::Due, Look::Ahead, Fit::Word),
+    ("fallig", Kind::Due, Look::Ahead, Fit::Starts),
+    ("faellig", Kind::Due, Look::Ahead, Fit::Word),
+    ("abzugeben", Kind::Due, Look::Behind, Fit::Word),
+    ("abgeben", Kind::Due, Look::Behind, Fit::Word),
+    ("abgegeben", Kind::Due, Look::Behind, Fit::Word),
+    ("einzureichen", Kind::Due, Look::Behind, Fit::Word),
+    ("einreichen", Kind::Due, Look::Behind, Fit::Word),
+    ("eingereicht", Kind::Due, Look::Behind, Fit::Word),
+    ("hochzuladen", Kind::Due, Look::Behind, Fit::Word),
+    ("hochladen", Kind::Due, Look::Behind, Fit::Word),
+    ("hochgeladen", Kind::Due, Look::Behind, Fit::Word),
+    ("einzuwerfen", Kind::Due, Look::Behind, Fit::Word),
+    ("einwerfen", Kind::Due, Look::Behind, Fit::Word),
+    ("eingeworfen", Kind::Due, Look::Behind, Fit::Word),
+    ("abzuliefern", Kind::Due, Look::Behind, Fit::Word),
+    ("abliefern", Kind::Due, Look::Behind, Fit::Word),
+    ("einzusenden", Kind::Due, Look::Behind, Fit::Word),
+    ("bearbeitungszeit", Kind::Due, Look::Period, Fit::Starts),
+    ("klausur", Kind::Exam, Look::Ahead, Fit::Compound),
+    ("prufung", Kind::Exam, Look::Ahead, Fit::Compound),
+    ("pruefung", Kind::Exam, Look::Ahead, Fit::Compound),
+    ("exam", Kind::Exam, Look::Ahead, Fit::Word),
+    ("exams", Kind::Exam, Look::Ahead, Fit::Word),
+    ("examination", Kind::Exam, Look::Ahead, Fit::Word),
+    ("midterm", Kind::Exam, Look::Ahead, Fit::Starts),
+    ("quiz", Kind::Exam, Look::Ahead, Fit::Word),
+    ("test", Kind::Exam, Look::Ahead, Fit::Tail),
+    ("testat", Kind::Exam, Look::Ahead, Fit::Word),
+    ("kolloquium", Kind::Exam, Look::Ahead, Fit::Word),
+    ("leistungskontrolle", Kind::Exam, Look::Ahead, Fit::Word),
+    ("lernkontrolle", Kind::Exam, Look::Ahead, Fit::Word),
+    ("leistungsnachweis", Kind::Exam, Look::Ahead, Fit::Word),
+    ("prasentation", Kind::Exam, Look::Ahead, Fit::Compound),
+    ("presentation", Kind::Exam, Look::Ahead, Fit::Word),
+    ("vortrag", Kind::Exam, Look::Ahead, Fit::Word),
 ];
-/// How far from the word the date may be (within the same sentence).
-const LOOK_AHEAD: usize = 90;
-const LOOK_BEHIND: usize = 60;
+/// How a compound may go on ("Abgabe|termin", "Prüfung|sdatum", "Frist|ende").
+const COMPOUND_ENDINGS: &[&str] = &[
+    "n", "en", "s", "termin", "termine", "stermin", "stermine", "datum", "sdatum", "tag", "stag", "frist", "sfrist",
+    "ende",
+];
+/// Compounds that are something else ("Überprüfung", "Wärmeabgabe", "Selbsttest", "Protest").
+const NOT_COMPOUNDS: &[&str] =
+    &["uber", "ueber", "warme", "energie", "stimm", "steuer", "selbst", "gast", "pro", "con"];
+/// A date right after one of these is a number of something ("Aufgabe 3.2.", "Kapitel 4.1.").
+const NUMBERED: &[&str] = &[
+    "aufgabe",
+    "aufgaben",
+    "teilaufgabe",
+    "ubung",
+    "uebung",
+    "kapitel",
+    "kap",
+    "abschnitt",
+    "seite",
+    "seiten",
+    "s",
+    "nr",
+    "satz",
+    "lemma",
+    "theorem",
+    "definition",
+    "def",
+    "korollar",
+    "bsp",
+    "beispiel",
+    "exercise",
+    "exercises",
+    "section",
+    "chapter",
+    "problem",
+    "question",
+    "task",
+    "punkte",
+    "punkt",
+    "gleichung",
+    "abbildung",
+    "abb",
+    "tabelle",
+    "tab",
+    "folie",
+    "folien",
+    "slide",
+    "slides",
+    "version",
+    "v",
+    "um",
+];
+/// A date right after one of these is when something was made, not when it is due.
+const NOT_DUE: &[&str] = &[
+    "stand",
+    "ausgabe",
+    "ausgegeben",
+    "erstellt",
+    "aktualisiert",
+    "veroffentlicht",
+    "released",
+    "published",
+    "issued",
+    "updated",
+    "posted",
+    "beginn",
+    "abgabebeginn",
+    "geoffnet",
+    "opened",
+    "opens",
+    "start",
+];
+/// A weekday after one of these is every week, not one day ("jeweils Montag", "every Friday").
+const EVERY: &[&str] = &["jeweils", "jeden", "immer", "every", "each"];
+/// Words in a sentence that say something is handed in ("Bitte bis 9.11. in Moodle hochladen").
+const HAND_IN_WORDS: &[&str] = &[
+    "hochlad",
+    "hochzulad",
+    "abgeb",
+    "abzugeb",
+    "abgegeb",
+    "einreich",
+    "einzureich",
+    "eingereich",
+    "einwerf",
+    "einzuwerf",
+    "eingeworf",
+    "briefkasten",
+    "ablief",
+    "abzulief",
+    "einsend",
+    "einzusend",
+    "upload",
+    "submit",
+    "losung",
+    "loesung",
+    "solution",
+];
+/// Short weekdays ("Mo, 3.11.").
+const SHORT_WEEKDAYS: &[&str] =
+    &["mo", "di", "mi", "do", "fr", "sa", "so", "mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+/// Weekdays, for "Abgabe: Montag, 10:15 Uhr" (no date: the next Monday).
+const WEEKDAYS: &[(&str, u32)] = &[
+    ("montag", 0),
+    ("dienstag", 1),
+    ("mittwoch", 2),
+    ("donnerstag", 3),
+    ("freitag", 4),
+    ("samstag", 5),
+    ("sonntag", 6),
+    ("monday", 0),
+    ("tuesday", 1),
+    ("wednesday", 2),
+    ("thursday", 3),
+    ("friday", 4),
+    ("saturday", 5),
+    ("sunday", 6),
+];
+/// Names of what is handed in, for a title: "Übungsblatt 3", "Serie 5", "Teil A" need a
+/// number or letter after them, "Projekt" or "Essay" don't.
+const NUMBERED_WORKS: &[&str] = &[
+    "ubungsblatt",
+    "uebungsblatt",
+    "aufgabenblatt",
+    "ubungsserie",
+    "blatt",
+    "serie",
+    "ubung",
+    "uebung",
+    "hausaufgabe",
+    "hausaufgaben",
+    "hausubung",
+    "assignment",
+    "homework",
+    "sheet",
+    "lab",
+    "praktikum",
+    "teil",
+    "part",
+    "tutorium",
+    "meilenstein",
+    "milestone",
+    "exercise",
+    "set",
+];
+const WORKS: &[&str] = &[
+    "projekt",
+    "project",
+    "seminararbeit",
+    "hausarbeit",
+    "essay",
+    "bericht",
+    "laborbericht",
+    "report",
+    "poster",
+    "protokoll",
+    "portfolio",
+    "bachelorarbeit",
+    "masterarbeit",
+    "semesterarbeit",
+    "projektarbeit",
+];
+/// How far from the word the date may be (within the same sentence, over at most a few lines).
+const LOOK_AHEAD: usize = 160;
+const LOOK_BEHIND: usize = 120;
+const MAX_LINE_BREAKS: usize = 4;
+/// How far a weekday without date may be from the word.
+const WEEKDAY_AHEAD: usize = 40;
 /// How much text around it is kept to show where it was found.
 const CONTEXT: usize = 70;
 
@@ -107,6 +298,12 @@ pub struct Deadline {
     /// The date as it was found, when the user corrected it (so it isn't found again).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub found_date: Option<String>,
+    /// Only a weekday was given ("Abgabe: Montag"): the date is the next one after the file came.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub estimated: bool,
+    /// When it was found or added (Unix seconds), to mark new entries.
+    #[serde(default)]
+    pub added: i64,
 }
 
 impl Deadline {
@@ -134,6 +331,10 @@ pub struct Found {
     pub kind: Kind,
     /// The word as written ("Klausur", "Zwischenprüfung"), to name an exam date.
     pub word: String,
+    /// What is due, if the text says it ("Serie 5", "Blatt 3", "Projektabgabe").
+    pub title: Option<String>,
+    /// Only a weekday was given: the date is the next such day.
+    pub estimated: bool,
 }
 
 fn month(word: &str) -> Option<u32> {
@@ -182,6 +383,35 @@ fn skip_spaces(chars: &[char], mut i: usize) -> usize {
     i
 }
 
+fn is_weekday(word: &str) -> bool {
+    WEEKDAYS.iter().any(|(w, _)| *w == word) || SHORT_WEEKDAYS.contains(&word)
+}
+
+/// The word just before `i`, over spaces, one mark and a weekday ("Stand: 20.10." and
+/// "Abgabebeginn: Dienstag, 21. Oktober" give "stand" and "abgabebeginn").
+fn word_before(folded: &[char], i: usize) -> String {
+    let (word, start) = word_before_at(folded, i);
+    if is_weekday(&word) { word_before_at(folded, start).0 } else { word }
+}
+
+fn word_before_at(folded: &[char], i: usize) -> (String, usize) {
+    let mut j = i;
+    while j > 0 && folded[j - 1] == ' ' {
+        j -= 1;
+    }
+    if j > 0 && matches!(folded[j - 1], ':' | '.' | ',' | '(') {
+        j -= 1;
+        while j > 0 && folded[j - 1] == ' ' {
+            j -= 1;
+        }
+    }
+    let end = j;
+    while j > 0 && folded[j - 1].is_alphabetic() {
+        j -= 1;
+    }
+    (folded[j..end].iter().collect(), j)
+}
+
 /// A date starting at `i`: (year if given, month, day, end).
 fn date_at(chars: &[char], i: usize) -> Option<(Option<i32>, u32, u32, usize)> {
     let year_after = |end: usize| -> (Option<i32>, usize) {
@@ -192,6 +422,9 @@ fn date_at(chars: &[char], i: usize) -> Option<(Option<i32>, u32, u32, usize)> {
             _ => (None, end),
         }
     };
+    // A time right after it ("24.10. 10:15", "3.11 um") is no year; "12.10 Uhr" is no date.
+    let time_follows =
+        |end: usize| matches!(chars.get(end), Some(':' | '.')) && chars.get(end + 1).is_some_and(char::is_ascii_digit);
     if let Some((first, end)) = number(chars, i, 4) {
         // 2026-10-24
         if end - i == 4 && chars.get(end) == Some(&'-') {
@@ -205,18 +438,28 @@ fn date_at(chars: &[char], i: usize) -> Option<(Option<i32>, u32, u32, usize)> {
         if end - i > 2 {
             return None;
         }
+        // 24/10/2026, 24/10/26, 11/28/2026 (the order is clear when one is above 12).
+        if chars.get(end) == Some(&'/') {
+            let (second, e) = number(chars, end + 1, 2)?;
+            if chars.get(e) != Some(&'/') {
+                return None;
+            }
+            let (y, ye) = number(chars, e + 1, 4)?;
+            let year = match ye - (e + 1) {
+                4 => y as i32,
+                2 => 2000 + y as i32,
+                _ => return None,
+            };
+            let (m, d) = if second > 12 { (first, second) } else { (second, first) };
+            return Some((Some(year), m, d, ye));
+        }
         let day = first;
-        // 24.10. / 24.10.2026 / 24.10.26
+        // 24.10. / 24.10.2026 / 24.10.26 / 3.11
         if chars.get(end) == Some(&'.') {
             let j = skip_spaces(chars, end + 1);
             if let Some((m, e)) = number(chars, j, 2) {
                 if chars.get(e) == Some(&'.') {
                     let k = skip_spaces(chars, e + 1);
-                    // A time right after the date ("24.10. 10:15") is no year.
-                    let time_follows = |end: usize| {
-                        matches!(chars.get(end), Some(':' | '.'))
-                            && chars.get(end + 1).is_some_and(char::is_ascii_digit)
-                    };
                     return match number(chars, k, 4) {
                         Some((y, ye)) if ye - k == 4 && !time_follows(ye) => Some((Some(y as i32), m, day, ye)),
                         Some((y, ye)) if ye - k == 2 && k == e + 1 && !time_follows(ye) => {
@@ -224,6 +467,17 @@ fn date_at(chars: &[char], i: usize) -> Option<(Option<i32>, u32, u32, usize)> {
                         }
                         _ => Some((None, m, day, e + 1)),
                     };
+                }
+                // "3.11" without the last dot: only with a two-digit month, so "3.5 Personen"
+                // stays a number, and not "12.10 Uhr" (a time) or "3.11.5" (a section).
+                let unit = word(chars, skip_spaces(chars, e)).0;
+                if j == end + 1
+                    && e - j == 2
+                    && !time_follows(e)
+                    && !matches!(chars.get(e), Some(',' | '/'))
+                    && !["uhr", "h"].contains(&unit.as_str())
+                {
+                    return Some((None, m, day, e));
                 }
                 return None;
             }
@@ -255,49 +509,97 @@ fn date_at(chars: &[char], i: usize) -> Option<(Option<i32>, u32, u32, usize)> {
     Some((year, m, day, end))
 }
 
-/// A time shortly after a date: "23:59", "23.59 Uhr", "18 Uhr", "11:59 pm". Not another date
-/// ("10.11.2026" is no time 10:11), and not past the end of the sentence.
+/// A time shortly after a date: "23:59", "23.59 Uhr", "18 Uhr", "11:59 pm", "5pm", "von 14
+/// bis 16 Uhr" (the start). Not another date ("10.11.2026" is no time 10:11), and not past
+/// the end of the sentence.
 fn time_after(chars: &[char], from: usize) -> Option<NaiveTime> {
-    let limit = (from + 24).min(chars.len());
+    time_in(chars, from, (from + 24).min(chars.len()))
+}
+
+/// The first time that starts between `from` and `to`.
+fn time_in(chars: &[char], from: usize, to: usize) -> Option<NaiveTime> {
     let mut i = from;
-    while i < limit {
+    while i < to.min(chars.len()) {
         if chars[i] == '.' && chars.get(i + 1) == Some(&' ') && chars.get(i + 2).is_some_and(|c| c.is_alphabetic()) {
             return None;
         }
-        if let Some((h, e)) = number(chars, i, 2) {
-            let (mut hour, mut minute, mut end) = (h, 0, e);
-            let after_word = |at: usize| word(chars, skip_spaces(chars, at)).0;
-            match chars.get(e) {
-                Some(':') if let Some((m, me)) = number(chars, e + 1, 2).filter(|&(_, me)| me - (e + 1) == 2) => {
-                    minute = m;
-                    end = me;
-                }
-                // "23.59 Uhr", but "10.11." or "10.11.2026" is a date.
-                Some('.')
-                    if let Some((m, me)) = number(chars, e + 1, 2).filter(|&(_, me)| me - (e + 1) == 2)
-                        && chars.get(me) != Some(&'.')
-                        && ["uhr", "h"].contains(&after_word(me).as_str()) =>
-                {
-                    minute = m;
-                    end = me;
-                }
-                _ if ["uhr", "h"].contains(&after_word(e).as_str()) => {}
-                _ => {
-                    i = e;
-                    continue;
-                }
+        if let Some((_, e)) = number(chars, i, 2) {
+            if let Some((time, _)) = time_at(chars, i) {
+                return Some(time);
             }
-            let suffix = after_word(end);
-            if suffix == "pm" && hour < 12 {
-                hour += 12;
-            } else if suffix == "am" && hour == 12 {
-                hour = 0;
-            }
-            return NaiveTime::from_hms_opt(hour, minute, 0);
+            i = e;
+            continue;
         }
         i += 1;
     }
     None
+}
+
+/// A time written right before a date: "bis 12 Uhr am 28.10.", "18:00, 3.11.".
+fn time_before(chars: &[char], date: usize, stops: &[bool]) -> Option<NaiveTime> {
+    let mut from = date;
+    while from > 0 && date - from < 22 && !stops[from - 1] {
+        from -= 1;
+    }
+    (from..date).find_map(|i| {
+        let (time, end) = time_at(chars, i).filter(|&(_, end)| end <= date)?;
+        let gap: String = chars[end..date].iter().collect();
+        gap.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .all(|w| ["am", "on", "den", "the"].contains(&w) || is_weekday(w))
+            .then_some(time)
+    })
+}
+
+/// A time at `i` and where it ends (after "Uhr" or "pm").
+fn time_at(chars: &[char], i: usize) -> Option<(NaiveTime, usize)> {
+    let after_word = |at: usize| word(chars, skip_spaces(chars, at));
+    let (h, e) = number(chars, i, 2)?;
+    if i > 0 && chars[i - 1].is_alphanumeric() {
+        return None;
+    }
+    let (mut hour, mut minute, mut end) = (h, 0, e);
+    match chars.get(e) {
+        Some(':') if let Some((m, me)) = number(chars, e + 1, 2).filter(|&(_, me)| me - (e + 1) == 2) => {
+            minute = m;
+            end = me;
+        }
+        // "23.59 Uhr", but "10.11." or "10.11.2026" is a date.
+        Some('.')
+            if let Some((m, me)) = number(chars, e + 1, 2).filter(|&(_, me)| me - (e + 1) == 2)
+                && chars.get(me) != Some(&'.')
+                && ["uhr", "h"].contains(&after_word(me).0.as_str()) =>
+        {
+            minute = m;
+            end = me;
+        }
+        _ if ["uhr", "h", "pm"].contains(&after_word(e).0.as_str()) => {}
+        // "von 14 bis 16 Uhr", "14–16 Uhr": the start.
+        _ if range_to_hour(chars, e) => {}
+        _ => return None,
+    }
+    let (suffix, suffix_end) = after_word(end);
+    if suffix == "pm" && hour < 12 {
+        hour += 12;
+    } else if suffix == "am" && hour == 12 {
+        hour = 0;
+    }
+    if ["uhr", "h", "pm"].contains(&suffix.as_str()) {
+        end = suffix_end;
+    }
+    Some((NaiveTime::from_hms_opt(hour, minute, 0)?, end))
+}
+
+/// Whether "bis 16 Uhr" or "–16 Uhr" follows at `at`.
+fn range_to_hour(chars: &[char], at: usize) -> bool {
+    let mut j = skip_spaces(chars, at);
+    match chars.get(j) {
+        Some('-' | '–') => j += 1,
+        _ if word(chars, j).0 == "bis" => j = word(chars, j).1,
+        _ => return false,
+    }
+    let j = skip_spaces(chars, j);
+    number(chars, j, 2).is_some_and(|(_, e)| ["uhr", "h"].contains(&word(chars, skip_spaces(chars, e)).0.as_str()))
 }
 
 /// The year for a date without one: the one that puts it closest after `reference` (a
@@ -313,27 +615,56 @@ fn infer_year(month: u32, day: u32, reference: NaiveDate) -> Option<NaiveDate> {
 }
 
 /// True where a sentence ends: ". " (or "! ", "? ") after a word, followed by a capital
-/// letter. A dot after a number ("2. November", "3.11.") doesn't end one.
+/// letter. A dot after a number ("2. November", "3.11.") or a short word or abbreviation
+/// ("Prof. Dr. Huber", "Mo. 3.11.", "Kap. 2") doesn't end one.
 fn sentence_ends(raw: &[char]) -> Vec<bool> {
+    const ABBREVIATIONS: &[&str] = &["prof", "inkl", "evtl", "bspw", "sept", "zzgl", "jahrg", "gebr", "abs"];
     let mut ends = vec![false; raw.len()];
     for i in 1..raw.len() {
         if !matches!(raw[i], '.' | '!' | '?') || !raw[i - 1].is_alphabetic() {
             continue;
         }
         let next = raw[i + 1..].iter().position(|c| !c.is_whitespace()).map(|n| raw[i + 1 + n]);
-        if raw.get(i + 1).is_some_and(|c| c.is_whitespace()) && next.is_some_and(char::is_uppercase) {
-            ends[i] = true;
+        if !raw.get(i + 1).is_some_and(|c| c.is_whitespace()) || !next.is_some_and(char::is_uppercase) {
+            continue;
         }
+        let start = raw[..i].iter().rposition(|c| !c.is_alphabetic()).map_or(0, |p| p + 1);
+        let before: String = raw[start..i].iter().collect::<String>().to_lowercase();
+        let short = before.chars().count() <= 3 && before != "uhr";
+        if raw[i] == '.' && (short || ABBREVIATIONS.contains(&before.as_str())) {
+            continue;
+        }
+        ends[i] = true;
     }
     ends
 }
 
-/// The date written at `i` (with the year worked out), and where it ends.
+/// Where the search for a date stops: the end of the sentence, the start of the exercises
+/// ("Aufgabe 1"), or after a few lines.
+fn stops(raw: &[char], folded: &[char]) -> Vec<bool> {
+    const STARTS: &[&str] = &["aufgabe", "exercise", "problem", "question", "task"];
+    let mut stops = sentence_ends(raw);
+    for i in 1..raw.len() {
+        if raw[i - 1] == '\n' && !raw[i].is_whitespace() && STARTS.contains(&word(folded, i).0.as_str()) {
+            stops[i] = true;
+        }
+    }
+    stops
+}
+
+/// The date written at `i` (with the year worked out), and where it ends. Not a number of
+/// something ("Aufgabe 3.2.").
 fn full_date(folded: &[char], i: usize, reference: NaiveDate) -> Option<(NaiveDate, usize)> {
     if i > 0 && folded[i - 1].is_alphanumeric() {
         return None;
     }
+    if !folded.get(i).is_some_and(|c| c.is_alphanumeric()) {
+        return None;
+    }
     let (year, m, d, end) = date_at(folded, i)?;
+    if folded[i].is_ascii_digit() && NUMBERED.contains(&word_before(folded, i).as_str()) {
+        return None;
+    }
     let date = match year {
         Some(y) => NaiveDate::from_ymd_opt(y, m, d)?,
         None => infer_year(m, d, reference)?,
@@ -341,108 +672,231 @@ fn full_date(folded: &[char], i: usize, reference: NaiveDate) -> Option<(NaiveDa
     Some((date, end))
 }
 
-/// A table: the word is one of several column titles on its line ("Ausgabe Abgabe
-/// Besprechung") and the next line holds one date per column. Returns its column's date.
-fn table_date(raw: &[char], folded: &[char], at: usize, reference: NaiveDate) -> Option<(NaiveDate, usize, usize)> {
-    let line_start = raw[..at].iter().rposition(|c| *c == '\n').map_or(0, |p| p + 1);
-    let line_end = raw[at..].iter().position(|c| *c == '\n').map_or(raw.len(), |p| at + p);
-    let titles: Vec<usize> = word_starts(raw, line_start, line_end);
-    let column = titles.iter().rposition(|&s| s <= at)?;
-    if titles.len() < 2 {
-        return None;
-    }
-    // The next line with something on it.
-    let mut start = line_end;
-    while start < raw.len() && raw[start].is_whitespace() {
-        start += 1;
-    }
-    let end = raw[start..].iter().position(|c| *c == '\n').map_or(raw.len(), |p| start + p);
-    let cells = word_starts(raw, start, end);
-    if cells.len() != titles.len() {
-        return None;
-    }
+/// All dates on a stretch of text: (date, start, end).
+fn dates_in(folded: &[char], from: usize, to: usize, reference: NaiveDate) -> Vec<(NaiveDate, usize, usize)> {
     let mut dates = Vec::new();
-    for &cell in &cells {
-        let (date, date_end) = full_date(folded, cell, reference)?;
-        dates.push((date, cell, date_end));
+    let mut i = from;
+    while i < to {
+        match full_date(folded, i, reference) {
+            Some((date, end)) if end <= to => {
+                dates.push((date, i, end));
+                i = end;
+            }
+            _ => i += 1,
+        }
     }
-    Some(dates[column])
+    dates
+}
+
+/// Lines of `raw` as (start, end), without the empty ones.
+fn lines(raw: &[char]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in 0..=raw.len() {
+        if i == raw.len() || raw[i] == '\n' {
+            if raw[start..i].iter().any(|c| !c.is_whitespace()) {
+                out.push((start, i));
+            }
+            start = i + 1;
+        }
+    }
+    out
+}
+
+/// A table: the word is one of the column titles on its line ("Blatt  Ausgabe  Abgabe") and
+/// the lines below hold one date per date column ("Blatt 1  20.10.  27.10."). Returns the
+/// date of the word's column in each row, and the row's name ("Blatt 1").
+fn table_rows(
+    raw: &[char],
+    folded: &[char],
+    at: usize,
+    reference: NaiveDate,
+) -> Vec<(NaiveDate, usize, usize, Option<String>)> {
+    const DATE_COLUMNS: &[&str] = &[
+        "ausgabe",
+        "abgabe",
+        "besprechung",
+        "ruckgabe",
+        "korrektur",
+        "datum",
+        "termin",
+        "deadline",
+        "due",
+        "released",
+        "release",
+        "issued",
+        "out",
+        "frist",
+        "beginn",
+        "start",
+        "ende",
+    ];
+    let all = lines(raw);
+    let Some(row) = all.iter().position(|&(s, e)| s <= at && at < e) else { return Vec::new() };
+    let (start, end) = all[row];
+    let titles: Vec<(usize, String)> =
+        word_starts(raw, start, end).into_iter().map(|s| (s, word(folded, s).0)).collect();
+    if titles.len() < 2 || titles.len() > 8 || !dates_in(folded, start, end, reference).is_empty() {
+        return Vec::new();
+    }
+    let is_date_column = |(s, w): &(usize, String)| *s == at || DATE_COLUMNS.iter().any(|c| w.starts_with(c));
+    let columns: Vec<usize> = titles.iter().filter(|t| is_date_column(t)).map(|(s, _)| *s).collect();
+    let Some(column) = columns.iter().position(|&s| s == at) else { return Vec::new() };
+    let mut rows = Vec::new();
+    let mut misses = 0;
+    for &(s, e) in all.iter().skip(row + 1).take(40) {
+        let dates = dates_in(folded, s, e, reference);
+        if dates.len() != columns.len() {
+            misses += 1;
+            if misses >= 2 {
+                break;
+            }
+            continue;
+        }
+        misses = 0;
+        let label: String = raw[s..dates[0].1].iter().collect();
+        if columns.len() == 1 && label.contains(':') {
+            // "Abgabebeginn: 21.10." is a list of dates, not a table.
+            return Vec::new();
+        }
+        // "Serie 1 Mo" without the weekday of the date.
+        let mut words: Vec<&str> = label.split_whitespace().collect();
+        while words.last().is_some_and(|w| is_weekday(&fold(w.trim_end_matches([',', '.'])))) {
+            words.pop();
+        }
+        let label = words.join(" ").trim_end_matches([':', '-', '|', '–']).trim().to_string();
+        let (date, ds, de) = dates[column];
+        rows.push((date, ds, de, (!label.is_empty() && label.chars().count() <= 40).then_some(label)));
+    }
+    // One date column could be any list: then it takes a short header and two rows.
+    if columns.len() == 1 && (titles.len() > 4 || rows.len() < 2) {
+        return Vec::new();
+    }
+    rows
 }
 
 fn word_starts(raw: &[char], from: usize, to: usize) -> Vec<usize> {
     (from..to).filter(|&i| !raw[i].is_whitespace() && (i == from || raw[i - 1].is_whitespace())).collect()
 }
 
-/// Deadlines and exam dates in `text`: a deadline word with a date close to it in the same
-/// sentence. `reference` is about when the file was published, for dates without a year.
-pub fn find(text: &str, reference: NaiveDate) -> Vec<Found> {
-    let raw: Vec<char> = text.chars().collect();
-    let folded: Vec<char> = fold(text).chars().collect();
-    let haystack: String = folded.iter().collect();
-    let ends = sentence_ends(&raw);
-    let mut found: Vec<Found> = Vec::new();
-    for &(trigger, kind, look, open_end) in TRIGGERS {
-        for (byte, _) in haystack.match_indices(trigger) {
-            let start = haystack[..byte].chars().count();
-            let after = start + trigger.chars().count();
-            // Whole words ("due" not in "residue"); some may go on ("Abgabetermin").
-            if start > 0 && folded[start - 1].is_alphanumeric()
-                || !open_end && folded.get(after).is_some_and(|c| c.is_alphanumeric())
-            {
-                continue;
+/// Whether the trigger found at `start..after` stands as it may be written; returns where its
+/// whole word starts and ends.
+fn fits(folded: &[char], start: usize, after: usize, fit: Fit) -> Option<(usize, usize)> {
+    let mut word_start = start;
+    while word_start > 0 && folded[word_start - 1].is_alphabetic() {
+        word_start -= 1;
+    }
+    let mut word_end = after;
+    while word_end < folded.len() && folded[word_end].is_alphabetic() {
+        word_end += 1;
+    }
+    let digit_next = folded.get(word_end).is_some_and(char::is_ascii_digit) && word_end == after;
+    let glued = word_start > 0 && folded[word_start - 1].is_ascii_digit();
+    let prefix: String = folded[word_start..start].iter().collect();
+    let ending: String = folded[after..word_end].iter().collect();
+    let prefix_ok = |min: usize| prefix.chars().count() >= min && !NOT_COMPOUNDS.iter().any(|n| prefix.ends_with(n));
+    let ending_ok = ending.is_empty() || COMPOUND_ENDINGS.contains(&ending.as_str());
+    let ok = match fit {
+        Fit::Word => prefix.is_empty() && ending.is_empty() && !digit_next,
+        Fit::Starts => prefix.is_empty(),
+        Fit::Compound => (prefix.is_empty() || prefix_ok(3)) && ending_ok,
+        Fit::Tail => prefix_ok(4) && ending_ok,
+    };
+    (ok && !glued).then_some((word_start, word_end))
+}
+
+/// The name of what is handed in, in a stretch of text: "Übungsblatt 3", "Serie 5",
+/// "Problem Set 4", "Teil A", or without a number "Projekt" (then `false`).
+fn work_name(raw: &[char], from: usize, to: usize) -> Option<(String, bool)> {
+    let text: String = raw[from..to.min(raw.len())].iter().collect();
+    // Words and numbers, "Blatt7" split in two.
+    let mut tokens: Vec<String> = Vec::new();
+    for piece in text.split(|c: char| !c.is_alphanumeric()) {
+        let split = piece.find(|c: char| c.is_ascii_digit()).filter(|&p| p > 0);
+        match split {
+            Some(p) if piece[p..].chars().all(|c| c.is_ascii_digit()) => {
+                tokens.push(piece[..p].to_string());
+                tokens.push(piece[p..].to_string());
             }
-            let hit = match look {
-                Look::Ahead | Look::Period => table_date(&raw, &folded, start, reference).or_else(|| {
-                    let limit = (after + LOOK_AHEAD).min(folded.len());
-                    let mut i = after;
-                    while i < limit && !ends[i] {
-                        if let Some((date, end)) = full_date(&folded, i, reference) {
-                            return Some(match look {
-                                Look::Period => period_end(&folded, end, date, reference),
-                                _ => (date, i, end),
-                            });
-                        }
-                        i += 1;
-                    }
-                    None
-                }),
-                Look::Behind => {
-                    let mut hit = None;
-                    let mut i = start;
-                    while i > 0 && start - i < LOOK_BEHIND && !ends[i - 1] {
-                        i -= 1;
-                        if let Some((date, end)) = full_date(&folded, i, reference).filter(|&(_, end)| end <= start) {
-                            hit = Some((date, i, end));
-                            break;
-                        }
-                    }
-                    hit
-                }
-            };
-            let Some((date, date_start, date_end)) = hit else { continue };
-            if (date - reference).num_days().abs() > 366 {
-                continue;
-            }
-            // The passage around it, from and to whole words.
-            let mut from = start.min(date_start).saturating_sub(CONTEXT / 3);
-            while from > 0 && from < start.min(date_start) && !raw[from - 1].is_whitespace() {
-                from += 1;
-            }
-            let mut to = (start.max(date_end) + CONTEXT / 2).min(raw.len());
-            while to < raw.len() && to > start.max(date_end) && !raw[to].is_whitespace() {
-                to -= 1;
-            }
-            let context: String =
-                raw[from..to].iter().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
-            let word_end = (after..raw.len()).find(|&i| !raw[i].is_alphanumeric()).unwrap_or(raw.len());
-            let word: String = raw[start..word_end].iter().collect();
-            if !found.iter().any(|f| f.date == date) {
-                found.push(Found { date, time: time_after(&folded, date_end), context, kind, word });
-            }
+            _ if !piece.is_empty() => tokens.push(piece.to_string()),
+            _ => {}
         }
     }
-    found.sort_by_key(|f| (f.date, f.time));
-    found
+    let is_number = |t: &str| {
+        (t.len() <= 3 && t.chars().all(|c| c.is_ascii_digit()))
+            || (t.len() == 1 && t.chars().all(|c| c.is_ascii_uppercase()))
+            || (t.len() <= 4 && t.chars().all(|c| "IVX".contains(c)))
+    };
+    for (i, token) in tokens.iter().enumerate() {
+        let folded = fold(token);
+        let next = tokens.get(i + 1).map(String::as_str).unwrap_or("");
+        if NUMBERED_WORKS.contains(&folded.as_str()) && is_number(next) {
+            // "Problem Set 4", "Exercise Sheet 2"
+            let first = match tokens.get(i.wrapping_sub(1)).map(|t| fold(t)) {
+                Some(before) if i > 0 && ["problem", "exercise", "ubungs"].contains(&before.as_str()) => i - 1,
+                _ => i,
+            };
+            return Some((format!("{} {next}", tokens[first..=i].join(" ")), true));
+        }
+    }
+    let token = tokens.iter().find(|t| WORKS.contains(&fold(t).as_str()))?;
+    Some((capitalised(token), false))
+}
+
+/// The name of what is handed in, from the first lines of the document ("Analysis I – Serie
+/// 5" gives "Serie 5").
+fn document_work(raw: &[char]) -> Option<(String, bool)> {
+    let names: Vec<_> = lines(raw).into_iter().take(6).filter_map(|(s, e)| work_name(raw, s, e)).collect();
+    names.iter().find(|(_, numbered)| *numbered).or(names.first()).cloned()
+}
+
+/// What is due: a numbered name near the date ("Teil A"), a compound word ("Projektabgabe"),
+/// a numbered name at the top of the document ("Serie 5"), then names without number.
+fn due_title(near: Option<(String, bool)>, named: Option<String>, document: &Option<(String, bool)>) -> Option<String> {
+    let numbered = |n: &Option<(String, bool)>| n.as_ref().filter(|(_, numbered)| *numbered).map(|(t, _)| t.clone());
+    numbered(&near)
+        .or(named)
+        .or_else(|| numbered(document))
+        .or_else(|| near.map(|(t, _)| t))
+        .or_else(|| document.as_ref().map(|(t, _)| t.clone()))
+}
+
+/// The passage around `a..b`, from and to whole words.
+fn passage(raw: &[char], a: usize, b: usize) -> String {
+    let mut from = a.saturating_sub(CONTEXT / 3);
+    while from > 0 && from < a && !raw[from - 1].is_whitespace() {
+        from += 1;
+    }
+    let mut to = (b + CONTEXT / 2).min(raw.len());
+    while to < raw.len() && to > b && !raw[to].is_whitespace() {
+        to -= 1;
+    }
+    raw[from..to].iter().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A weekday soon after `from` ("Abgabe: Montag, 10:15 Uhr"): the next such day after
+/// `reference`, and where the weekday ends.
+fn weekday_after(folded: &[char], from: usize, stops: &[bool], reference: NaiveDate) -> Option<(NaiveDate, usize)> {
+    let limit = (from + WEEKDAY_AHEAD).min(folded.len());
+    let mut i = from;
+    while i < limit && !stops[i] {
+        if folded[i].is_alphabetic() && (i == 0 || !folded[i - 1].is_alphabetic()) {
+            let (w, end) = word(folded, i);
+            if let Some(&(_, day)) = WEEKDAYS.iter().find(|(name, _)| *name == w) {
+                if EVERY.contains(&word_before_at(folded, i).0.as_str()) {
+                    return None;
+                }
+                let today = reference.weekday().num_days_from_monday();
+                let ahead = (day + 7 - today) % 7;
+                let ahead = if ahead == 0 { 7 } else { ahead };
+                return Some((reference + chrono::Duration::days(ahead as i64), end));
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    None
 }
 
 /// "27.10. – 10.11.2026": the end of a period that starts with the date just read.
@@ -460,6 +914,188 @@ fn period_end(folded: &[char], first_end: usize, first: NaiveDate, reference: Na
     }
 }
 
+/// A date found for a word: where it is, and what is due if the table says it.
+struct Hit {
+    date: NaiveDate,
+    start: usize,
+    end: usize,
+    title: Option<String>,
+    estimated: bool,
+}
+
+/// The first date after the word within the sentence (and a few lines), skipping dates that
+/// say when something was made ("Ausgabe: 20.10.").
+fn date_ahead(folded: &[char], raw: &[char], after: usize, stops: &[bool], reference: NaiveDate) -> Option<Hit> {
+    let limit = (after + LOOK_AHEAD).min(folded.len());
+    let mut breaks = 0;
+    let mut i = after;
+    while i < limit && !stops[i] {
+        if raw[i] == '\n' {
+            breaks += 1;
+            if breaks > MAX_LINE_BREAKS {
+                break;
+            }
+        }
+        if let Some((date, end)) = full_date(folded, i, reference) {
+            if NOT_DUE.contains(&word_before(folded, i).as_str()) {
+                i = end;
+                continue;
+            }
+            return Some(Hit { date, start: i, end, title: None, estimated: false });
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The nearest date before the word within the sentence.
+fn date_behind(folded: &[char], start: usize, stops: &[bool], reference: NaiveDate) -> Option<Hit> {
+    let mut i = start;
+    while i > 0 && start - i < LOOK_BEHIND && !stops[i - 1] {
+        i -= 1;
+        if let Some((date, end)) = full_date(folded, i, reference).filter(|&(_, end)| end <= start) {
+            if NOT_DUE.contains(&word_before(folded, i).as_str()) {
+                continue;
+            }
+            return Some(Hit { date, start: i, end, title: None, estimated: false });
+        }
+    }
+    None
+}
+
+/// Deadlines and exam dates in `text`: a deadline word with a date close to it in the same
+/// sentence or table column, or "bis <date>" in a sentence about handing something in.
+/// `reference` is about when the file was published, for dates without a year.
+pub fn find(text: &str, reference: NaiveDate) -> Vec<Found> {
+    let raw: Vec<char> = text.chars().collect();
+    let folded: Vec<char> = fold(text).chars().collect();
+    let haystack: String = folded.iter().collect();
+    let stops = stops(&raw, &folded);
+    let document = document_work(&raw);
+    let mut found: Vec<Found> = Vec::new();
+    let add = |found: &mut Vec<Found>, f: Found| {
+        if !found.iter().any(|g| g.date == f.date) && (f.date - reference).num_days().abs() <= 366 {
+            found.push(f);
+        }
+    };
+    for &(trigger, kind, look, fit) in TRIGGERS {
+        for (byte, _) in haystack.match_indices(trigger) {
+            let start = haystack[..byte].chars().count();
+            let after = start + trigger.chars().count();
+            let Some((word_start, word_end)) = fits(&folded, start, after, fit) else { continue };
+            let word: String = raw[word_start..word_end].iter().collect();
+            // A compound names what is due ("Projektabgabe"), "Abgabetermin" doesn't.
+            let named = (word_start < start && trigger != "frist").then(|| word.clone());
+            let mut hits: Vec<Hit> = Vec::new();
+            if look != Look::Behind {
+                hits = table_rows(&raw, &folded, word_start, reference)
+                    .into_iter()
+                    .map(|(date, start, end, title)| Hit { date, start, end, title, estimated: false })
+                    .collect();
+            }
+            if hits.is_empty() {
+                let hit = match look {
+                    Look::Ahead => date_ahead(&folded, &raw, word_end, &stops, reference),
+                    Look::Period => date_ahead(&folded, &raw, word_end, &stops, reference).map(|h| {
+                        let (date, start, end) = period_end(&folded, h.end, h.date, reference);
+                        Hit { date, start, end, ..h }
+                    }),
+                    Look::Behind => date_behind(&folded, word_start, &stops, reference),
+                };
+                // Only a weekday after a hand-in word: the next such day.
+                let hit = hit.or_else(|| {
+                    if kind != Kind::Due || look != Look::Ahead {
+                        return None;
+                    }
+                    let (date, end) = weekday_after(&folded, word_end, &stops, reference)?;
+                    Some(Hit { date, start: end, end, title: None, estimated: true })
+                });
+                hits.extend(hit);
+            }
+            for hit in hits {
+                let (from, to) = (word_start.min(hit.start), word_end.max(hit.end));
+                let time = time_after(&folded, hit.end).or_else(|| time_before(&folded, hit.start, &stops));
+                let title = match kind {
+                    Kind::Exam => {
+                        // "Final exam", "Midterm exam"
+                        let (before, at) = word_before_at(&folded, word_start);
+                        let word = match ["final", "midterm"].contains(&before.as_str()) {
+                            true => raw[at..word_end].iter().collect(),
+                            false => word.clone(),
+                        };
+                        Some(exam_name(&raw, &word, word_end))
+                    }
+                    Kind::Due => hit.title.or_else(|| due_title(work_name(&raw, from, to), named.clone(), &document)),
+                };
+                let f = Found {
+                    date: hit.date,
+                    time,
+                    context: passage(&raw, from, to),
+                    kind,
+                    word: word.clone(),
+                    title,
+                    estimated: hit.estimated,
+                };
+                add(&mut found, f);
+            }
+        }
+    }
+    // "Bitte bis 9.11. in Moodle hochladen", "Laden Sie Ihre Lösung bis Do 13.11. hoch".
+    let mut i = 0;
+    while i < folded.len() {
+        let Some((date, end)) = full_date(&folded, i, reference) else {
+            i += 1;
+            continue;
+        };
+        let lead: String = folded[i.saturating_sub(30)..i].iter().collect();
+        let lead_words: Vec<&str> = lead.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+        let by = lead_words.iter().rev().take(4).any(|w| *w == "bis" || *w == "by");
+        let from = (0..i).rev().take(200).find(|&j| stops[j]).map_or(i.saturating_sub(200), |j| j + 1);
+        let to = (end..folded.len()).take(200).find(|&j| stops[j]).unwrap_or((end + 200).min(folded.len()));
+        let sentence: String = folded[from..to].iter().collect();
+        let hand_in = sentence
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|w| w == "hoch" || w.contains("abgabe") || HAND_IN_WORDS.iter().any(|h| w.starts_with(h)));
+        if by && hand_in && !NOT_DUE.contains(&word_before(&folded, i).as_str()) {
+            let time = time_after(&folded, end).or_else(|| time_before(&folded, i, &stops));
+            let title = due_title(work_name(&raw, from, to), None, &document);
+            let f = Found {
+                date,
+                time,
+                context: passage(&raw, i.saturating_sub(30).max(from), end),
+                kind: Kind::Due,
+                word: String::new(),
+                title,
+                estimated: false,
+            };
+            add(&mut found, f);
+        }
+        i = end;
+    }
+    found.sort_by_key(|f| (f.date, f.time));
+    found
+}
+
+/// An exam's name: the word without "-termin"/"-datum", and a number after it
+/// ("Leistungskontrolle 1", "Klausur", "Zwischenprüfung").
+fn exam_name(raw: &[char], word: &str, word_end: usize) -> String {
+    let mut name = word.to_string();
+    for ending in ["stermine", "stermin", "termine", "termin", "sdatum", "datum", "stag", "tag"] {
+        let lower = name.to_lowercase();
+        if lower.ends_with(ending) && lower.len() > ending.len() + 3 {
+            name.truncate(name.len() - ending.len());
+            break;
+        }
+    }
+    let next = skip_spaces(raw, word_end);
+    if let Some((n, e)) = number(raw, next, 2)
+        && !raw.get(e).is_some_and(|c| *c == '.' || *c == '/')
+    {
+        name = format!("{name} {n}");
+    }
+    capitalised(&name)
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Deadlines {
@@ -468,6 +1104,8 @@ pub struct Deadlines {
     scanned: Vec<(PathBuf, u64)>,
     /// Which [`FINDER_VERSION`] looked at them.
     finder: u32,
+    /// When the list was last looked at (Unix seconds): entries added later are new.
+    pub seen: i64,
 }
 
 impl Deadlines {
@@ -495,6 +1133,22 @@ impl Deadlines {
         self.items.iter().map(|d| d.id).max().unwrap_or(0) + 1
     }
 
+    /// How many documents were looked through.
+    pub fn scanned_count(&self) -> usize {
+        self.scanned.len()
+    }
+
+    /// Done entries due from `days_back` days ago on, latest first (to open them again).
+    pub fn recently_done(&self, today: NaiveDate, days_back: i64) -> Vec<&Deadline> {
+        let mut list: Vec<&Deadline> = self
+            .items
+            .iter()
+            .filter(|d| d.done && !d.deleted && d.day().is_some_and(|day| (today - day).num_days() <= days_back))
+            .collect();
+        list.sort_by_key(|d| std::cmp::Reverse(d.due()));
+        list
+    }
+
     pub fn was_scanned(&self, path: &Path, size: u64) -> bool {
         self.scanned.iter().any(|(p, s)| p == path && *s == size)
     }
@@ -510,11 +1164,11 @@ impl Deadlines {
         let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let mut added = 0;
         for f in found {
-            // A hand-in is named after its sheet, an exam by what it is ("Klausur").
-            let title = match f.kind {
+            // Named after what the text says is due ("Serie 5"), else after the file.
+            let title = f.title.clone().unwrap_or_else(|| match f.kind {
                 Kind::Due => stem.clone(),
                 Kind::Exam => capitalised(&f.word),
-            };
+            });
             let date = f.date.format("%Y-%m-%d").to_string();
             // Also not when the user corrected the date of what was found here.
             let known = self.items.iter().any(|d| {
@@ -536,6 +1190,8 @@ impl Deadlines {
                 deleted: false,
                 kind: f.kind,
                 found_date: None,
+                estimated: f.estimated,
+                added: chrono::Utc::now().timestamp(),
             });
             added += 1;
         }
@@ -563,6 +1219,8 @@ impl Deadlines {
             deleted: false,
             kind,
             found_date: None,
+            estimated: false,
+            added: chrono::Utc::now().timestamp(),
         });
         id
     }
@@ -573,6 +1231,9 @@ impl Deadlines {
         let date = date.format("%Y-%m-%d").to_string();
         if d.file.is_some() && d.found_date.is_none() && d.date != date {
             d.found_date = Some(d.date.clone());
+        }
+        if d.date != date {
+            d.estimated = false;
         }
         d.title = title.trim().to_string();
         d.module = module.to_string();
@@ -749,6 +1410,125 @@ mod tests {
         }
     }
 
+    /// Deadlines that were missed before: dates without the last dot or with slashes, compound
+    /// words, other phrasings, abbreviations, weekdays only, times before the date.
+    #[test]
+    fn finds_deadlines_written_in_other_ways() {
+        type Expected<'a> = (NaiveDate, Option<&'a str>, Kind, &'a str);
+        let cases: &[(&str, &[Expected])] = &[
+            (
+                "Übungsblatt 4\nAbgabe: 3.11 bis 10 Uhr",
+                &[(day(2026, 11, 3), Some("10:00"), Kind::Due, "Übungsblatt 4")],
+            ),
+            (
+                "Assignment 3\nDue: 24/10/2026 at 23:59",
+                &[(day(2026, 10, 24), Some("23:59"), Kind::Due, "Assignment 3")],
+            ),
+            ("Homework 6\nDue date: 11/28/2026", &[(day(2026, 11, 28), None, Kind::Due, "Homework 6")]),
+            (
+                "Projektabgabe: 15.12.2026, 18:00 Uhr. Zwischenabgabe am 17.11.2026.",
+                &[
+                    (day(2026, 11, 17), None, Kind::Due, "Zwischenabgabe"),
+                    (day(2026, 12, 15), Some("18:00"), Kind::Due, "Projektabgabe"),
+                ],
+            ),
+            ("Klausurtermin: 12.02.2027, 9:00 Uhr", &[(day(2027, 2, 12), Some("09:00"), Kind::Exam, "Klausur")]),
+            (
+                "Die Semesterendprüfung findet am 22.01.2027 statt.",
+                &[(day(2027, 1, 22), None, Kind::Exam, "Semesterendprüfung")],
+            ),
+            (
+                "Leistungskontrolle 1: 18.11.2026, 10:15–11:00",
+                &[(day(2026, 11, 18), Some("10:15"), Kind::Exam, "Leistungskontrolle 1")],
+            ),
+            (
+                "Endklausur am 4. Februar 2027 von 14 bis 16 Uhr.",
+                &[(day(2027, 2, 4), Some("14:00"), Kind::Exam, "Endklausur")],
+            ),
+            ("Was Datum\nZwischentest 26.11.2026", &[(day(2026, 11, 26), None, Kind::Exam, "Zwischentest")]),
+            ("Midterm exam: Thursday, November 19, 2026", &[(day(2026, 11, 19), None, Kind::Exam, "Midterm exam")]),
+            (
+                "Blatt 6\nDie Lösungen müssen bis Freitag, den 7. November 2026 um 14 Uhr über Ilias abgegeben werden.",
+                &[(day(2026, 11, 7), Some("14:00"), Kind::Due, "Blatt 6")],
+            ),
+            ("Abgabe bei Prof. Dr. Huber am 5.11.2026 in der Vorlesung.", &[(day(2026, 11, 5), None, Kind::Due, "")]),
+            (
+                "Serie 3\nAbgabe: Montag, 10:15 Uhr in der Übungsstunde.",
+                &[(day(2026, 10, 26), Some("10:15"), Kind::Due, "Serie 3")],
+            ),
+            (
+                "Blatt 2\nBitte bis 12 Uhr am 28.10. in den Briefkasten einwerfen.",
+                &[(day(2026, 10, 28), Some("12:00"), Kind::Due, "Blatt 2")],
+            ),
+            (
+                "Abgabe bis spätestens 9 Uhr am Montag, den 2.11.2026.",
+                &[(day(2026, 11, 2), Some("09:00"), Kind::Due, "")],
+            ),
+            (
+                "Übung 5\nLaden Sie Ihre Lösung bis Donnerstag 13.11. auf Moodle hoch.",
+                &[(day(2026, 11, 13), None, Kind::Due, "Übung 5")],
+            ),
+            ("Lab 2\nUpload your report by Nov 4, 5pm.", &[(day(2026, 11, 4), Some("17:00"), Kind::Due, "Lab 2")]),
+            (
+                "Seminar\nEinreichungsfrist für die Seminararbeit: 31. Januar 2027",
+                &[(day(2027, 1, 31), None, Kind::Due, "Seminararbeit")],
+            ),
+            (
+                "Abgabe Teil A: 5.11.2026. Abgabe Teil B: 26.11.2026.",
+                &[(day(2026, 11, 5), None, Kind::Due, "Teil A"), (day(2026, 11, 26), None, Kind::Due, "Teil B")],
+            ),
+            (
+                "Abgabe Übung 4\nAbgabebeginn: Dienstag, 21. Oktober 2026, 08:00\nFälligkeitsdatum: Dienstag, 4. November 2026, 08:00",
+                &[(day(2026, 11, 4), Some("08:00"), Kind::Due, "Übung 4")],
+            ),
+        ];
+        for (text, expected) in cases {
+            let found: Vec<_> = find(text, day(2026, 10, 20))
+                .into_iter()
+                .map(|f| (f.date, f.time.map(|t| t.format("%H:%M").to_string()), f.kind, f.title.unwrap_or_default()))
+                .collect();
+            let expected: Vec<_> =
+                expected.iter().map(|(d, t, k, n)| (*d, t.map(String::from), *k, n.to_string())).collect();
+            assert_eq!(found, expected, "{text}");
+        }
+        // Only a weekday: the next one after the file came, marked as estimated.
+        assert!(find("Abgabe: Montag, 10:15 Uhr", day(2026, 10, 20))[0].estimated);
+    }
+
+    /// A semester plan: one deadline per row, from the «Abgabe» column, named after the row.
+    #[test]
+    fn semester_plans_give_one_deadline_per_row() {
+        let text = "Organisatorisches\n\nBlatt Ausgabe Abgabe\n\nBlatt 1 20.10. 27.10.\n\nBlatt 2 27.10. 3.11.\n\n\
+                    Blatt 3 Mo 3.11. Mo 10.11.\n\nWeihnachtspause\n\nBlatt 4 10.11. 17.11.\n";
+        let found: Vec<_> =
+            find(text, day(2026, 10, 15)).into_iter().map(|f| (f.date, f.title.unwrap_or_default())).collect();
+        let expected = [(27, 10, "Blatt 1"), (3, 11, "Blatt 2"), (10, 11, "Blatt 3"), (17, 11, "Blatt 4")];
+        let expected: Vec<_> = expected.iter().map(|&(d, m, t)| (day(2026, m, d), t.to_string())).collect();
+        assert_eq!(found, expected);
+    }
+
+    /// Numbers, words and repeating weekdays that are no deadline.
+    #[test]
+    fn no_deadlines_in_numbers_and_look_alikes() {
+        let texts = [
+            "Abgabe der Aufgabe 3.2. und Kapitel 4.1. in der Übung",
+            "Abgabe in Gruppen zu 3.5 Personen über Moodle",
+            "Gemäss Prüfungsordnung vom 01.09.2026 gilt ...",
+            "Überprüfung der Messwerte am 12.11.2026 im Labor.",
+            "Messung der Wärmeabgabe am 3.11. im Labor.",
+            "Präsentationstechniken – 20.10.2026",
+            "Stand: 20.10.2026\n\nDie Abgabe der Übungen ist freiwillig.",
+            "Assignments are due every Friday at 5pm.",
+            "Abgabetermin für alle Serien: jeweils Montag 10:00 Uhr.",
+            "Klausuranmeldung bis 15.11.2026 im Portal.",
+            "Rückgabe der korrigierten Blätter am 10.11. Die Übung am 3.11. entfällt.",
+            "Abgabe um 12.10 Uhr",
+        ];
+        for text in texts {
+            assert_eq!(find(text, day(2026, 10, 20)), [], "{text}");
+        }
+    }
+
     #[test]
     fn found_passages_start_and_end_with_whole_words() {
         let text = "Bitte laden Sie Ihre Lösung bis spätestens Montag, 2. November 2026, 23:59 Uhr in Moodle hoch.";
@@ -840,7 +1620,17 @@ mod samples {
                 text.chars().take(240).collect::<String>()
             );
             for found in super::find(&text, reference) {
-                println!("  -> {} {:?}  «{}»", found.date, found.time, found.context);
+                println!(
+                    "  -> {} {:?} [{:?}{}]  «{}»",
+                    found.date,
+                    found.time,
+                    found.title,
+                    if found.estimated { " geschätzt" } else { "" },
+                    found.context
+                );
+                let time = found.time.map(|t| t.format("%H:%M").to_string()).unwrap_or_default();
+                let kind = if found.kind == super::Kind::Exam { "exam" } else { "due" };
+                println!("@@\t{}\t{}\t{time}\t{kind}", f.file_name().unwrap().to_string_lossy(), found.date);
             }
         }
     }

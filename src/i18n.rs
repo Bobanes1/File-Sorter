@@ -549,7 +549,10 @@ impl Lang {
         self.pick("This week", "Diese Woche")
     }
     pub fn tab_semester(self) -> &'static str {
-        self.pick("Semester", "Semester")
+        self.pick("Timetable", "Stundenplan")
+    }
+    pub fn tab_grades(self) -> &'static str {
+        self.pick("Grades", "Noten")
     }
 
     // ---------- timetable ----------

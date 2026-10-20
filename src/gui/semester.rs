@@ -203,8 +203,6 @@ impl App {
                 ui.vertical(|ui| {
                     ui.set_width(width);
                     self.timetable_ui(ui);
-                    ui.add_space(18.0);
-                    self.grades_ui(ui);
                     ui.add_space(24.0);
                 });
             });
@@ -213,6 +211,22 @@ impl App {
         self.lesson_dialog(&ctx);
         self.import_dialog(&ctx);
         self.link_dialog(&ctx);
+    }
+
+    /// The «Grades» tab: grades and ECTS of the modules.
+    pub(super) fn grades_tab_ui(&mut self, ui: &mut egui::Ui) {
+        let width = ui.available_width().min(1040.0);
+        let margin = ((ui.available_width() - width) / 2.0).max(0.0);
+        egui::ScrollArea::vertical().id_salt("grades").auto_shrink([false, false]).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(margin);
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    self.grades_ui(ui);
+                    ui.add_space(24.0);
+                });
+            });
+        });
     }
 
     fn timetable_ui(&mut self, ui: &mut egui::Ui) {

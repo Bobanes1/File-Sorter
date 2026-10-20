@@ -101,7 +101,7 @@ With **Learn from assigning** on (default), File Sorter then takes up to two ter
   - The start of a word is enough (`rekurs` finds «Rekursion»), `"exact phrase"` in quotes, `-word` leaves out; when nothing is found, one typo in a longer word is allowed.
   - The best files come first: rare words count more than common ones, the name and the title page more than the rest, newer files first when equal.
   - Filters below the field: module, kind (lecture, exercise, solution, exam), file type and period (last 7 days, month, semester).
-  - `↑`/`↓` choose a result, `Enter` opens it, `Ctrl+Enter` shows it in its folder; the last searches are offered when the field is empty.
+  - `↑`/`↓` choose a result, `Enter` opens it, `Ctrl+Enter` shows it in its folder.
   - **Scans** are searched by the text recognised in them (up to 40 pages each). Recognition gets a letter wrong now and then, so in recognised text a word with one wrong letter is found too (after the exact hits), words split at the end of a line («Rekur-» / «sion») are joined again, and such hits say *recognised text*. Scans that were in the search index before text recognition came (0.13) are read again once.
   - The text is read in the background and kept in `search-index.json`. The study folder is watched, so new and changed files are in the search within seconds; files that are only in the cloud (OneDrive «online only») are found by name but not downloaded.
 - **Deadlines and exam dates**: File Sorter reads the documents in the study folder (the first pages of those changed in the last five months – also files sorted with the right-click menu or copied in by hand, and also with *Search* switched off) and finds

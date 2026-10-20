@@ -769,9 +769,6 @@ impl Lang {
     pub fn indexed(self, files: usize) -> String {
         self.fmt(format!("{files} files searched"), format!("{files} Dateien durchsucht"))
     }
-    pub fn recent_searches(self) -> &'static str {
-        self.pick("Recent searches", "Letzte Suchen")
-    }
     pub fn all_modules(self) -> &'static str {
         self.pick("All modules", "Alle Module")
     }

@@ -62,6 +62,7 @@ struct Checked {
 }
 
 /// The last searches, kept between starts.
+/// Where 0.13/0.14 kept the last searches (no longer kept; removed when found).
 const RECENT_FILE: &str = "recent-searches.json";
 
 /// Keys pressed in the search field to move through the results.
@@ -140,8 +141,6 @@ pub(super) struct Study {
     selected: usize,
     /// ↑/↓/Enter pressed in the search field this frame.
     nav: Option<Nav>,
-    /// The last searches, newest first.
-    recent: Vec<String>,
     /// Ctrl+F was pressed: put the cursor into the search field.
     focus: bool,
     deadlines: Deadlines,
@@ -173,6 +172,9 @@ impl Study {
     pub(super) fn new(state_dir: Option<&Path>) -> Study {
         let (scan_tx, scan_rx) = channel();
         let deadlines = state_dir.map(|d| Deadlines::load(&d.join(DEADLINES_FILE))).unwrap_or_default();
+        if let Some(dir) = state_dir {
+            let _ = std::fs::remove_file(dir.join(RECENT_FILE));
+        }
         Study {
             indexer: None,
             indexed: None,
@@ -182,10 +184,6 @@ impl Study {
             filter: SearchFilter::default(),
             selected: 0,
             nav: None,
-            recent: state_dir
-                .and_then(|d| std::fs::read_to_string(d.join(RECENT_FILE)).ok())
-                .and_then(|t| serde_json::from_str(&t).ok())
-                .unwrap_or_default(),
             hits: Vec::new(),
             focus: false,
             deadlines,
@@ -364,20 +362,6 @@ impl App {
             Some(indexer) => indexer.index.read().map(|i| i.search_with(&query, &filter, 80)).unwrap_or_default(),
             None => Vec::new(),
         };
-    }
-
-    /// Remember a search that was used (a result opened).
-    fn remember_search(&mut self) {
-        let query = self.study.query.trim().to_string();
-        if query.is_empty() {
-            return;
-        }
-        self.study.recent.retain(|q| *q != query);
-        self.study.recent.insert(0, query);
-        self.study.recent.truncate(8);
-        if let Some(file) = self.config.state_file(RECENT_FILE) {
-            let _ = crate::cloud::save_json(&self.study.recent, &file);
-        }
     }
 
     /// Deadlines follow their files when they move.
@@ -574,32 +558,6 @@ impl App {
         if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.study.query.clear();
         }
-        // The last searches, while the field is empty.
-        if response.has_focus() && self.study.query.is_empty() && !self.study.recent.is_empty() {
-            let mut chosen = None;
-            egui::Area::new(Id::new("recent-searches"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(response.rect.left_bottom() + vec2(0.0, 6.0))
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_width(response.rect.width() + 32.0);
-                        ui.label(RichText::new(lang.recent_searches()).small().color(p.on_surface_variant));
-                        for query in &self.study.recent {
-                            let row = ui.add(egui::Button::selectable(
-                                false,
-                                format!("{}  {query}", icon::CLOCK_COUNTER_CLOCKWISE),
-                            ));
-                            if row.clicked() {
-                                chosen = Some(query.clone());
-                            }
-                        }
-                    });
-                });
-            if let Some(query) = chosen {
-                self.study.query = query;
-                self.study.focus = true;
-            }
-        }
     }
 
     /// Module, kind, file type and period to narrow a search.
@@ -785,16 +743,12 @@ impl App {
             }
         });
         if let Some(module) = open_note {
-            self.remember_search();
             self.study.query.clear();
             if let Some(i) = self.config.courses.iter().position(|c| c.label() == module) {
                 self.select(Some(i));
                 self.module_pane = super::overview::ModulePane::Notes;
                 self.switch_tab(Tab::Overview);
             }
-        }
-        if open.is_some() || reveal.is_some() {
-            self.remember_search();
         }
         if let Some(path) = open {
             crate::desktop::open(&path);

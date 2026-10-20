@@ -491,7 +491,14 @@ pub fn sort_into(path: &Path, course: usize, config: &Config) -> SortResult {
 
 /// True if the user undid sorting this file, so it stays where it is.
 pub fn is_kept(path: &Path, config: &Config) -> bool {
-    config.state_file(KEPT_LIST).is_some_and(|file| KeptFiles::load(&file).contains(path))
+    let Some(file) = config.state_file(KEPT_LIST) else { return false };
+    let mut kept = KeptFiles::load(&file);
+    // Also when it was renamed since (then the list follows the new name).
+    let (is, changed) = kept.contains_or_follow(path);
+    if changed && let Err(e) = kept.save(&file) {
+        log::info!("Could not save the list of files to leave alone: {e}");
+    }
+    is
 }
 
 /// The user sorts this file explicitly, so it is no longer left alone.

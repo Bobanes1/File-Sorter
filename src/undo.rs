@@ -199,6 +199,12 @@ mod tests {
         assert_eq!(again.outcome, Outcome::Left(LeftReason::Kept), "{}", again.describe());
         assert!(sort_existing(&cfg, crate::config::ExistingScope::All).iter().all(|r| !r.sorted()));
         assert!(src.exists());
+        // Renamed afterwards (the new name would match too): still left alone.
+        let renamed = cfg.watch_path().join("prog1 mitschrift.pdf");
+        fs::rename(&src, &renamed).unwrap();
+        let again = sort_file(&renamed, &cfg);
+        assert_eq!(again.outcome, Outcome::Left(LeftReason::Kept), "{}", again.describe());
+        fs::rename(&renamed, &src).unwrap();
         // The history knows it was undone.
         let entries = history::recent(cfg.state_dir.as_ref().unwrap(), 10);
         assert!(entries.len() == 1 && entries[0].undone);

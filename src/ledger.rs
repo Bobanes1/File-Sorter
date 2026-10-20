@@ -65,6 +65,13 @@ struct Identity {
     modified: u64,
     #[serde(default)]
     created: Option<u64>,
+    /// A fingerprint of the content, to know the file again after it was renamed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    /// When it was put on the list (seconds since 1970): a file that is gone stays on it a
+    /// while, in case it was renamed while File Sorter wasn't running.
+    #[serde(default)]
+    since: i64,
 }
 
 fn identity(path: &Path) -> Option<Identity> {
@@ -72,8 +79,36 @@ fn identity(path: &Path) -> Option<Identity> {
     let nanos = |t: std::io::Result<std::time::SystemTime>| {
         t.ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos() as u64)
     };
-    Some(Identity { size: meta.len(), modified: nanos(meta.modified())?, created: nanos(meta.created()) })
+    Some(Identity {
+        size: meta.len(),
+        modified: nanos(meta.modified())?,
+        created: nanos(meta.created()),
+        content: None,
+        since: 0,
+    })
 }
+
+/// A fingerprint of a file's content: its size, start and end.
+fn fingerprint(path: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let mut hash = Sha256::new();
+    hash.update(size.to_le_bytes());
+    let mut buffer = vec![0; 64 * 1024];
+    let n = file.read(&mut buffer).ok()?;
+    hash.update(&buffer[..n]);
+    if size > 128 * 1024 {
+        file.seek(SeekFrom::End(-64 * 1024)).ok()?;
+        let n = file.read(&mut buffer).ok()?;
+        hash.update(&buffer[..n]);
+    }
+    Some(format!("{:x}", hash.finalize()))
+}
+
+/// How long a kept file that is gone stays on the list (it may have been renamed meanwhile).
+const KEEP_GONE_DAYS: i64 = 60;
 
 fn load_json<T: Default + for<'de> Deserialize<'de>>(file: &Path) -> T {
     fs::read_to_string(file).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
@@ -92,7 +127,8 @@ fn save_json<T: Serialize>(value: &T, file: &Path) -> io::Result<()> {
 ///
 /// A file counts as the same while it keeps its path and either its creation time (so
 /// editing it doesn't matter) or its size and modification time. A new download that
-/// happens to get the same name is a different file and is sorted as usual.
+/// happens to get the same name is a different file and is sorted as usual. A kept file
+/// that was renamed (or moved within the folder) is known by its content and stays kept.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct KeptFiles {
     #[serde(default)]
@@ -110,8 +146,44 @@ impl KeptFiles {
             || (saved.size == now.size && saved.modified == now.modified)
     }
 
+    /// The entry of a kept file that is gone from its place and has `path`'s content: `path`
+    /// is that file, renamed.
+    fn renamed_from(&self, path: &Path) -> Option<String> {
+        let size = fs::metadata(path).ok()?.len();
+        let mut content = None;
+        for (old, saved) in &self.kept {
+            if saved.size != size || saved.content.is_none() || Path::new(old).exists() {
+                continue;
+            }
+            let here = content.get_or_insert_with(|| fingerprint(path));
+            if here.is_some() && *here == saved.content {
+                return Some(old.clone());
+            }
+        }
+        None
+    }
+
+    /// Whether `path` is kept, also when it is a kept file renamed (then its entry moves to the
+    /// new name, and `true` says the list changed).
+    pub fn contains_or_follow(&mut self, path: &Path) -> (bool, bool) {
+        if self.contains(path) {
+            return (true, false);
+        }
+        let Some(old) = self.renamed_from(path) else { return (false, false) };
+        if let Some(mut entry) = self.kept.remove(&old) {
+            if let Some(now) = identity(path) {
+                entry.modified = now.modified;
+                entry.created = now.created;
+            }
+            self.kept.insert(key(path), entry);
+        }
+        (true, true)
+    }
+
     pub fn keep(&mut self, path: &Path) {
-        if let Some(id) = identity(path) {
+        if let Some(mut id) = identity(path) {
+            id.content = fingerprint(path);
+            id.since = chrono::Local::now().timestamp();
             self.kept.insert(key(path), id);
         }
     }
@@ -121,9 +193,10 @@ impl KeptFiles {
         self.kept.remove(&key(path)).is_some()
     }
 
-    /// Save to `file`, forgetting files that no longer exist.
+    /// Save to `file`, forgetting files that are gone for a while.
     pub fn save(&mut self, file: &Path) -> io::Result<()> {
-        self.kept.retain(|path, _| Path::new(path).exists());
+        let cutoff = chrono::Local::now().timestamp() - KEEP_GONE_DAYS * 24 * 3600;
+        self.kept.retain(|path, id| Path::new(path).exists() || (id.content.is_some() && id.since > cutoff));
         save_json(self, file)
     }
 }
@@ -223,6 +296,27 @@ mod tests {
         let mut kept = KeptFiles::load(&file);
         assert!(kept.forget(&doc));
         assert!(!kept.contains(&doc));
+    }
+
+    #[test]
+    fn a_kept_file_that_is_renamed_stays_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("kept.json");
+        let doc = tmp.path().join("Statistik_Blatt3.pdf");
+        fs::write(&doc, "the sheet").unwrap();
+        let other = tmp.path().join("other.pdf");
+        fs::write(&other, "another sheet").unwrap();
+        let mut kept = KeptFiles::load(&file);
+        kept.keep(&doc);
+        kept.save(&file).unwrap();
+        let renamed = tmp.path().join("Blatt 3 mit Notizen.pdf");
+        fs::rename(&doc, &renamed).unwrap();
+        // Saved meanwhile (another undo): the gone file is not forgotten.
+        KeptFiles::load(&file).save(&file).unwrap();
+        let mut kept = KeptFiles::load(&file);
+        assert_eq!(kept.contains_or_follow(&renamed), (true, true));
+        assert_eq!(kept.contains_or_follow(&renamed), (true, false), "now under its new name");
+        assert_eq!(kept.contains_or_follow(&other), (false, false), "other content");
     }
 
     #[test]

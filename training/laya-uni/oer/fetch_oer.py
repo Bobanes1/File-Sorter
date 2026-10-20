@@ -3,9 +3,10 @@
 
 Layout: <out>/<faculty>/<program>/<module>/<file>, plus <out>/manifest.json with
 sha256, bytes, licence and source of every file. Files already present are kept.
-Held-out TEST data only: never train on it.
+sources.json is held-out TEST data: never train on it. The training lists in train/ are
+fetched the same way with --sources.
 
-    python3 fetch_oer.py [--sources sources.json] [out]
+    python3 fetch_oer.py [--sources sources.json] [--workers 4] [out]
 """
 import argparse
 import collections
@@ -14,6 +15,9 @@ import hashlib
 import json
 import pathlib
 import sys
+import time
+import urllib.error
+import urllib.parse
 import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -28,13 +32,24 @@ def part(name):
     return name
 
 
+def download(url, tries=6):
+    url = urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")  # urllib needs ASCII: "Génie-logiciel.pdf"
+    # Wikibooks renders PDFs on request and answers 429 when asked too fast: back off and retry.
+    for i in range(tries):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=300) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 502, 503, 504) or i == tries - 1:
+                raise
+            time.sleep(int(e.headers.get("Retry-After") or 0) or 5 * 2**i)
+
+
 def fetch(src, out):
     path = out / part(src["faculty"]) / part(src["program"]) / part(src["module"]) / part(src["file"])
     fresh = not path.exists()
     if fresh:
-        req = urllib.request.Request(src["url"], headers=UA)
-        with urllib.request.urlopen(req, timeout=300) as r:
-            data = r.read()
+        data = download(src["url"])
         if not data.startswith(b"%PDF"):
             raise ValueError("response is not a PDF")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,6 +66,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("out", nargs="?", type=pathlib.Path, default=DEFAULT_OUT)
     ap.add_argument("--sources", type=pathlib.Path, default=HERE / "sources.json")
+    ap.add_argument("--workers", type=int, default=4, help="parallel downloads; 1 for small private servers")
     args = ap.parse_args()
     sources = json.loads(args.sources.read_text(encoding="utf-8"))
     out = args.out.expanduser().resolve()
@@ -59,7 +75,7 @@ def main():
     manifest_path = out / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
     counts, new, failed = collections.Counter(), 0, []
-    with concurrent.futures.ThreadPoolExecutor(4) as pool:
+    with concurrent.futures.ThreadPoolExecutor(args.workers) as pool:
         jobs = {pool.submit(fetch, s, out): s for s in sources}
         for job in concurrent.futures.as_completed(jobs):
             src = jobs[job]

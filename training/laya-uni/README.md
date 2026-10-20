@@ -19,8 +19,23 @@ picks the right module for files from every faculty, not just computer science.
 cargo run --release -- --laya-rows training/laya-uni/synthetic rows.jsonl
 ```
 
+Real course files collected for training (`oer/train/*.json`, about 4,900 openly licensed PDFs; lists
+ending in `.local.json` are used with their author's permission and stay out of git) are downloaded
+and turned into rows the same way. `--workers 1` is for small private servers:
+
 ```bash
-python3 training/laya-uni/split.py rows.jsonl training/laya-uni/data
+python3 training/laya-uni/oer/fetch_oer.py --sources training/laya-uni/oer/train/med-nat-agri.json ~/.cache/laya-uni/oer-train
+```
+
+```bash
+cargo run --release -- --laya-rows ~/.cache/laya-uni/oer-train oer-rows.jsonl
+```
+
+Then split both together (`cat rows.jsonl oer-rows.jsonl > all.jsonl`). The collected files only go
+to train and val, with repository boilerplate removed:
+
+```bash
+python3 training/laya-uni/split.py all.jsonl training/laya-uni/data
 ```
 
 This leaves `data/train.jsonl`, `data/val.jsonl` and `data/test.jsonl`. The test rows are whole

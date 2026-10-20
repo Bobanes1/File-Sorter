@@ -1,4 +1,4 @@
-# OER test set for laya-uni
+# OER test set (and collected training files) for laya-uni
 
 Real, openly licensed course PDFs used as the **held-out test set** for the laya-uni
 module classifier. These files are never used for training or for tuning prompts or
@@ -60,3 +60,14 @@ Then build the test rows with the app's own text extractor:
 ```bash
 file-sorter --laya-rows ~/.cache/laya-uni/oer test_oer.jsonl
 ```
+
+## Training lists (`train/`)
+
+`train/*.json` lists about 4,900 more openly licensed course PDFs in the same schema, collected for
+**training** (laya-uni-2 on): every faculty, German, English, French and Italian, with no url, landing
+page or course shared with `sources.json`. `train/BRIEF.md` is the brief they were collected to.
+Most are CC BY / BY-SA (Wikibooks, Wikiversité, HAL, Zenodo, OER repositories); MIT OpenCourseWare,
+Exo7 and some others are CC BY-NC-SA. Lists named `*.local.json` hold files used with their author's
+permission whose links must not be published; they are gitignored. Wikimedia renders its PDFs on
+request, so their bytes change between downloads, and it answers 429 when asked too fast (the fetcher
+retries).

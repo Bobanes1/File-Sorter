@@ -10,3 +10,7 @@ report-oer/
 results.tar.gz
 job.tar.gz
 results/
+# Lists of files used with the author's permission whose links must not be published
+oer/train/*.local.json
+data-v1/
+__pycache__/

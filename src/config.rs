@@ -287,6 +287,9 @@ pub struct Config {
     pub features: Features,
     /// Modules of finished semesters, moved into the archive (they can be brought back).
     pub archived: Vec<crate::archive::Archived>,
+    /// Setting up the AI model Laya was offered (at the setup, or once after the update).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub laya_offered: bool,
     /// Modules only in the grades list (no folder, nothing sorted into them).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub grade_modules: Vec<Course>,
@@ -443,6 +446,9 @@ pub struct Features {
     pub ask_when_unsure: bool,
     /// Learn the modules from the files already in them, for files the keywords don't decide.
     pub classifier: bool,
+    /// Use the AI model Laya (once it is set up) for documents the keywords don't decide,
+    /// and to find deadlines and exams in any language.
+    pub laya: bool,
     /// Recognise the text of scanned PDFs and pictures.
     pub ocr: bool,
     /// Remind of deadlines and exams with a system notification.
@@ -477,6 +483,7 @@ impl Default for Features {
             update_install: UpdateMode::Ask,
             ask_when_unsure: true,
             classifier: true,
+            laya: true,
             ocr: true,
             reminders: true,
             timetable_hint: true,
@@ -562,6 +569,7 @@ impl Default for Config {
             gdrive: Default::default(),
             features: Features::default(),
             archived: Vec::new(),
+            laya_offered: false,
             grade_modules: Vec::new(),
             state_dir: None,
         }
@@ -645,6 +653,7 @@ pub fn load_config(path: &Path) -> io::Result<Config> {
     config.state_dir = Some(config_path_dir(path));
     crate::ocr::set_cache_dir(&config_path_dir(path));
     crate::ocr::set_enabled(config.features.ocr);
+    crate::laya::configure(&config_path_dir(path), config.features.laya);
     Ok(config)
 }
 

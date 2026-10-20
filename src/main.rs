@@ -21,6 +21,7 @@ mod history;
 mod i18n;
 mod index;
 mod keywords;
+mod laya;
 mod lean;
 mod ledger;
 #[cfg(target_os = "linux")]
@@ -82,6 +83,9 @@ struct Args {
     quiet: bool,
     /// `--show-results`: the results window for what the main window sorted by itself.
     show_results: bool,
+    /// `--laya-setup`: set the AI model up; `--laya-check`: ask it a few test questions.
+    laya_setup: bool,
+    laya_check: bool,
     register_menu: Option<bool>,
     list_clouds: bool,
     check_update: bool,
@@ -101,6 +105,8 @@ fn parse_args() -> Result<Args, String> {
         files: Vec::new(),
         quiet: false,
         show_results: false,
+        laya_setup: false,
+        laya_check: false,
         register_menu: None,
         list_clouds: false,
         check_update: false,
@@ -116,6 +122,8 @@ fn parse_args() -> Result<Args, String> {
             "--sort" => {}
             "--quiet" => args.quiet = true,
             "--show-results" => args.show_results = true,
+            "--laya-setup" => args.laya_setup = true,
+            "--laya-check" => args.laya_check = true,
             "--register-menu" => args.register_menu = Some(true),
             "--unregister-menu" => args.register_menu = Some(false),
             "--list-clouds" => args.list_clouds = true,
@@ -237,6 +245,13 @@ fn main() -> ExitCode {
         return quicksort::run_results(&args.config);
     }
 
+    // The window, --headless and --sort-now may use the AI model (not the right-click window,
+    // which shouldn't wait for it to load).
+    laya::allow();
+    if args.laya_setup || args.laya_check {
+        return laya_command(&args);
+    }
+
     if !(args.headless || args.sort_now) {
         // Already open (maybe in the notification area): show that window instead of a second one.
         let key = std::path::absolute(&args.config).unwrap_or(args.config.clone()).display().to_string();
@@ -287,4 +302,47 @@ fn main() -> ExitCode {
     loop {
         std::thread::park();
     }
+}
+
+/// `--laya-setup` (set the AI model up) and `--laya-check` (ask it a few test questions).
+fn laya_command(args: &Args) -> ExitCode {
+    let dir = config::config_path_dir(&args.config);
+    let place = laya::Place::new(&dir);
+    if args.laya_setup {
+        if let Err(e) =
+            laya::install(&place, |step| log::info!("Setting up Laya: step {} of 4 ({step:?})", step.number()))
+        {
+            log::error!("Laya could not be set up: {e}");
+            return ExitCode::FAILURE;
+        }
+        log::info!("Laya is set up ({} MB)", place.size() / 1_000_000);
+    }
+    if args.laya_check {
+        laya::configure(&dir, true);
+        let mut config = config::Config::default();
+        config.courses = vec![
+            config::Course::new("Statistik", &["statistik"]),
+            config::Course::new("Programmieren", &["programmieren"]),
+            config::Course::new("Geschichte", &["geschichte"]),
+        ];
+        let text = "Lineare Regression und Varianzanalyse: Schätzung der Parameter, Konfidenzintervalle, \
+                    t-Test und p-Werte für die Koeffizienten.";
+        let module = laya::module_for(&config, "kapitel4.pdf", text, &[]);
+        log::info!("Laya: kapitel4.pdf (regression, variance) → {module:?}");
+        let sentences = [
+            "Le devoir 3 est à rendre avant le vendredi 7 novembre 2026 à 18h.".to_string(),
+            "L'examen final aura lieu le 20 janvier 2027 en salle B12.".to_string(),
+            "Version du 3 octobre 2026.".to_string(),
+        ];
+        let kinds = laya::date_kinds(&sentences);
+        log::info!("Laya: French date sentences → {kinds:?}");
+        let module_ok = module.is_some_and(|(m, _)| m == "Statistik");
+        let kinds_ok = kinds.is_some_and(|k| k[0].0 == laya::DateKind::Due && k[1].0 == laya::DateKind::Exam);
+        if !(module_ok && kinds_ok) {
+            log::error!("Laya's answers were not as expected");
+            return ExitCode::FAILURE;
+        }
+        log::info!("Laya answers as expected");
+    }
+    ExitCode::SUCCESS
 }

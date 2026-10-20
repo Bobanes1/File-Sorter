@@ -13,8 +13,9 @@ impl App {
     /// Returns true if a setting changed.
     pub(super) fn features_ui(&mut self, ui: &mut egui::Ui) -> bool {
         let lang = self.lang;
+        let mut changed = self.laya_setting_ui(ui);
+        divider(ui);
         let f = &mut self.config.features;
-        let mut changed = false;
         changed |= switch(ui, icon::BRAIN, lang.feature_learn(), lang.feature_learn_hint(), &mut f.learn);
         divider(ui);
         let (title, hint) = (lang.feature_classifier(), lang.feature_classifier_hint());

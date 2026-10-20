@@ -249,6 +249,11 @@ impl App {
             }
         }
         if self.config.features.deadlines && self.now() - self.study.scanned_at > 20.0 {
+            // The AI model is there now: everything is read again once, with it.
+            if self.config.features.laya && crate::laya::available() && self.study.deadlines.read_again_with_ai() {
+                log::info!("Laya is there: reading the documents again for deadlines");
+                self.save_deadlines();
+            }
             self.scan_index_for_deadlines();
         }
         let mut changed = false;
@@ -420,7 +425,8 @@ impl App {
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             // Just downloaded: dates without a year are the next ones from today.
-            let found = deadlines::find(&crate::extract::first_pages(&file, SCAN_PAGES), Local::now().date_naive());
+            let found =
+                deadlines::find_with_ai(&crate::extract::first_pages(&file, SCAN_PAGES), Local::now().date_naive());
             let _ = tx.send(Scanned { file, size: meta.len(), module, found });
             ctx.request_repaint();
         });
@@ -461,7 +467,7 @@ impl App {
                 let reference = DateTime::from_timestamp(modified, 0)
                     .map(|t| t.with_timezone(&Local).date_naive())
                     .unwrap_or_else(|| Local::now().date_naive());
-                let found = deadlines::find(&text, reference);
+                let found = deadlines::find_with_ai(&text, reference);
                 if tx.send(Scanned { file, size, module, found }).is_err() {
                     break;
                 }
@@ -823,7 +829,7 @@ impl App {
         let (tx, rx) = channel();
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
-            let found = deadlines::find(&crate::extract::first_pages(&file, SCAN_PAGES), reference_date(&file));
+            let found = deadlines::find_with_ai(&crate::extract::first_pages(&file, SCAN_PAGES), reference_date(&file));
             let _ = tx.send((file, found));
             ctx.request_repaint();
         });
@@ -1133,6 +1139,10 @@ impl App {
                     if d.estimated {
                         badge(ui, lang.estimated(), p.warning_container, p.on_warning_container)
                             .on_hover_text(lang.estimated_hint());
+                    }
+                    if d.ai {
+                        badge(ui, lang.ai_badge(), p.primary_container, p.on_primary_container)
+                            .on_hover_text(lang.ai_badge_hint());
                     }
                     if let Some(repeat) = &d.repeat {
                         let text = format!("{} {}", icon::REPEAT, lang.repeat_every(repeat.every));

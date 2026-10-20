@@ -308,6 +308,9 @@ pub struct Deadline {
     /// Comes again (every week, …): `date` is the next time it is due.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat: Option<Repeat>,
+    /// Found by the AI model.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ai: bool,
 }
 
 /// How often a deadline comes again.
@@ -375,6 +378,8 @@ pub struct Found {
     pub title: Option<String>,
     /// Only a weekday was given: the date is the next such day.
     pub estimated: bool,
+    /// Found by the AI model (in a sentence the rules here don't know).
+    pub ai: bool,
 }
 
 fn month(word: &str) -> Option<u32> {
@@ -395,8 +400,31 @@ fn month(word: &str) -> Option<u32> {
         ("dez", 12),
         ("dec", 12),
     ];
+    // French, Italian and Spanish names the prefixes above don't cover (whole words only:
+    // «gen…» or «set…» alone would match too much).
+    const OTHER: &[(&str, u32)] = &[
+        ("gennaio", 1),
+        ("enero", 1),
+        ("fevrier", 2),
+        ("avril", 4),
+        ("abril", 4),
+        ("maggio", 5),
+        ("juin", 6),
+        ("giugno", 6),
+        ("juillet", 7),
+        ("luglio", 7),
+        ("aout", 8),
+        ("agosto", 8),
+        ("settembre", 9),
+        ("ottobre", 10),
+        ("dicembre", 12),
+        ("diciembre", 12),
+    ];
     if word.len() < 3 || !word.chars().all(|c| c.is_ascii_alphabetic()) {
         return None;
+    }
+    if let Some((_, m)) = OTHER.iter().find(|(name, _)| word == *name) {
+        return Some(*m);
     }
     MONTHS.iter().find(|(prefix, _)| word.starts_with(prefix)).map(|(_, m)| *m)
 }
@@ -914,6 +942,85 @@ fn passage(raw: &[char], a: usize, b: usize) -> String {
     raw[from..to].iter().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// How far around a date the sentence asked about reaches (in characters, each way).
+const SENTENCE_REACH: usize = 140;
+/// At most this many dated sentences of a document are asked about.
+const MAX_ASKED: usize = 40;
+
+/// Every full date in `text` (within a year of `reference`), with the sentence it is in and
+/// a time right after it.
+pub fn dated_sentences(text: &str, reference: NaiveDate) -> Vec<(NaiveDate, Option<NaiveTime>, String)> {
+    let raw: Vec<char> = text.chars().collect();
+    let folded: Vec<char> = fold(text).chars().collect();
+    // The usual sentence ends, and also every «. » before a capital (an abbreviation cut
+    // off only shortens what is asked about; «18h.» must end a sentence).
+    let mut stops = stops(&raw, &folded);
+    for i in 0..raw.len() {
+        let next = raw[i + 1..].iter().position(|c| !c.is_whitespace()).map(|n| raw[i + 1 + n]);
+        if matches!(raw[i], '.' | '!' | '?')
+            && raw.get(i + 1).is_some_and(|c| c.is_whitespace())
+            && next.is_some_and(char::is_uppercase)
+        {
+            stops[i] = true;
+        }
+    }
+    let mut out = Vec::new();
+    for (date, start, end) in dates_in(&folded, 0, folded.len(), reference) {
+        if (date - reference).num_days().abs() > 366 {
+            continue;
+        }
+        let mut from = start;
+        while from > 0 && start - from < SENTENCE_REACH && !stops[from - 1] {
+            from -= 1;
+        }
+        let mut to = end;
+        while to < raw.len() && to - end < SENTENCE_REACH && !stops[to] {
+            to += 1;
+        }
+        let sentence =
+            raw[from..to.min(raw.len())].iter().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+        out.push((date, time_after(&folded, end), sentence));
+    }
+    out
+}
+
+/// What [`find`] finds, checked by the AI model when it is there: dates in sentences the
+/// rules here don't know (other languages, unusual wording) that it is sure are deadlines or
+/// exams are added, and found dates it is very sure are something else are left out.
+pub fn find_with_ai(text: &str, reference: NaiveDate) -> Vec<Found> {
+    let mut found = find(text, reference);
+    if !crate::laya::available() {
+        return found;
+    }
+    let mut sentences = dated_sentences(text, reference);
+    sentences.truncate(MAX_ASKED);
+    if sentences.is_empty() {
+        return found;
+    }
+    let texts: Vec<String> = sentences.iter().map(|(_, _, s)| s.clone()).collect();
+    let Some(kinds) = crate::laya::date_kinds(&texts) else { return found };
+    use crate::laya::DateKind;
+    // A date the rules found, but every sentence it is in is clearly about something else.
+    found.retain(|f| {
+        let verdicts: Vec<(DateKind, f64)> =
+            sentences.iter().zip(&kinds).filter(|((d, _, _), _)| *d == f.date).map(|(_, k)| *k).collect();
+        verdicts.is_empty() || !verdicts.iter().all(|(k, p)| *k == DateKind::Other && *p >= 0.9)
+    });
+    for ((date, time, sentence), (kind, p)) in sentences.into_iter().zip(kinds) {
+        let kind = match kind {
+            DateKind::Due => Kind::Due,
+            DateKind::Exam => Kind::Exam,
+            DateKind::Other => continue,
+        };
+        if p < 0.75 || found.iter().any(|f| f.date == date) {
+            continue;
+        }
+        let context: String = sentence.chars().take(CONTEXT * 2).collect();
+        found.push(Found { date, time, context, kind, word: String::new(), title: None, estimated: false, ai: true });
+    }
+    found
+}
+
 /// A date given relative to when the file came: a weekday («Abgabe: Montag»), «morgen»,
 /// «übermorgen», «in zwei Wochen», «nächste Woche Freitag», «KW 45» (its Friday). Returns
 /// the date and where the words end. «Jeweils Montag» is every week, not one date.
@@ -1145,6 +1252,7 @@ pub fn find(text: &str, reference: NaiveDate) -> Vec<Found> {
                     Kind::Due => hit.title.or_else(|| due_title(work_name(&raw, from, to), named.clone(), &document)),
                 };
                 let f = Found {
+                    ai: false,
                     date: hit.date,
                     time,
                     context: passage(&raw, from, to),
@@ -1177,6 +1285,7 @@ pub fn find(text: &str, reference: NaiveDate) -> Vec<Found> {
             let time = time_after(&folded, end).or_else(|| time_before(&folded, i, &stops));
             let title = due_title(work_name(&raw, from, to), None, &document);
             let f = Found {
+                ai: false,
                 date,
                 time,
                 context: passage(&raw, i.saturating_sub(30).max(from), end),
@@ -1221,6 +1330,9 @@ pub struct Deadlines {
     scanned: Vec<(PathBuf, u64)>,
     /// Which [`FINDER_VERSION`] looked at them.
     finder: u32,
+    /// The AI model looked at them too (once it is there, everything is read again once).
+    #[serde(default)]
+    with_ai: bool,
     /// When the list was last looked at (Unix seconds): entries added later are new.
     pub seen: i64,
 }
@@ -1240,6 +1352,16 @@ impl Deadlines {
     /// Read every file again (after the user asked to look again).
     pub fn forget_scanned(&mut self) {
         self.scanned.clear();
+    }
+
+    /// The AI model is there now: read every file again once, with it. True if that is new.
+    pub fn read_again_with_ai(&mut self) -> bool {
+        if self.with_ai {
+            return false;
+        }
+        self.with_ai = true;
+        self.scanned.clear();
+        true
     }
 
     pub fn save(&self, file: &Path) -> std::io::Result<()> {
@@ -1311,6 +1433,7 @@ impl Deadlines {
                 added: chrono::Utc::now().timestamp(),
                 reminded: Vec::new(),
                 repeat: None,
+                ai: f.ai,
             });
             added += 1;
         }
@@ -1342,6 +1465,7 @@ impl Deadlines {
             added: chrono::Utc::now().timestamp(),
             reminded: Vec::new(),
             repeat: None,
+            ai: false,
         });
         id
     }

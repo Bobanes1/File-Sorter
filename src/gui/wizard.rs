@@ -17,11 +17,13 @@ pub(super) struct Wizard {
     found: Option<usize>,
     /// The layout was guessed from the study folder (once, when the modules step opens).
     layout_guessed: bool,
+    /// Set up the AI model Laya when done (ticked by default).
+    laya: bool,
 }
 
 impl Wizard {
     pub(super) fn new() -> Wizard {
-        Wizard { step: 0, start_watching: true, found: None, layout_guessed: false }
+        Wizard { step: 0, start_watching: true, found: None, layout_guessed: false, laya: true }
     }
 }
 
@@ -111,6 +113,17 @@ impl App {
                     if let Some(w) = &mut self.wizard {
                         ui.checkbox(&mut w.start_watching, lang.setup_start_watching());
                     }
+                    if !self.laya_installed()
+                        && let Some(w) = &mut self.wizard
+                    {
+                        ui.checkbox(&mut w.laya, lang.setup_laya());
+                        ui.horizontal(|ui| {
+                            ui.add_space(26.0);
+                            ui.add(
+                                egui::Label::new(RichText::new(lang.setup_laya_hint()).small().color(p.outline)).wrap(),
+                            );
+                        });
+                    }
                     if crate::desktop::autostart_supported()
                         && ui.checkbox(&mut self.config.autostart, lang.autostart()).changed()
                     {
@@ -145,13 +158,19 @@ impl App {
             wizard.step += 1;
         } else if next {
             let start = wizard.start_watching;
+            let laya = wizard.laya;
             self.wizard = None;
+            self.config.laya_offered = true;
+            if laya && !self.laya_installed() {
+                self.start_laya_setup();
+            }
             self.save_quietly();
             if start && !self.running() && !self.config.courses.is_empty() {
                 self.toggle_watching();
             }
         } else if skip {
             self.wizard = None;
+            self.config.laya_offered = true;
             self.save_quietly();
         }
     }

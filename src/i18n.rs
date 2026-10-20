@@ -282,6 +282,10 @@ impl Lang {
                     format!("Module passten gleich gut – {short} lief laut Stundenplan gerade"),
                 )
             }
+            Reason::Ai(p) => self.fmt(
+                format!("the AI model (Laya) read it – {p} % sure"),
+                format!("das KI-Modell (Laya) hat sie gelesen – {p} % sicher"),
+            ),
             Reason::Learned(_) if words.is_empty() => {
                 self.pick("like the module's other files", "ähnlich wie die anderen Dateien des Moduls").into()
             }
@@ -950,6 +954,75 @@ impl Lang {
     }
     pub fn badge_new(self) -> &'static str {
         self.pick("new", "neu")
+    }
+    pub fn laya_title(self) -> &'static str {
+        self.pick("AI model Laya (multilingual)", "KI-Modell Laya (mehrsprachig)")
+    }
+    pub fn laya_hint(self) -> &'static str {
+        self.pick(
+            "Reads documents in over 100 languages: sorts what the keywords don't decide, and finds deadlines and exam dates in any sentence. A one-time download of about 2–3 GB (Python, PyTorch and the model, from their official sources); it runs only on this computer, and only while needed.",
+            "Liest Dokumente in über 100 Sprachen: ordnet zu, was die Stichwörter nicht entscheiden, und findet Abgabe- und Prüfungstermine in jedem Satz. Einmaliger Download von etwa 2–3 GB (Python, PyTorch und das Modell, aus ihren offiziellen Quellen); läuft nur auf diesem Computer und nur, wenn es gebraucht wird.",
+        )
+    }
+    pub fn laya_download(self) -> &'static str {
+        self.pick("Download", "Herunterladen")
+    }
+    pub fn laya_step(self, step: crate::laya::Step) -> String {
+        use crate::laya::Step;
+        let what = match step {
+            Step::Tool => self.pick("the installer (uv)", "das Installationsprogramm (uv)"),
+            Step::Python => self.pick("Python", "Python"),
+            Step::Packages => self.pick("Laya and PyTorch – the biggest part", "Laya und PyTorch – der grösste Teil"),
+            Step::Model => self.pick("the model", "das Modell"),
+        };
+        self.fmt(
+            format!("Setting up: step {} of 4, {what}…", step.number()),
+            format!("Wird eingerichtet: Schritt {} von 4, {what}…", step.number()),
+        )
+    }
+    pub fn laya_installed(self, gb: f64) -> String {
+        self.fmt(format!("Set up · {gb:.1} GB"), format!("Eingerichtet · {gb:.1} GB"))
+    }
+    pub fn laya_remove(self) -> &'static str {
+        self.pick("Remove", "Entfernen")
+    }
+    pub fn laya_error(self, error: &str) -> String {
+        self.fmt(
+            format!("Setting up failed: {error} – «Download» tries again where it stopped."),
+            format!(
+                "Einrichten fehlgeschlagen: {error} – «Herunterladen» versucht es dort weiter, wo es stehen blieb."
+            ),
+        )
+    }
+    pub fn laya_ready(self) -> &'static str {
+        self.pick("The AI model Laya is ready", "Das KI-Modell Laya ist bereit")
+    }
+    pub fn laya_failed(self) -> &'static str {
+        self.pick("The AI model Laya could not be set up", "Das KI-Modell Laya konnte nicht eingerichtet werden")
+    }
+    pub fn laya_offer_title(self) -> &'static str {
+        self.pick("New: the AI model Laya", "Neu: das KI-Modell Laya")
+    }
+    pub fn setup_laya(self) -> &'static str {
+        self.pick("Also set up the AI model Laya (recommended)", "Auch das KI-Modell Laya einrichten (empfohlen)")
+    }
+    pub fn setup_laya_hint(self) -> &'static str {
+        self.pick(
+            "Better sorting and finding dates in any language. About 2–3 GB, downloaded in the background.",
+            "Besseres Zuordnen und Termine in jeder Sprache. Etwa 2–3 GB, im Hintergrund heruntergeladen.",
+        )
+    }
+    pub fn not_now(self) -> &'static str {
+        self.pick("Not now", "Nicht jetzt")
+    }
+    pub fn ai_badge(self) -> &'static str {
+        self.pick("AI", "KI")
+    }
+    pub fn ai_badge_hint(self) -> &'static str {
+        self.pick(
+            "Found by the AI model Laya in a sentence the usual rules don't know – check the date.",
+            "Vom KI-Modell Laya in einem Satz gefunden, den die üblichen Regeln nicht kennen – prüfe das Datum.",
+        )
     }
     pub fn repeats(self) -> &'static str {
         self.pick("Repeats", "Wiederholt sich")

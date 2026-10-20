@@ -12,6 +12,7 @@ mod dialogs;
 mod features;
 mod flatten;
 mod gdrive;
+mod laya;
 mod overview;
 mod semester;
 mod settings;
@@ -199,6 +200,7 @@ pub(crate) struct App {
     archive: archive::ArchiveState,
     flatten: flatten::FlattenState,
     gdrive: gdrive::DriveState,
+    laya: laya::LayaState,
     /// The window is shown and has the focus (results sorted otherwise go to the results window).
     in_front: bool,
     /// Results for the results window, handed over at the end of the frame.
@@ -298,6 +300,7 @@ impl App {
             archive: archive::ArchiveState::default(),
             flatten: flatten::FlattenState::default(),
             gdrive: gdrive::DriveState::default(),
+            laya: laya::LayaState::default(),
             in_front: true,
             for_popup: Vec::new(),
             undone_checked: std::time::Instant::now(),
@@ -1172,6 +1175,7 @@ impl eframe::App for App {
         self.archive_logic();
         self.flatten_logic();
         self.drive_logic();
+        self.laya_logic();
         self.update_logic();
         self.resort_logic();
         self.semester_logic();
@@ -1284,6 +1288,7 @@ impl eframe::App for App {
         self.dialogs_ui(&ctx);
         self.archive_dialog_ui(&ctx);
         self.flatten_dialog_ui(&ctx);
+        self.laya_offer_ui(&ctx);
         self.wizard_ui(&ctx);
         self.resort_dialog_ui(&ctx);
         self.subfolder_list_dialog(&ctx);

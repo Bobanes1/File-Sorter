@@ -587,6 +587,20 @@ fn choose_course(
         Decision::Nothing => Vec::new(),
     };
     let labels: Vec<String> = candidates.iter().map(|(i, _)| config.courses[*i].label()).collect();
+    // The AI model reads the document (in any language): only among the candidates when
+    // there are some, and only when it is clearly sure.
+    if features.laya && crate::laya::available() {
+        if text.is_none() && config.read_file_contents {
+            *text = Some(extract_text(path));
+        }
+        let allowed = if labels.len() >= 2 { labels.as_slice() } else { &[] };
+        if let Some((label, p)) =
+            crate::laya::module_for(config, &file_name(path), text.as_deref().unwrap_or(""), allowed)
+            && let Some(course) = config.courses.iter().position(|c| c.label() == label)
+        {
+            return Ok(Match { course, score: 0, reason: Reason::Ai((p * 100.0).round() as u8) });
+        }
+    }
     // The modules' other files: only among the candidates when there are some.
     if features.classifier {
         let allowed = (labels.len() >= 2).then_some(labels.as_slice());

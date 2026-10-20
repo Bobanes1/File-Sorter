@@ -149,6 +149,16 @@ jobs:
           if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\scan_0042.pdf")) { throw "the scan was not sorted by its text" }
           Write-Host "the scanned PDF was read and sorted"
 
+      - name: Test the AI model Laya (set up from the official sources, then ask it)
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "laya"
+          New-Item -ItemType Directory -Force $root | Out-Null
+          '{}' | Set-Content "$root\config.json"
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--laya-setup", "--laya-check", "--config", "`"$root\config.json`"" -Wait -PassThru
+          Get-Content "$root\file-sorter.log" | Select-String -Pattern "Laya" | Select-Object -Last 40
+          if ($p.ExitCode -ne 0) { throw "Laya was not set up, or did not answer as expected" }
+
       - name: Smoke-test looking for updates
         shell: pwsh
         run: |
@@ -584,6 +594,17 @@ jobs:
           NAUTILUS_SCRIPT_SELECTED_FILE_PATHS="$root/Downloads/lecture one.pptx" "$script"
           test -f "$root/Studium/Informatik/Programmierung 1/lecture one.pptx"
           echo "right-click sorting works on Linux"
+
+      - name: Test the AI model Laya (set up from the official sources, then ask it)
+        run: |
+          root=$RUNNER_TEMP/laya
+          mkdir -p "$root"
+          echo '{}' > "$root/config.json"
+          status=0
+          dist/FileSorter/file-sorter --laya-setup --laya-check --config "$root/config.json" || status=$?
+          grep -i "laya" "$root/file-sorter.log" | grep -v "setup (packages)" | tail -30
+          du -sh "$root/laya"
+          exit $status
 
       - name: Smoke-test sorting and text recognition
         run: |

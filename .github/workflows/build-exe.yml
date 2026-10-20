@@ -27,6 +27,9 @@ jobs:
       - name: Run tests
         run: cargo test --release
 
+      - name: Test the Google Drive sync engine (fetch rclone, sync two folders both ways)
+        run: cargo test --release gdrive -- --ignored
+
       - name: Build FileSorter.exe
         run: |
           cargo build --release
@@ -529,6 +532,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --release
+
+      - name: Test the Google Drive sync engine (fetch rclone, sync two folders both ways)
+        run: cargo test --release gdrive -- --ignored
 
       - name: Build file-sorter for Linux
         run: |

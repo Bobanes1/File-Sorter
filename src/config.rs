@@ -203,6 +203,8 @@ pub struct Config {
     pub background: bool,
     /// The study folder in OneDrive, Dropbox, Google Drive, … (moved there, or a copy).
     pub cloud: CloudSettings,
+    /// The study folder kept in sync with Google Drive by File Sorter itself (no Google app).
+    pub gdrive: crate::cloud::gdrive::DriveSettings,
     /// Features that can be switched on or off in the settings.
     pub features: Features,
     /// Modules of finished semesters, moved into the archive (they can be brought back).
@@ -476,6 +478,7 @@ impl Default for Config {
             flat_modules: false,
             background: false,
             cloud: CloudSettings::default(),
+            gdrive: Default::default(),
             features: Features::default(),
             archived: Vec::new(),
             state_dir: None,

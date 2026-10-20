@@ -12,6 +12,7 @@
 //! the same way.
 
 pub mod detect;
+pub mod gdrive;
 pub mod mirror;
 pub mod relocate;
 pub mod shared;

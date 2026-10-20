@@ -11,6 +11,7 @@ mod cloud;
 mod dialogs;
 mod features;
 mod flatten;
+mod gdrive;
 mod overview;
 mod semester;
 mod settings;
@@ -197,6 +198,7 @@ pub(crate) struct App {
     /// Finishing a semester (archive).
     archive: archive::ArchiveState,
     flatten: flatten::FlattenState,
+    gdrive: gdrive::DriveState,
     /// The window is shown and has the focus (results sorted otherwise go to the results window).
     in_front: bool,
     /// Results for the results window, handed over at the end of the frame.
@@ -295,6 +297,7 @@ impl App {
             index_paused: false,
             archive: archive::ArchiveState::default(),
             flatten: flatten::FlattenState::default(),
+            gdrive: gdrive::DriveState::default(),
             in_front: true,
             for_popup: Vec::new(),
             undone_checked: std::time::Instant::now(),
@@ -453,6 +456,9 @@ impl App {
                 self.follow_older_versions(&result);
                 self.cloud_after_sort(&result);
                 self.study_after_sort(&result);
+                if result.sorted() {
+                    self.drive_after_sort();
+                }
                 let state = FileState::Done(result);
                 let key = if let Some(card) = self.open_file_card(&name) {
                     card.set_state(state, now);
@@ -1164,6 +1170,7 @@ impl eframe::App for App {
         self.study_logic();
         self.archive_logic();
         self.flatten_logic();
+        self.drive_logic();
         self.update_logic();
         self.resort_logic();
         self.semester_logic();

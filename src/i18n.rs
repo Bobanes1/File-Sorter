@@ -1025,6 +1025,105 @@ impl Lang {
             n => self.fmt(format!("{n} modules archived"), format!("{n} Module archiviert")),
         }
     }
+    pub fn gdrive_title(self) -> &'static str {
+        self.pick("Google Drive (without the Google app)", "Google Drive (ohne Google-App)")
+    }
+    pub fn gdrive_hint(self) -> &'static str {
+        self.pick(
+            "Keeps the study folder in sync with a folder in your Google Drive, both ways. Sign in once in the browser. Nothing is lost: deleted or overwritten files are kept in a backup for 30 days, and a file changed on both sides is kept twice.",
+            "Hält den Studienordner mit einem Ordner in deinem Google Drive synchron, in beide Richtungen. Einmal im Browser anmelden. Es geht nichts verloren: Gelöschte oder überschriebene Dateien bleiben 30 Tage in einer Sicherung, und eine auf beiden Seiten geänderte Datei wird doppelt behalten.",
+        )
+    }
+    pub fn gdrive_connect(self) -> &'static str {
+        self.pick("Connect Google Drive", "Mit Google Drive verbinden")
+    }
+    pub fn gdrive_installing(self) -> &'static str {
+        self.pick("Fetching the sync tool (rclone)…", "Synchronisier-Werkzeug (rclone) wird geladen…")
+    }
+    pub fn gdrive_signing_in(self) -> &'static str {
+        self.pick(
+            "Sign in with Google in the browser and allow access…",
+            "Melde dich im Browser bei Google an und erlaube den Zugriff…",
+        )
+    }
+    pub fn gdrive_open_sign_in(self) -> &'static str {
+        self.pick("Open sign-in page", "Anmeldeseite öffnen")
+    }
+    pub fn gdrive_folder(self) -> &'static str {
+        self.pick("Folder in Google Drive", "Ordner in Google Drive")
+    }
+    pub fn gdrive_sync_on(self) -> &'static str {
+        self.pick("Sync automatically", "Automatisch synchronisieren")
+    }
+    pub fn gdrive_sync_on_hint(self) -> &'static str {
+        self.pick(
+            "Right after sorting, every 15 minutes and at the start.",
+            "Gleich nach dem Sortieren, alle 15 Minuten und beim Start.",
+        )
+    }
+    pub fn gdrive_sync_now(self) -> &'static str {
+        self.pick("Sync now", "Jetzt synchronisieren")
+    }
+    pub fn gdrive_syncing(self) -> &'static str {
+        self.pick("Syncing…", "Wird synchronisiert…")
+    }
+    pub fn gdrive_backups(self) -> &'static str {
+        self.pick("Backups", "Sicherungen")
+    }
+    pub fn gdrive_disconnect(self) -> &'static str {
+        self.pick("Disconnect", "Trennen")
+    }
+    pub fn gdrive_connected(self) -> &'static str {
+        self.pick("Connected with Google Drive", "Mit Google Drive verbunden")
+    }
+    pub fn gdrive_never(self) -> &'static str {
+        self.pick("Not synced yet", "Noch nicht synchronisiert")
+    }
+    pub fn gdrive_last(self, time: &str, down: usize, up: usize, conflicts: usize) -> String {
+        let mut text = self.fmt(format!("Synced at {time}"), format!("Synchronisiert um {time}"));
+        if down + up > 0 {
+            text.push_str(&self.fmt(
+                format!(" · {down} down, {up} up"),
+                format!(" · {down} heruntergeladen, {up} hochgeladen"),
+            ));
+        }
+        if conflicts > 0 {
+            text.push_str(&self.fmt(
+                format!(" · {conflicts} changed on both sides (both kept)"),
+                format!(" · {conflicts} auf beiden Seiten geändert (beide behalten)"),
+            ));
+        }
+        text
+    }
+    pub fn gdrive_failed(self, why: &str) -> String {
+        let why = match why {
+            "too many deletes" => self.pick(
+                "more than half of the files would be deleted – not synced, to be safe. Check the study folder, then «Sync now».",
+                "mehr als die Hälfte der Dateien würde gelöscht – zur Sicherheit nicht synchronisiert. Prüfe den Studienordner, dann «Jetzt synchronisieren».",
+            ),
+            "sign-in expired" => self.pick("the Google sign-in expired – please connect again.", "die Google-Anmeldung ist abgelaufen – bitte neu verbinden."),
+            other => return self.fmt(format!("Google Drive: not synced ({other})"), format!("Google Drive: nicht synchronisiert ({other})")),
+        };
+        self.fmt(format!("Google Drive: {why}"), format!("Google Drive: {why}"))
+    }
+    pub fn gdrive_synced_note(self, down: usize, up: usize) -> String {
+        self.fmt(
+            format!("Google Drive: {down} file(s) down, {up} up"),
+            format!("Google Drive: {down} Datei(en) heruntergeladen, {up} hochgeladen"),
+        )
+    }
+    pub fn gdrive_conflict_note(self, count: usize) -> String {
+        self.fmt(
+            format!("Google Drive: {count} file(s) changed on both sides – both versions kept («….conflict1»)"),
+            format!("Google Drive: {count} Datei(en) auf beiden Seiten geändert – beide Versionen behalten («….conflict1»)"),
+        )
+    }
+    pub fn gdrive_app_folder(self) -> &'static str {
+        self.pick(
+            "The study folder is in the folder of the Google Drive app already, which syncs it.",
+            "Der Studienordner liegt schon im Ordner der Google-Drive-App, die ihn synchronisiert.",
+        )
+    }
     pub fn auto_results_window(self) -> &'static str {
         self.pick("Results window for automatic sorting", "Ergebnisfenster beim automatischen Sortieren")
     }

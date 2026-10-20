@@ -691,6 +691,8 @@ impl App {
                     }
                 });
             });
+            divider(ui);
+            self.drive_settings_ui(ui);
         });
         ui.add_space(16.0);
     }

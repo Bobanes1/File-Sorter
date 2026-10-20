@@ -29,7 +29,7 @@ pub(crate) enum Finished {
 pub(crate) enum Note {
     Started(String),
     Stopped,
-    /// Sorting the files already in the folder: all of them, or only the last `days` days.
+    /// Sorting the files already in the folder: all of them, or only the last so many hours.
     SortingExisting(Option<u32>),
     Imported {
         added: usize,
@@ -161,7 +161,9 @@ impl Card {
                 Outcome::Moved { destination, .. } | Outcome::Copied { destination, .. } => Some(destination),
                 Outcome::DuplicateRemoved { existing, .. } => Some(existing),
                 Outcome::Left(LeftReason::AlreadyCopied { copy, .. }) => Some(copy),
-                Outcome::Left(_) => None,
+                // Still where it was (no module fit, open elsewhere, …): it can be looked at there.
+                Outcome::Left(LeftReason::Gone) => None,
+                Outcome::Left(_) => Some(&result.source),
             },
             FileState::Undone { back, .. } => Some(back),
             _ => None,
@@ -316,7 +318,10 @@ fn extras_text(lang: Lang, result: &SortResult) -> Option<String> {
 /// What the user did with an entry.
 pub(crate) enum RowAction {
     None,
-    Open(PathBuf),
+    /// Open the file itself (PDF viewer, PowerPoint, …).
+    OpenFile(PathBuf),
+    /// Open the folder it is in, with the file selected.
+    ShowFolder(PathBuf),
     Undo,
     /// Put the file into this module (index into the module list).
     Assign(usize),
@@ -337,8 +342,8 @@ pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64,
     };
     let mut action = RowAction::None;
     let id = egui::Id::new(("activity-row", card.key));
-    // The whole entry is clickable ("show in folder"). Its click area is registered before the
-    // content (with last frame's size), so the undo button lies on top of it.
+    // The whole entry is clickable (opens the file). Its click area is registered before the
+    // content (with last frame's size), so the buttons lie on top of it.
     let row = card
         .location()
         .zip(ui.ctx().data(|d| d.get_temp::<Rect>(id)))
@@ -382,6 +387,20 @@ pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64,
                                 {
                                     action = RowAction::Assign(i);
                                 }
+                                if let Some(location) = card.location() {
+                                    if fx::icon_button(ui, icon::FOLDER_OPEN)
+                                        .on_hover_text(lang.show_in_folder())
+                                        .clicked()
+                                    {
+                                        action = RowAction::ShowFolder(location.to_path_buf());
+                                    }
+                                    if fx::icon_button(ui, icon::ARROW_SQUARE_OUT)
+                                        .on_hover_text(lang.open_file())
+                                        .clicked()
+                                    {
+                                        action = RowAction::OpenFile(location.to_path_buf());
+                                    }
+                                }
                                 ui.label(RichText::new(&card.clock).small().color(p.on_surface_variant));
                                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                                     ui.add(
@@ -406,9 +425,9 @@ pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64,
     ui.ctx().data_mut(|d| d.insert_temp(id, rect));
     if let Some((location, response)) = row {
         fx::state_layer(ui, &response, rect, 12, p.on_surface);
-        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(lang.open_folder_hint());
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(lang.open_file());
         if response.clicked() && matches!(action, RowAction::None) {
-            action = RowAction::Open(location.to_path_buf());
+            action = RowAction::OpenFile(location.to_path_buf());
         }
     }
     action

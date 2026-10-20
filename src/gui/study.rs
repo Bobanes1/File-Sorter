@@ -11,7 +11,7 @@ use egui_phosphor::regular as icon;
 
 use super::dialogs::{actions, dialog_frame};
 use super::{App, Tab, section_title};
-use crate::deadlines::{self, DEADLINES_FILE, Deadlines, Found};
+use crate::deadlines::{self, DEADLINES_FILE, Deadlines, Found, Kind};
 use crate::fx::{self, ButtonStyle};
 use crate::i18n::Lang;
 use crate::index::{Hit, Indexer};
@@ -33,7 +33,13 @@ pub(super) struct NewDeadline {
     title: String,
     module: usize,
     date: String,
+    kind: Kind,
+    /// Correcting this entry instead of adding one.
+    editing: Option<u64>,
 }
+
+/// Documents changed in the last this many days are looked through for dates.
+const SCAN_DAYS: i64 = 150;
 
 pub(super) struct Study {
     indexer: Option<Indexer>,
@@ -48,6 +54,10 @@ pub(super) struct Study {
     scan_tx: Sender<Scanned>,
     scan_rx: Receiver<Scanned>,
     new_deadline: Option<NewDeadline>,
+    /// Looking through the study folder's documents for dates right now.
+    scanning: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// When that was last started.
+    scanned_at: f64,
     week: Week,
     /// When `week` was read from the history.
     week_read: f64,
@@ -68,6 +78,8 @@ impl Study {
             scan_tx,
             scan_rx,
             new_deadline: None,
+            scanning: Default::default(),
+            scanned_at: f64::NEG_INFINITY,
             week: Vec::new(),
             week_read: f64::NEG_INFINITY,
         }
@@ -110,6 +122,9 @@ impl App {
                 indexer.set_root(wanted.0.clone(), wanted.1.clone());
                 self.study.indexed = Some(wanted);
             }
+        }
+        if self.config.features.deadlines && self.now() - self.study.scanned_at > 20.0 {
+            self.scan_index_for_deadlines();
         }
         let mut changed = false;
         while let Ok(scanned) = self.study.scan_rx.try_recv() {
@@ -176,13 +191,54 @@ impl App {
         let tx = self.study.scan_tx.clone();
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
-            let reference = meta
-                .modified()
-                .ok()
-                .map(|t| DateTime::<Local>::from(t).date_naive())
-                .unwrap_or_else(|| Local::now().date_naive());
-            let found = deadlines::find(&crate::extract::extract_text(&file), reference);
+            // Just downloaded: dates without a year are the next ones from today.
+            let found = deadlines::find(&crate::extract::extract_text(&file), Local::now().date_naive());
             let _ = tx.send(Scanned { file, size: meta.len(), module, found });
+            ctx.request_repaint();
+        });
+    }
+
+    /// Look through the documents in the search index (the whole study folder, also files
+    /// sorted from the right-click menu or copied in by hand) that were changed in the last
+    /// months and not looked at yet.
+    fn scan_index_for_deadlines(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.study.scanned_at = self.now();
+        let Some(indexer) = &self.study.indexer else { return };
+        if indexer.busy() || self.study.scanning.load(Ordering::Relaxed) {
+            return;
+        }
+        let since =
+            (chrono::Utc::now() - chrono::Duration::days(SCAN_DAYS)).timestamp_nanos_opt().unwrap_or(0).max(0) as u64;
+        let deadlines = &self.study.deadlines;
+        let docs = match indexer.index.read() {
+            Ok(index) => index.texts(since, 12, 200, |path, size| deadlines.was_scanned(path, size)),
+            Err(_) => return,
+        };
+        if docs.is_empty() {
+            return;
+        }
+        // Which module each document is in, by its folder.
+        let folders: Vec<(PathBuf, String)> =
+            self.config.courses.iter().map(|c| (self.config.course_folder(c), c.label())).collect();
+        let (tx, ctx, flag) = (self.study.scan_tx.clone(), self.ctx.clone(), self.study.scanning.clone());
+        flag.store(true, Ordering::Relaxed);
+        std::thread::spawn(move || {
+            for (file, size, modified, text) in docs {
+                let module = folders
+                    .iter()
+                    .find(|(folder, _)| file.starts_with(folder))
+                    .map(|(_, label)| label.clone())
+                    .unwrap_or_default();
+                let reference = DateTime::from_timestamp(modified, 0)
+                    .map(|t| t.with_timezone(&Local).date_naive())
+                    .unwrap_or_else(|| Local::now().date_naive());
+                let found = deadlines::find(&text, reference);
+                if tx.send(Scanned { file, size, module, found }).is_err() {
+                    break;
+                }
+            }
+            flag.store(false, Ordering::Relaxed);
             ctx.request_repaint();
         });
     }
@@ -381,13 +437,30 @@ impl App {
             section_title(ui, lang.due());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if fx::button(ui, ButtonStyle::Tonal, icon::PLUS, lang.add_deadline()).clicked() {
-                    self.study.new_deadline =
-                        Some(NewDeadline { title: String::new(), module: 0, date: String::new() });
+                    self.study.new_deadline = Some(NewDeadline {
+                        title: String::new(),
+                        module: 0,
+                        date: String::new(),
+                        kind: Kind::Due,
+                        editing: None,
+                    });
+                }
+                let scanning = self.study.scanning.load(std::sync::atomic::Ordering::Relaxed);
+                if scanning {
+                    ui.add(egui::Spinner::new());
+                } else if fx::button(ui, ButtonStyle::Text, icon::ARROW_CLOCKWISE, lang.search_again())
+                    .on_hover_text(lang.search_again_hint())
+                    .clicked()
+                {
+                    self.study.deadlines.forget_scanned();
+                    self.save_deadlines();
+                    self.study.scanned_at = f64::NEG_INFINITY;
+                    self.scan_recent_for_deadlines();
                 }
             });
         });
         let now = Local::now().naive_local();
-        let upcoming: Vec<_> = self.study.deadlines.upcoming(now, 7, 21).into_iter().cloned().collect();
+        let upcoming: Vec<_> = self.study.deadlines.upcoming(now, 7, 366).into_iter().cloned().collect();
         let mut change: Option<(u64, &str)> = None;
         fx::card(ui, |ui| {
             if upcoming.is_empty() {
@@ -433,7 +506,12 @@ impl App {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         ui.label(fx::title(&d.title, 15.0).color(p.on_surface));
                         let when = lang.due_when(days, late, d.time.as_deref());
-                        let line = if d.module.is_empty() { when } else { format!("{when} · {}", d.module) };
+                        let kind = lang.deadline_kind(d.kind);
+                        let line = if d.module.is_empty() {
+                            format!("{kind} · {when}")
+                        } else {
+                            format!("{kind} · {when} · {}", d.module)
+                        };
                         ui.label(RichText::new(line).color(if late { p.error } else { p.on_surface_variant }));
                         if !d.context.is_empty() {
                             ui.add(
@@ -452,10 +530,16 @@ impl App {
                         {
                             change = Some((d.id, "calendar"));
                         }
+                        if fx::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(lang.correct()).clicked() {
+                            change = Some((d.id, "edit"));
+                        }
                         if let Some(file) = &d.file
-                            && fx::button(ui, ButtonStyle::Text, icon::FILE_TEXT, "")
-                                .on_hover_text(lang.open_file())
-                                .clicked()
+                            && fx::icon_button(ui, icon::FOLDER_OPEN).on_hover_text(lang.show_in_folder()).clicked()
+                        {
+                            crate::desktop::reveal(file);
+                        }
+                        if let Some(file) = &d.file
+                            && fx::icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(lang.open_file()).clicked()
                         {
                             crate::desktop::open(file);
                         }
@@ -477,6 +561,14 @@ impl App {
         let lang = self.lang;
         let Some(d) = self.study.deadlines.items.iter_mut().find(|d| d.id == id) else { return };
         match what {
+            "edit" => {
+                let module = self.config.courses.iter().position(|c| c.label() == d.module).unwrap_or(usize::MAX);
+                let time = d.time.as_deref().map(|t| format!(" {t}")).unwrap_or_default();
+                let date = d.day().map(|day| format!("{}{time}", day.format("%d.%m.%Y"))).unwrap_or_default();
+                self.study.new_deadline =
+                    Some(NewDeadline { title: d.title.clone(), module, date, kind: d.kind, editing: Some(id) });
+                return;
+            }
             "done" => d.done = true,
             "delete" => d.deleted = true,
             "calendar" => {
@@ -510,8 +602,15 @@ impl App {
         let modal = egui::Modal::new(Id::new("deadline-dialog")).frame(dialog_frame(ctx)).show(ctx, |ui| {
             let p = fx::pal(ui);
             ui.set_width(400.0);
-            ui.label(fx::title(lang.add_deadline(), 22.0).color(p.on_surface));
+            let title = if new.editing.is_some() { lang.correct() } else { lang.add_deadline() };
+            ui.label(fx::title(title, 22.0).color(p.on_surface));
             ui.add_space(12.0);
+            let kinds = [
+                (Kind::Due, lang.deadline_kind(Kind::Due).to_string()),
+                (Kind::Exam, lang.deadline_kind(Kind::Exam).to_string()),
+            ];
+            fx::segmented(ui, "deadline-kind", &mut new.kind, &kinds);
+            ui.add_space(8.0);
             ui.label(RichText::new(lang.what_is_due()).small().color(p.on_surface_variant));
             ui.add(
                 egui::TextEdit::singleline(&mut new.title)
@@ -547,7 +646,8 @@ impl App {
             ui.label(RichText::new(preview.0).small().color(preview.1));
             actions(ui, |ui| {
                 let ready = parsed.is_some() && !new.title.trim().is_empty();
-                if ui.add_enabled_ui(ready, |ui| fx::button(ui, ButtonStyle::Filled, "", lang.add())).inner.clicked() {
+                let label = if new.editing.is_some() { lang.save() } else { lang.add() };
+                if ui.add_enabled_ui(ready, |ui| fx::button(ui, ButtonStyle::Filled, "", label)).inner.clicked() {
                     add = true;
                 }
                 if fx::button(ui, ButtonStyle::Text, "", lang.cancel()).clicked() {
@@ -557,7 +657,12 @@ impl App {
         });
         if add && let Some((date, time)) = parsed {
             let module = modules.get(new.module).cloned().unwrap_or_default();
-            self.study.deadlines.add_manual(&new.title, &module, date, time);
+            match new.editing {
+                Some(id) => self.study.deadlines.edit(id, &new.title, &module, new.kind, date, time),
+                None => {
+                    self.study.deadlines.add_manual(&new.title, &module, new.kind, date, time);
+                }
+            }
             self.study.new_deadline = None;
             self.save_deadlines();
         } else if close || modal.should_close() {
@@ -571,6 +676,7 @@ impl App {
         let total: usize = self.study.week.iter().map(|(_, f)| f.len()).sum();
         section_title(ui, &lang.new_this_week(total));
         let mut open = None;
+        let mut reveal = None;
         fx::card(ui, |ui| {
             if self.study.week.is_empty() {
                 ui.label(RichText::new(lang.nothing_new_this_week()).color(p.on_surface_variant));
@@ -600,6 +706,14 @@ impl App {
                                 open = Some(path.clone());
                             }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if fx::icon_button(ui, icon::FOLDER_OPEN).on_hover_text(lang.show_in_folder()).clicked()
+                                {
+                                    reveal = Some(path.clone());
+                                }
+                                if fx::icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(lang.open_file()).clicked()
+                                {
+                                    open = Some(path.clone());
+                                }
                                 let when = format!("{} {}", weekday(lang, time.date_naive()), time.format("%H:%M"));
                                 ui.label(RichText::new(when).small().color(p.on_surface_variant));
                             });
@@ -609,11 +723,10 @@ impl App {
             }
         });
         if let Some(path) = open {
-            if path.exists() {
-                crate::desktop::open(&path);
-            } else if let Some(folder) = path.parent() {
-                crate::desktop::open(folder);
-            }
+            crate::desktop::open(&path);
+        }
+        if let Some(path) = reveal {
+            crate::desktop::reveal(&path);
         }
     }
 }

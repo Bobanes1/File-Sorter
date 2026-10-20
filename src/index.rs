@@ -101,6 +101,31 @@ impl Index {
         self.docs.len()
     }
 
+    /// Documents with text changed after `since` (nanoseconds since 1970) that `skip` doesn't
+    /// rule out, at most `limit`: path, size, modification time (seconds) and the text of
+    /// their first `pages` pages.
+    pub fn texts(
+        &self,
+        since: u64,
+        pages: usize,
+        limit: usize,
+        skip: impl Fn(&Path, u64) -> bool,
+    ) -> Vec<(PathBuf, u64, i64, String)> {
+        self.docs
+            .iter()
+            .filter(|d| !d.pages.is_empty() && d.modified >= since && !skip(&d.path, d.size))
+            .take(limit)
+            .map(|d| {
+                (
+                    d.path.clone(),
+                    d.size,
+                    (d.modified / 1_000_000_000) as i64,
+                    d.pages[..d.pages.len().min(pages)].join("\n"),
+                )
+            })
+            .collect()
+    }
+
     /// Files containing every word of `query` (in the name or text), best first.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Hit> {
         let words: Vec<String> = fold(query).split_whitespace().map(str::to_string).collect();

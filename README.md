@@ -69,11 +69,11 @@ The window has three tabs at the top right: **Overview**, where you set up folde
 
 *Add / Edit* let you create a module by hand (pick the study program, type the module name; the folder is created on the first file). Modules without a study program go directly into the study folder.
 
-*Sort existing files* cleans up files that are already sitting in the folder. The menu next to it chooses between **Only the last 7 days** (files downloaded or changed in the last 7 days – handy when the Downloads folder holds years of other things) and **All files**; the choice is remembered.
+*Sort existing files* cleans up files that are already sitting in the folder. The menu next to it chooses between **Only the last 24 hours**, **Only the last 7 days** (files downloaded or changed in that time – handy when the Downloads folder holds years of other things) and **All files**; the choice is remembered.
 
 Everything is saved automatically.
 
-Click a sorted file in *Activity* to open its folder with the file selected. The counters next to *Activity* show the files sorted today, downloads in progress and files that matched no module.
+Each entry in *Activity* has two buttons: **open the file** (in its usual program – PDF viewer, PowerPoint, …) and **open its folder** (with the file selected). Clicking the entry itself opens the file too. The counters next to *Activity* show the files sorted today, downloads in progress and files that matched no module.
 
 ## Undo
 
@@ -88,7 +88,11 @@ With **Learn from assigning** on (default), File Sorter then takes up to two ter
 ## Search, deadlines and «This week»
 
 - **Search** (`Ctrl+F`): finds every file in the study folder whose name or text contains all the words you type – PDFs page by page, PowerPoints slide by slide, Word and text files – with the passage and page number. Click a result to open it. The text is read in the background and kept in `search-index.json`, so later only new and changed files are read; files that are only in the cloud (OneDrive «online only») are found by name but not downloaded.
-- **Deadlines**: when an exercise sheet is sorted, File Sorter looks for things like «Abgabe: 24.10.2026, 23:59 Uhr», «Einsendeschluss 3. Dez.» or «due Oct 24». *This week → Due* lists what is due in the next three weeks (overdue in red), with **Done**, **Delete**, open the file, and **Add to calendar** (an `.ics` file that Outlook, Google and Apple calendars import, with a reminder the day before). **+ Deadline** adds one by hand. Finding dates in free text can go wrong – check the date (the passage it came from is shown); a deleted deadline isn't found again in the same file.
+- **Deadlines and exam dates**: File Sorter reads the documents in the study folder (those changed in the last five months – also files sorted with the right-click menu or copied in by hand) and finds
+  - hand-ins: «Abgabe: 24.10.2026, 23:59 Uhr», «bis zum 7.11. abzugeben», «Bearbeitungszeitraum: 27.10. – 10.11.», a table with «Ausgabe | Abgabe» columns, «due Oct 24th, 11:59 PM», «Deadline: 2026-11-05»;
+  - exams and other dates: «Klausur: 20.01.2027, 14:00», «Zwischenprüfung am 25.11.», «Testat», «Präsentation», «midterm».
+
+  Only a date in the same sentence counts. *This week → Due* lists everything coming up (overdue in red), each with **Done**, open the file, open its folder, **Correct** (fix a date or title that was read wrong), **Add to calendar** (an `.ics` file that Outlook, Google and Apple calendars import, with a reminder the day before) and **Delete**. **+ Deadline** adds one by hand, **Look again** reads all documents again. Finding dates in free text can still go wrong – the passage it came from is shown; a deleted or corrected entry isn't found again in the same file.
 - **New this week**: the files sorted in the last 7 days, per module.
 
 ## Finish a semester
@@ -162,7 +166,7 @@ Everything on the **Settings** tab is saved as soon as you change it (a green *S
 | **Animations** | Flying files, sliding entries, ripples and the pulsing dot on the stop button. Turn off for a calmer window. |
 | **What happens to a file** | **Move** (default): the file ends up only in its module folder and Downloads stays tidy. **Copy**: a copy goes to the module folder and the original stays where it was. Each file is copied only once – File Sorter remembers what it copied (`copied.json` next to the settings), so it doesn't copy a file again when it sorts the folder later, even if you annotated or renamed the copy. A new version with the same name is copied as `name (1).pdf`. |
 | **Read file contents** | When the file name isn't enough, read the text of PDFs, slides and Word files. |
-| **Include files already there** | When watching starts, also sort the files already in the folder: *None*, *Last 7 days* or *All*. |
+| **Include files already there** | When watching starts, also sort the files already in the folder: *None*, *Last 24 hours*, *Last 7 days* or *All*. |
 | **File types** | Which types are sorted from the watched folder: tick or untick `.pdf`, `.pptx`, … or type others under *More* (e.g. `.svg, .ods`). *Defaults* restores the standard list. The right-click menu sorts any file you pick, whatever its type. |
 | **Start when I sign in** | File Sorter opens minimised in the taskbar and starts watching right away (Windows and Linux). |
 | **Start watching right away** | Begin watching as soon as you open the window. |
@@ -180,6 +184,7 @@ FileSorter.exe --autostart  # open minimised and start watching (what "Start whe
 FileSorter.exe --headless   # watch in the background without any window, using saved settings
 FileSorter.exe --sort-now   # sort what's already in the folder once and exit
 FileSorter.exe --sort-now --days 7   # … only the files downloaded or changed in the last 7 days
+FileSorter.exe --sort-now --hours 24 # … only the last 24 hours
 FileSorter.exe --sort FILE_OR_FOLDER...  # what the right-click entry runs; add --quiet for no window
 FileSorter.exe --register-menu           # add the right-click entry (Windows), --unregister-menu removes it
 FileSorter.exe --list-clouds             # write the cloud folders found (OneDrive, Dropbox, …) to the log

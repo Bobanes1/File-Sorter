@@ -91,7 +91,17 @@ jobs:
           Get-Content "$root\file-sorter.log"
           if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\new_week.pptx")) { throw "the new file was not sorted" }
           if (-not (Test-Path "$root\Downloads\old_week.pptx")) { throw "the 30 days old file was sorted too" }
-          Write-Host "only the recent file was sorted"
+          # The last 24 hours: a file from two days ago stays too.
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\today.pptx"
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\two_days.pptx"
+          $two = (Get-Date).AddDays(-2)
+          (Get-Item "$root\Downloads\two_days.pptx").CreationTime = $two
+          (Get-Item "$root\Downloads\two_days.pptx").LastWriteTime = $two
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--hours", "24", "--config", "`"$root\config.json`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
+          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\today.pptx")) { throw "today's file was not sorted" }
+          if (-not (Test-Path "$root\Downloads\two_days.pptx")) { throw "the two days old file was sorted with --hours 24" }
+          Write-Host "only the recent files were sorted"
 
       - name: Smoke-test looking for updates
         shell: pwsh

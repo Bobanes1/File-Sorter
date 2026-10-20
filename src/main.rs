@@ -48,6 +48,7 @@ Usage: file-sorter [--config PATH] [--headless | --sort-now | [--sort] FILE... [
   --headless        run without a window, only watching the folder
   --sort-now        sort files already in the watch folder once, then exit
   --days N          with --sort-now: only files downloaded or changed in the last N days
+  --hours N         … or in the last N hours (e.g. --hours 24)
   [--sort] FILE...  sort these files (or the documents in these folders) and show
                     the result; this is what the right-click menu runs
   --quiet           with --sort: no results window, only the log file
@@ -61,8 +62,8 @@ struct Args {
     config: PathBuf,
     headless: bool,
     sort_now: bool,
-    /// With `--sort-now`: only files from the last this many days.
-    days: Option<u32>,
+    /// With `--sort-now`: only files from the last this many hours (`--days` × 24).
+    hours: Option<u32>,
     autostart: bool,
     /// Files to sort right away (right-click menu, or dropped onto the exe).
     files: Vec<PathBuf>,
@@ -79,7 +80,7 @@ fn parse_args() -> Result<Args, String> {
         config: default_config_path(),
         headless: false,
         sort_now: false,
-        days: None,
+        hours: None,
         autostart: false,
         files: Vec::new(),
         quiet: false,
@@ -102,9 +103,10 @@ fn parse_args() -> Result<Args, String> {
             "--check-update" => args.check_update = true,
             "--wait-for" => args.wait_for = it.next().and_then(|pid| pid.parse().ok()),
             "--config" => args.config = it.next().ok_or("--config needs a path")?.into(),
-            "--days" => {
-                let days = it.next().ok_or("--days needs a number")?;
-                args.days = Some(days.parse().map_err(|_| format!("--days needs a number, not {days}"))?);
+            "--days" | "--hours" => {
+                let text = it.next().ok_or(format!("{arg} needs a number"))?;
+                let n: u32 = text.parse().map_err(|_| format!("{arg} needs a number, not {text}"))?;
+                args.hours = Some(if arg == "--days" { n.saturating_mul(24) } else { n });
             }
             "-h" | "--help" => return Err(String::new()),
             other if other.starts_with("--") => return Err(format!("unknown option: {other}")),
@@ -236,7 +238,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     if args.sort_now {
-        let scope = args.days.map_or(config::ExistingScope::All, config::ExistingScope::Recent);
+        let scope = args.hours.map_or(config::ExistingScope::All, config::ExistingScope::LastHours);
         for result in sorter::sort_existing(&config, scope) {
             log::info!("{}", result.describe());
         }

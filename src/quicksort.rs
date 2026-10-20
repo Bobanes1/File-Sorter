@@ -403,7 +403,8 @@ impl eframe::App for ResultsWindow {
             });
         for (key, action) in actions {
             match action {
-                RowAction::Open(path) => crate::desktop::reveal(&path),
+                RowAction::OpenFile(path) => crate::desktop::open(&path),
+                RowAction::ShowFolder(path) => crate::desktop::reveal(&path),
                 RowAction::Undo => self.start_undo(key, &ctx, now),
                 RowAction::Assign(course) => self.start_assign(key, course, &ctx, now),
                 RowAction::None => {}

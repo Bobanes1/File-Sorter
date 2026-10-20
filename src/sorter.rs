@@ -830,14 +830,14 @@ pub fn sort_existing(config: &Config, scope: ExistingScope) -> Vec<SortResult> {
 /// moment of the download, while browsers may keep the server's modification time, so the
 /// newer of the two counts.
 pub fn in_scope(path: &Path, scope: ExistingScope) -> bool {
-    let ExistingScope::Recent(days) = scope else { return true };
+    let ExistingScope::LastHours(hours) = scope else { return true };
     let Ok(meta) = fs::metadata(path) else { return false };
-    recent([meta.modified().ok(), meta.created().ok()], SystemTime::now(), days)
+    recent([meta.modified().ok(), meta.created().ok()], SystemTime::now(), hours)
 }
 
-/// True if the newest of `times` is at most `days` days before `now` (or in the future).
-fn recent(times: [Option<SystemTime>; 2], now: SystemTime, days: u32) -> bool {
-    let limit = Duration::from_secs(u64::from(days) * 24 * 60 * 60);
+/// True if the newest of `times` is at most `hours` hours before `now` (or in the future).
+fn recent(times: [Option<SystemTime>; 2], now: SystemTime, hours: u32) -> bool {
+    let limit = Duration::from_secs(u64::from(hours) * 60 * 60);
     let newest = times.into_iter().flatten().max();
     newest.is_some_and(|t| now.duration_since(t).map(|age| age <= limit).unwrap_or(true))
 }
@@ -904,12 +904,13 @@ pub(crate) mod tests {
     #[test]
     fn recent_means_downloaded_or_changed_in_the_last_days() {
         let now = SystemTime::now();
-        let days = |d: u64| Some(now - Duration::from_secs(d * 24 * 60 * 60));
-        assert!(recent([days(1), None], now, 7));
-        assert!(recent([days(30), days(2)], now, 7), "downloaded recently, old server date");
-        assert!(!recent([days(8), days(9)], now, 7));
-        assert!(!recent([None, None], now, 7));
-        assert!(recent([Some(now + Duration::from_secs(60)), None], now, 7), "clock skew");
+        let hours = |h: u64| Some(now - Duration::from_secs(h * 60 * 60));
+        assert!(recent([hours(24), None], now, 7 * 24));
+        assert!(recent([hours(30 * 24), hours(48)], now, 7 * 24), "downloaded recently, old server date");
+        assert!(!recent([hours(8 * 24), hours(9 * 24)], now, 7 * 24));
+        assert!(recent([hours(23), None], now, 24) && !recent([hours(25), None], now, 24), "last 24 hours");
+        assert!(!recent([None, None], now, 7 * 24));
+        assert!(recent([Some(now + Duration::from_secs(60)), None], now, 24), "clock skew");
     }
 
     #[test]
@@ -929,7 +930,7 @@ pub(crate) mod tests {
         drop(file);
         // Elsewhere the creation time can't be set back, so only Windows can test the old file.
         let looks_old = cfg!(windows) || fs::metadata(&old).unwrap().created().is_err();
-        let results = sort_existing(&cfg, ExistingScope::Recent(7));
+        let results = sort_existing(&cfg, ExistingScope::LastHours(7 * 24));
         assert!(results.iter().any(|r| r.file_name() == "prog1_new.pdf" && r.sorted()));
         if looks_old {
             assert!(old.exists(), "older than 7 days: left alone");

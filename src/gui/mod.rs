@@ -733,11 +733,11 @@ impl App {
             Some(w) if w.running() => w.sort_existing_async(scope),
             _ => FolderWatcher::new(self.config.clone(), self.sink()).sort_existing_async(scope),
         }
-        let days = match scope {
-            ExistingScope::Recent(days) => Some(days),
+        let hours = match scope {
+            ExistingScope::LastHours(hours) => Some(hours),
             ExistingScope::All => None,
         };
-        self.note(Note::SortingExisting(days));
+        self.note(Note::SortingExisting(hours));
     }
 
     fn pick_folder(current: &str) -> Option<String> {

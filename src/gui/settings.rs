@@ -4,7 +4,7 @@ use eframe::egui::{self, Align, Layout, Margin, RichText, Sense, Stroke, vec2};
 use egui_phosphor::regular as icon;
 
 use super::{App, known_types, section_title};
-use crate::config::{DEFAULT_EXTENSIONS, FileAction, OnStart, RECENT_DAYS, ThemeChoice};
+use crate::config::{DEFAULT_EXTENSIONS, FileAction, OnStart, SortRange, ThemeChoice};
 use crate::fx::{self, ButtonStyle};
 use crate::i18n::Lang;
 
@@ -162,7 +162,8 @@ impl App {
                         |ui| {
                             let options = [
                                 (OnStart::Off, lang.none().to_string()),
-                                (OnStart::Recent, lang.last_days(RECENT_DAYS)),
+                                (OnStart::Day, lang.range_short(SortRange::Day).to_string()),
+                                (OnStart::Week, lang.range_short(SortRange::Week).to_string()),
                                 (OnStart::All, lang.all().to_string()),
                             ];
                             changed |=

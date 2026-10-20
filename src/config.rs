@@ -91,8 +91,10 @@ pub struct Config {
     /// ones from the last days, or all.
     #[serde(deserialize_with = "on_start_or_bool")]
     pub sort_existing_on_start: OnStart,
-    /// "Sort existing files" in the window: only the last days (true) or everything.
-    pub sort_existing_recent: bool,
+    /// "Sort existing files" in the window: the last 24 hours, the last 7 days or everything.
+    /// (0.9 saved `sort_existing_recent`: true for 7 days, false for all.)
+    #[serde(alias = "sort_existing_recent", deserialize_with = "range_or_bool")]
+    pub sort_existing_range: SortRange,
     pub courses: Vec<Course>,
     /// "de" or "en"; empty means: follow the system language.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -135,8 +137,43 @@ pub enum FileAction {
     Copy,
 }
 
-/// How many days count as "recent" for sorting existing files.
-pub const RECENT_DAYS: u32 = 7;
+/// Which of the files already in the watched folder "Sort existing files" takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortRange {
+    /// Downloaded or changed in the last 24 hours.
+    Day,
+    /// … in the last 7 days.
+    #[default]
+    Week,
+    /// Everything.
+    All,
+}
+
+impl SortRange {
+    pub fn scope(self) -> ExistingScope {
+        match self {
+            SortRange::Day => ExistingScope::LastHours(24),
+            SortRange::Week => ExistingScope::LastHours(7 * 24),
+            SortRange::All => ExistingScope::All,
+        }
+    }
+}
+
+/// 0.9 saved `true` (last 7 days) / `false` (all) here.
+fn range_or_bool<'de, D: Deserializer<'de>>(d: D) -> Result<SortRange, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Old(bool),
+        New(SortRange),
+    }
+    Ok(match Option::<Either>::deserialize(d)? {
+        Some(Either::Old(true)) | None => SortRange::Week,
+        Some(Either::Old(false)) => SortRange::All,
+        Some(Either::New(range)) => range,
+    })
+}
 
 /// Which files already in the watched folder are sorted when watching starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -145,8 +182,11 @@ pub enum OnStart {
     /// Only new downloads.
     #[default]
     Off,
-    /// Files from the last [`RECENT_DAYS`] days too.
-    Recent,
+    /// Files from the last 24 hours too.
+    Day,
+    /// Files from the last 7 days too (saved as "recent", as in 0.9).
+    #[serde(rename = "recent")]
+    Week,
     /// Everything that is there.
     All,
 }
@@ -156,7 +196,8 @@ impl OnStart {
     pub fn scope(self) -> Option<ExistingScope> {
         match self {
             OnStart::Off => None,
-            OnStart::Recent => Some(ExistingScope::Recent(RECENT_DAYS)),
+            OnStart::Day => Some(SortRange::Day.scope()),
+            OnStart::Week => Some(SortRange::Week.scope()),
             OnStart::All => Some(ExistingScope::All),
         }
     }
@@ -181,8 +222,8 @@ fn on_start_or_bool<'de, D: Deserializer<'de>>(d: D) -> Result<OnStart, D::Error
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExistingScope {
     All,
-    /// Only files downloaded (or changed) in the last so many days.
-    Recent(u32),
+    /// Only files downloaded (or changed) in the last so many hours.
+    LastHours(u32),
 }
 
 /// Whether updates are installed by themselves or only offered.
@@ -260,7 +301,7 @@ impl Default for Config {
             extensions: DEFAULT_EXTENSIONS.iter().map(|e| e.to_string()).collect(),
             read_file_contents: true,
             sort_existing_on_start: OnStart::Off,
-            sort_existing_recent: true,
+            sort_existing_range: SortRange::Week,
             courses: Vec::new(),
             language: None,
             context_menu: true,
@@ -280,9 +321,9 @@ impl Default for Config {
 }
 
 impl Config {
-    /// What "Sort existing files" sorts: the last [`RECENT_DAYS`] days or everything.
+    /// What "Sort existing files" sorts: the last 24 hours, the last 7 days or everything.
     pub fn existing_scope(&self) -> ExistingScope {
-        if self.sort_existing_recent { ExistingScope::Recent(RECENT_DAYS) } else { ExistingScope::All }
+        self.sort_existing_range.scope()
     }
 
     /// One of File Sorter's own lists, if the settings were loaded from a file.
@@ -518,11 +559,15 @@ mod tests {
         let read = |json: &str| serde_json::from_str::<Config>(json).unwrap();
         assert_eq!(read(r#"{"sort_existing_on_start": true}"#).sort_existing_on_start, OnStart::All);
         assert_eq!(read(r#"{"sort_existing_on_start": false}"#).sort_existing_on_start, OnStart::Off);
-        assert_eq!(read(r#"{"sort_existing_on_start": "recent"}"#).sort_existing_on_start, OnStart::Recent);
+        assert_eq!(read(r#"{"sort_existing_on_start": "recent"}"#).sort_existing_on_start, OnStart::Week);
+        assert_eq!(read(r#"{"sort_existing_on_start": "day"}"#).sort_existing_on_start, OnStart::Day);
+        assert_eq!(read(r#"{"sort_existing_recent": false}"#).sort_existing_range, SortRange::All);
+        assert_eq!(read(r#"{"sort_existing_recent": true}"#).sort_existing_range, SortRange::Week);
+        assert_eq!(read(r#"{"sort_existing_range": "day"}"#).existing_scope(), ExistingScope::LastHours(24));
         let old = read("{}");
         assert_eq!(old.sort_existing_on_start, OnStart::Off);
         assert_eq!(old.features, Features::default());
-        assert_eq!(old.existing_scope(), ExistingScope::Recent(RECENT_DAYS));
+        assert_eq!(old.existing_scope(), ExistingScope::LastHours(7 * 24));
         let partial = read(r#"{"features": {"unzip": true}}"#).features;
         assert!(partial.unzip && partial.learn && !partial.subfolders);
     }

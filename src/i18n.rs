@@ -124,37 +124,55 @@ impl Lang {
     pub fn sort_now(self) -> &'static str {
         self.pick("Sort existing files", "Vorhandene Dateien sortieren")
     }
-    pub fn sort_now_tooltip(self, days: Option<u32>) -> String {
-        match days {
-            Some(d) => self.fmt(
-                format!("Sort the files in the downloads folder from the last {d} days"),
-                format!("Die Dateien der letzten {d} Tage im Download-Ordner sortieren"),
+    pub fn sort_now_tooltip(self, range: crate::config::SortRange) -> String {
+        use crate::config::SortRange;
+        match range {
+            SortRange::Day => self.pick(
+                "Sort the files in the downloads folder from the last 24 hours",
+                "Die Dateien der letzten 24 Stunden im Download-Ordner sortieren",
             ),
-            None => {
-                self.pick("Sort all files in the downloads folder", "Alle Dateien im Download-Ordner sortieren").into()
+            SortRange::Week => self.pick(
+                "Sort the files in the downloads folder from the last 7 days",
+                "Die Dateien der letzten 7 Tage im Download-Ordner sortieren",
+            ),
+            SortRange::All => {
+                self.pick("Sort all files in the downloads folder", "Alle Dateien im Download-Ordner sortieren")
             }
         }
+        .into()
     }
-    pub fn last_days(self, days: u32) -> String {
-        self.fmt(format!("Last {days} days"), format!("Letzte {days} Tage"))
+    /// Short name of a range, for the menu button and the settings ("Last 24 hours").
+    pub fn range_short(self, range: crate::config::SortRange) -> &'static str {
+        use crate::config::SortRange;
+        match range {
+            SortRange::Day => self.pick("Last 24 hours", "Letzte 24 Stunden"),
+            SortRange::Week => self.pick("Last 7 days", "Letzte 7 Tage"),
+            SortRange::All => self.pick("All files", "Alle Dateien"),
+        }
     }
-    pub fn all_files(self) -> &'static str {
-        self.pick("All files", "Alle Dateien")
+    pub fn range_title(self, range: crate::config::SortRange) -> &'static str {
+        use crate::config::SortRange;
+        match range {
+            SortRange::Day => self.pick("Only the last 24 hours", "Nur die letzten 24 Stunden"),
+            SortRange::Week => self.pick("Only the last 7 days", "Nur die letzten 7 Tage"),
+            SortRange::All => self.pick("All files", "Alle Dateien"),
+        }
     }
-    pub fn sort_recent(self, days: u32) -> String {
-        self.fmt(format!("Only the last {days} days"), format!("Nur die letzten {days} Tage"))
-    }
-    pub fn sort_recent_hint(self, days: u32) -> String {
-        self.fmt(
-            format!("Files downloaded or changed in the last {days} days"),
-            format!("Dateien, die in den letzten {days} Tagen heruntergeladen oder geändert wurden"),
-        )
-    }
-    pub fn sort_all(self) -> &'static str {
-        self.pick("All files", "Alle Dateien")
-    }
-    pub fn sort_all_hint(self) -> &'static str {
-        self.pick("Everything in the downloads folder, however old", "Alles im Download-Ordner, egal wie alt")
+    pub fn range_hint(self, range: crate::config::SortRange) -> &'static str {
+        use crate::config::SortRange;
+        match range {
+            SortRange::Day => self.pick(
+                "Files downloaded or changed since yesterday at this time",
+                "Dateien, die seit gestern um diese Zeit heruntergeladen oder geändert wurden",
+            ),
+            SortRange::Week => self.pick(
+                "Files downloaded or changed in the last 7 days",
+                "Dateien, die in den letzten 7 Tagen heruntergeladen oder geändert wurden",
+            ),
+            SortRange::All => {
+                self.pick("Everything in the downloads folder, however old", "Alles im Download-Ordner, egal wie alt")
+            }
+        }
     }
 
     // ---------- activity ----------
@@ -348,11 +366,15 @@ impl Lang {
             }
         }
     }
-    pub fn sorting_existing(self, days: Option<u32>) -> String {
-        match days {
-            Some(d) => self.fmt(
-                format!("Sorting the files from the last {d} days…"),
-                format!("Sortiere die Dateien der letzten {d} Tage…"),
+    pub fn sorting_existing(self, hours: Option<u32>) -> String {
+        match hours {
+            Some(h) if h % 24 != 0 || h == 24 => self.fmt(
+                format!("Sorting the files from the last {h} hours…"),
+                format!("Sortiere die Dateien der letzten {h} Stunden…"),
+            ),
+            Some(h) => self.fmt(
+                format!("Sorting the files from the last {} days…", h / 24),
+                format!("Sortiere die Dateien der letzten {} Tage…", h / 24),
             ),
             None => self
                 .pick("Sorting files already in the folder…", "Sortiere die Dateien, die schon im Ordner liegen…")
@@ -548,6 +570,27 @@ impl Lang {
             (false, 1) => self.fmt(format!("due tomorrow{at}"), format!("morgen fällig{at}")),
             (false, d) => self.fmt(format!("in {d} days{at}"), format!("in {d} Tagen{at}")),
         }
+    }
+    pub fn deadline_kind(self, kind: crate::deadlines::Kind) -> &'static str {
+        match kind {
+            crate::deadlines::Kind::Due => self.pick("Hand-in", "Abgabe"),
+            crate::deadlines::Kind::Exam => self.pick("Exam / date", "Prüfung / Termin"),
+        }
+    }
+    pub fn save(self) -> &'static str {
+        self.pick("Save", "Speichern")
+    }
+    pub fn correct(self) -> &'static str {
+        self.pick("Correct", "Korrigieren")
+    }
+    pub fn search_again(self) -> &'static str {
+        self.pick("Look again", "Erneut suchen")
+    }
+    pub fn search_again_hint(self) -> &'static str {
+        self.pick(
+            "Look through all documents of the last months for deadlines and exam dates again",
+            "Alle Dokumente der letzten Monate nochmals nach Abgaben und Prüfungsterminen durchsuchen",
+        )
     }
     pub fn to_calendar(self) -> &'static str {
         self.pick("Add to calendar", "In den Kalender")

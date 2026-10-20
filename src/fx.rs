@@ -357,6 +357,19 @@ pub fn button(ui: &mut egui::Ui, style: ButtonStyle, glyph: &str, text: &str) ->
     if enabled { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response }
 }
 
+/// A round icon-only button (Material "standard icon button").
+pub fn icon_button(ui: &mut egui::Ui, glyph: &str) -> egui::Response {
+    let p = pal(ui);
+    let (rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let radius = CornerRadius::same(16);
+        state_layer(ui, &response, rect, radius, p.on_surface_variant);
+        ripple(ui, &response, rect, p.primary);
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), p.primary);
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// A Material 3 switch: the thumb grows and shows a check when it is on.
 pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(52.0, 32.0), Sense::click());

@@ -176,29 +176,101 @@ pub fn apply_autostart_setting(enabled: bool) {
     }
 }
 
-/// Open a file or folder with its usual program.
+/// A path as Explorer and other programs understand it: without the `\\?\` prefix that
+/// `canonicalize` adds on Windows (Explorer can't open those and shows "Documents" instead).
+pub fn plain_path(path: &Path) -> std::path::PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => std::path::PathBuf::from(format!(r"\\{rest}")),
+        None => std::path::PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text)),
+    }
+}
+
+/// Open a file or folder with its usual program (a PDF in the PDF viewer, a folder in
+/// Explorer, a web address in the browser).
 pub fn open(path: &Path) {
+    let path = plain_path(path);
+    if !path.exists() {
+        log::info!("{} is no longer there; opening its folder instead", path.display());
+        if let Some(folder) = path.ancestors().skip(1).find(|p| p.is_dir()) {
+            open(folder);
+        }
+        return;
+    }
     #[cfg(windows)]
-    let result = std::process::Command::new("explorer").arg(path).spawn();
+    let result = shell_open(&path);
     #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg(path).spawn();
+    let result = std::process::Command::new("open").arg(&path).spawn().map(drop);
     #[cfg(not(any(windows, target_os = "macos")))]
-    let result = std::process::Command::new("xdg-open").arg(path).spawn();
+    let result = std::process::Command::new("xdg-open").arg(&path).spawn().map(drop);
     if let Err(e) = result {
         log::info!("Could not open {}: {e}", path.display());
     }
 }
 
-/// Open the folder that contains `path`, with the file selected where possible.
+/// ShellExecute "open": what a double-click in Explorer does.
+#[cfg(windows)]
+fn shell_open(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide = |s: &std::ffi::OsStr| s.encode_wide().chain([0]).collect::<Vec<u16>>();
+    let (verb, file) = (wide("open".as_ref()), wide(path.as_os_str()));
+    // SAFETY: both strings are 0-terminated and live until the call returns.
+    let code = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // Values above 32 mean success.
+    if code as isize > 32 {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("ShellExecute error {}", code as isize)))
+    }
+}
+
+/// Open the folder that contains `path`, with the file selected where possible. If the file
+/// is gone, its folder (or the nearest folder above that still exists) opens instead.
 pub fn reveal(path: &Path) {
+    let path = plain_path(path);
+    if !path.exists() {
+        if let Some(folder) = path.ancestors().skip(1).find(|p| p.is_dir()) {
+            open(folder);
+        }
+        return;
+    }
     #[cfg(windows)]
-    let result = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+    let result = {
+        use std::os::windows::process::CommandExt;
+        // Explorer wants `/select,"C:\path with spaces\file.pdf"`: quotes around the path
+        // only. Passed as one ordinary argument, the whole thing would be quoted, which
+        // Explorer doesn't understand (it opens "Documents" instead).
+        std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn().map(drop)
+    };
     #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg("-R").arg(path).spawn();
+    let result = std::process::Command::new("open").arg("-R").arg(&path).spawn().map(drop);
     #[cfg(not(any(windows, target_os = "macos")))]
-    let result = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn();
+    let result = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(&path)).spawn().map(drop);
     if let Err(e) = result {
         log::info!("Could not open the folder of {}: {e}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn long_path_prefixes_are_removed() {
+        assert_eq!(plain_path(Path::new(r"\\?\C:\Users\Anna\x.pdf")), Path::new(r"C:\Users\Anna\x.pdf"));
+        assert_eq!(plain_path(Path::new(r"\\?\UNC\server\share\x.pdf")), Path::new(r"\\server\share\x.pdf"));
+        assert_eq!(plain_path(Path::new("/home/anna/x.pdf")), Path::new("/home/anna/x.pdf"));
     }
 }
 

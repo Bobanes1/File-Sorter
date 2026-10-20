@@ -9,7 +9,7 @@ use egui_phosphor::regular as icon;
 
 use super::cards::{self, RowAction};
 use super::{App, CourseDialog, FLIGHT_SECS, GLOW_SECS};
-use crate::config::RECENT_DAYS;
+use crate::config::SortRange;
 use crate::fx::{self, ButtonStyle};
 
 impl App {
@@ -339,30 +339,26 @@ impl App {
         let p = fx::pal(ui);
         let lang = self.lang;
         ui.horizontal(|ui| {
-            let recent = self.config.sort_existing_recent;
+            let range = self.config.sort_existing_range;
             let main = fx::button(ui, ButtonStyle::Tonal, icon::BROOM, lang.sort_now());
-            if main.on_hover_text(lang.sort_now_tooltip(recent.then_some(RECENT_DAYS))).clicked() {
+            if main.on_hover_text(lang.sort_now_tooltip(range)).clicked() {
                 self.sort_now();
             }
-            // The scope ("last 7 days" / "all"), with a menu to sort with the other one.
-            let scope_text = if recent { lang.last_days(RECENT_DAYS) } else { lang.all_files().to_string() };
-            let menu_button = fx::button(ui, ButtonStyle::Text, icon::CARET_DOWN, &scope_text);
+            // The range (last 24 hours / last 7 days / all), with a menu to sort with another one.
+            let menu_button = fx::button(ui, ButtonStyle::Text, icon::CARET_DOWN, lang.range_short(range));
             let mut chosen = None;
             egui::Popup::menu(&menu_button).width(330.0).show(|ui| {
                 ui.set_min_width(330.0);
-                for (value, title, hint) in [
-                    (true, lang.sort_recent(RECENT_DAYS), lang.sort_recent_hint(RECENT_DAYS)),
-                    (false, lang.sort_all().to_string(), lang.sort_all_hint().to_string()),
-                ] {
-                    if scope_menu_row(ui, value == recent, &title, &hint) {
+                for value in [SortRange::Day, SortRange::Week, SortRange::All] {
+                    if scope_menu_row(ui, value == range, lang.range_title(value), lang.range_hint(value)) {
                         chosen = Some(value);
                         ui.close();
                     }
                 }
             });
             if let Some(value) = chosen {
-                if value != self.config.sort_existing_recent {
-                    self.config.sort_existing_recent = value;
+                if value != self.config.sort_existing_range {
+                    self.config.sort_existing_range = value;
                     self.settings_changed();
                 }
                 self.sort_now();
@@ -436,7 +432,8 @@ impl App {
         });
         for (key, action) in actions {
             match action {
-                RowAction::Open(path) => crate::desktop::reveal(&path),
+                RowAction::OpenFile(path) => crate::desktop::open(&path),
+                RowAction::ShowFolder(path) => crate::desktop::reveal(&path),
                 RowAction::Undo => self.undo_entry(key),
                 RowAction::Assign(course) => self.start_assign(key, course),
                 RowAction::None => {}

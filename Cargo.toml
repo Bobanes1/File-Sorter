@@ -1,6 +1,6 @@
 [package]
 name = "file-sorter"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 description = "Automatically sorts downloaded course files into study-program/module folders"
 license = "GPL-3.0-or-later"
@@ -31,8 +31,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Com",
     "Win32_System_Threading",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
 ] }

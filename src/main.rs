@@ -24,6 +24,7 @@ mod logger;
 mod matcher;
 mod origin;
 mod quicksort;
+mod resort;
 mod sorter;
 mod tray;
 mod undo;

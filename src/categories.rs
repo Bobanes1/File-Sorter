@@ -1,11 +1,15 @@
 //! Subfolders inside a module: lecture material, exercises, solutions and exams, told
 //! apart by words in the file name (or, if it says nothing, the start of the document).
 
+use std::path::Path;
+
+use crate::config::Subfolder;
 use crate::matcher::normalise;
 
 /// The kinds of files that get their own subfolder, in the order of
 /// `Features::subfolder_names`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Category {
     Lecture = 0,
     Exercise = 1,
@@ -55,6 +59,7 @@ fn of_words<'a>(words: impl Iterator<Item = &'a str>) -> Option<Category> {
 }
 
 /// The kind of a file, from its name (`stem`, without extension) or else the start of its text.
+#[cfg(test)]
 pub fn classify(stem: &str, text: Option<&str>) -> Option<Category> {
     let name = normalise(stem);
     if let Some(category) = of_words(name.split(' ')) {
@@ -62,6 +67,67 @@ pub fn classify(stem: &str, text: Option<&str>) -> Option<Category> {
     }
     let start = normalise(text?);
     of_words(start.split(' ').take(TITLE_WORDS))
+}
+
+/// Whether a (normalised) keyword occurs in normalised text: a whole phrase, or the start of
+/// a word ("zusammenfassung" also finds "Zusammenfassungen").
+fn mentions(text: &str, keyword: &str) -> bool {
+    if keyword.chars().count() < 2 {
+        return false;
+    }
+    if keyword.contains(' ') {
+        return crate::matcher::count_hits(text, keyword) > 0;
+    }
+    text.split(' ').any(|w| w == keyword || keyword.chars().count() >= 3 && w.starts_with(keyword))
+}
+
+/// The folders directly in a module that can receive files: everything except hidden
+/// folders, the versions folder, an archive and folders of unpacked ZIP files.
+pub fn existing_subfolders(module: &Path, versions_folder: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(module) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| {
+            !n.starts_with('.')
+                && !n.eq_ignore_ascii_case(versions_folder)
+                && !n.eq_ignore_ascii_case(crate::archive::ARCHIVE_FOLDER)
+                && !module.join(format!("{n}.zip")).exists()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// The subfolder a file goes into: one whose own words are in the file name, else the kind
+/// the name says (lecture, exercise, solution, exam), else a folder already in the module
+/// whose name is in the file name ("Projekt" for "Projekt_Anleitung.pdf"); and only if the
+/// name says nothing, the same on the start of the text (`text`, read only then).
+pub fn pick_subfolder(
+    stem: &str,
+    list: &[Subfolder],
+    existing: &[String],
+    text: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    let name = normalise(stem);
+    let by_words = |text: &str| {
+        list.iter().find(|f| f.keywords.iter().any(|k| mentions(text, &normalise(k)))).map(|f| f.name.clone())
+    };
+    let by_kind = |category: Category| list.iter().find(|f| f.builtin == Some(category)).map(|f| f.name.clone());
+    if let Some(folder) = by_words(&name) {
+        return Some(folder);
+    }
+    if let Some(category) = of_words(name.split(' ')) {
+        return by_kind(category);
+    }
+    let listed = |dir: &String| list.iter().any(|f| f.name.eq_ignore_ascii_case(dir));
+    if let Some(dir) = existing.iter().find(|dir| !listed(dir) && mentions(&name, &normalise(dir))) {
+        return Some(dir.clone());
+    }
+    let text = text()?;
+    let start = normalise(&text).split(' ').take(TITLE_WORDS).collect::<Vec<_>>().join(" ");
+    by_words(&start).or_else(|| of_words(start.split(' ')).and_then(by_kind))
 }
 
 /// A folder name the user typed, made safe: no path separators or characters Windows
@@ -112,6 +178,40 @@ mod tests {
         let far = format!("{} Klausur", "wort ".repeat(30));
         assert_eq!(classify("scan_0042", Some(&far)), None, "only the start counts");
         assert_eq!(classify("Blatt 2", Some("Musterlösung")), Some(Exercise), "the name wins");
+    }
+
+    #[test]
+    fn subfolders_by_own_words_kind_and_existing_folders() {
+        let mut list = Subfolder::defaults();
+        list.push(Subfolder {
+            name: "Zusammenfassungen".into(),
+            keywords: vec!["Zusammenfassung".into(), "cheat sheet".into()],
+            builtin: None,
+        });
+        let existing = vec!["Projekt".into(), "Vorlesung".into(), "Bilder".into()];
+        let pick = |stem: &str| pick_subfolder(stem, &list, &existing, || None);
+        assert_eq!(pick("Zusammenfassung VL3").as_deref(), Some("Zusammenfassungen"), "own words first");
+        assert_eq!(pick("stats cheat sheet").as_deref(), Some("Zusammenfassungen"));
+        assert_eq!(pick("VL03_Rekursion").as_deref(), Some("Vorlesung"));
+        assert_eq!(pick("Musterlösung Serie 7").as_deref(), Some("Lösungen"));
+        assert_eq!(pick("Projekt_Anleitung").as_deref(), Some("Projekt"), "a folder the user made");
+        assert_eq!(pick("Organisatorisches"), None);
+        let from_text = pick_subfolder("scan_0042", &list, &existing, || Some("Übungsblatt 3".into()));
+        assert_eq!(from_text.as_deref(), Some("Übungen"));
+        // A kind whose folder was removed from the list: no subfolder.
+        let without: Vec<_> = list.iter().filter(|f| f.builtin != Some(Lecture)).cloned().collect();
+        assert_eq!(pick_subfolder("VL03", &without, &[], || None), None);
+    }
+
+    #[test]
+    fn only_real_subfolders_count_as_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        for dir in ["Projekt", ".git", "Ältere Versionen", "Archiv", "Blatt3"] {
+            std::fs::create_dir(tmp.path().join(dir)).unwrap();
+        }
+        std::fs::write(tmp.path().join("Blatt3.zip"), "zip").unwrap();
+        std::fs::write(tmp.path().join("notes.pdf"), "x").unwrap();
+        assert_eq!(existing_subfolders(tmp.path(), "Ältere Versionen"), ["Projekt"]);
     }
 
     #[test]

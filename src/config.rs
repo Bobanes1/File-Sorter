@@ -5,6 +5,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::categories::Category;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::cloud::CloudSettings;
@@ -33,7 +34,8 @@ pub fn expand_user(path: &str) -> PathBuf {
         return home();
     }
     if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
-        return home().join(rest);
+        // Part by part, so "~/Studium/Prog" gets the system's separators.
+        return rest.split(['/', '\\']).filter(|p| !p.is_empty()).fold(home(), |path, part| path.join(part));
     }
     PathBuf::from(path)
 }
@@ -243,10 +245,13 @@ pub struct Features {
     pub learn: bool,
     /// Use the web page a file was downloaded from (Moodle course, …) to find its module.
     pub origin: bool,
-    /// Sort into Vorlesung / Übungen / Lösungen / Prüfungen inside the module.
+    /// Sort into subfolders inside the module (Vorlesung, Übungen, …).
     pub subfolders: bool,
-    /// Names of those subfolders (lecture, exercises, solutions, exams).
-    pub subfolder_names: [String; 4],
+    /// The subfolders every module has, and the words that send a file into each.
+    pub subfolder_list: Vec<Subfolder>,
+    /// 0.9/0.10 saved only the names of the four built-in subfolders here.
+    #[serde(skip_serializing, rename = "subfolder_names")]
+    pub old_subfolder_names: Option<[String; 4]>,
     /// Unpack zip files into the module.
     pub unzip: bool,
     /// Put the older version of a file into "Ältere Versionen" when a new one comes.
@@ -270,7 +275,8 @@ impl Default for Features {
             learn: true,
             origin: true,
             subfolders: false,
-            subfolder_names: ["Vorlesung", "Übungen", "Lösungen", "Prüfungen"].map(String::from),
+            subfolder_list: Subfolder::defaults(),
+            old_subfolder_names: None,
             unzip: false,
             versions: false,
             versions_folder: "Ältere Versionen".to_string(),
@@ -280,6 +286,33 @@ impl Default for Features {
             update_check: true,
             update_install: UpdateMode::Ask,
         }
+    }
+}
+
+/// One subfolder in every module.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Subfolder {
+    pub name: String,
+    /// Words that send a file here when its name (or the start of the text) contains them.
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    /// One of the kinds File Sorter knows by itself (lecture slides, exercises, solutions,
+    /// exams), which come with their own words in German and English.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<Category>,
+}
+
+impl Subfolder {
+    pub fn defaults() -> Vec<Subfolder> {
+        [
+            ("Vorlesung", Category::Lecture),
+            ("Übungen", Category::Exercise),
+            ("Lösungen", Category::Solution),
+            ("Prüfungen", Category::Exam),
+        ]
+        .into_iter()
+        .map(|(name, kind)| Subfolder { name: name.to_string(), keywords: Vec::new(), builtin: Some(kind) })
+        .collect()
     }
 }
 
@@ -349,6 +382,16 @@ impl Config {
     pub fn from_json(text: &str) -> serde_json::Result<Config> {
         // Notepad and PowerShell may add a byte-order mark when editing by hand.
         let mut config: Config = serde_json::from_str(text.trim_start_matches('\u{feff}'))?;
+        // Names of the built-in subfolders from 0.9/0.10.
+        if let Some(names) = config.features.old_subfolder_names.take()
+            && config.features.subfolder_list == Subfolder::defaults()
+        {
+            for (folder, name) in config.features.subfolder_list.iter_mut().zip(names) {
+                if !name.trim().is_empty() {
+                    folder.name = name;
+                }
+            }
+        }
         config.clean();
         Ok(config)
     }
@@ -568,6 +611,14 @@ mod tests {
         assert_eq!(old.sort_existing_on_start, OnStart::Off);
         assert_eq!(old.features, Features::default());
         assert_eq!(old.existing_scope(), ExistingScope::LastHours(7 * 24));
+        // 0.9/0.10 had only the four names; they carry over, words can be added now.
+        let named =
+            Config::from_json(r#"{"features": {"subfolders": true, "subfolder_names": ["VL", "Ü", "L", "P"]}}"#)
+                .unwrap();
+        let names: Vec<_> = named.features.subfolder_list.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["VL", "Ü", "L", "P"]);
+        assert!(!serde_json::to_string(&named).unwrap().contains("subfolder_names"));
+        assert_eq!(read("{}").features.subfolder_list, Subfolder::defaults());
         let partial = read(r#"{"features": {"unzip": true}}"#).features;
         assert!(partial.unzip && partial.learn && !partial.subfolders);
     }

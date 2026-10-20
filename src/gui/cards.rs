@@ -48,6 +48,18 @@ pub(crate) enum Note {
         folder: String,
     },
     ScanFailed,
+    /// Something done with folders (subfolders created, …).
+    Folders {
+        title: String,
+        details: String,
+    },
+    /// Files moved into subfolders; `moved` is (from, to), for «Undo».
+    Resorted {
+        title: String,
+        details: String,
+        moved: Vec<(PathBuf, PathBuf)>,
+        undone: bool,
+    },
     /// Keywords learned from a file the user assigned by hand (`undone` once taken back).
     Learned {
         module: String,
@@ -196,6 +208,14 @@ pub(crate) fn note_title(lang: Lang, note: &Note) -> String {
         Note::NoFilesToScan { module, .. } => lang.no_files_to_scan(module),
         Note::ScanFailed => lang.scan_failed().into(),
         Note::Learned { module, words, undone } => lang.learned(module, words.len(), *undone),
+        Note::Folders { title, .. } => title.clone(),
+        Note::Resorted { title, undone, .. } => {
+            if *undone {
+                lang.resort_undone().to_string()
+            } else {
+                title.clone()
+            }
+        }
         Note::ConfigUnreadable { path, error } => lang.config_unreadable(path, error),
         Note::Cloud { title, .. } => title.clone(),
     }
@@ -281,6 +301,13 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
                     make(icon::FOLDER_OPEN, warn, title, Some(lang.folder_empty(folder)), None)
                 }
                 Note::ScanFailed | Note::ConfigUnreadable { .. } => make(icon::X, bad, title, None, None),
+                Note::Folders { details, .. } => {
+                    make(icon::FOLDERS, blue, title, (!details.is_empty()).then(|| details.clone()), None)
+                }
+                Note::Resorted { details, undone, .. } => {
+                    let colors = if *undone { neutral } else { blue };
+                    make(icon::ARROWS_DOWN_UP, colors, title, (!details.is_empty()).then(|| details.clone()), None)
+                }
                 Note::Learned { words, undone, .. } => {
                     let words = words.iter().map(|w| format!("«{w}»")).collect::<Vec<_>>().join(" · ");
                     make(icon::BRAIN, if *undone { neutral } else { blue }, title, Some(words), None)
@@ -376,7 +403,12 @@ pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64,
                             vec2(ui.available_width(), 20.0),
                             Layout::right_to_left(Align::Center),
                             |ui| {
-                                let learned = matches!(card.kind, CardKind::Note(Note::Learned { undone: false, .. }));
+                                let learned = matches!(
+                                    card.kind,
+                                    CardKind::Note(
+                                        Note::Learned { undone: false, .. } | Note::Resorted { undone: false, .. }
+                                    )
+                                );
                                 if (card.undoable().is_some() || learned)
                                     && fx::button(ui, ButtonStyle::Text, icon::ARROW_U_UP_LEFT, lang.undo()).clicked()
                                 {

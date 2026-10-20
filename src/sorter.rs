@@ -614,23 +614,29 @@ fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration, ta
 /// The folder for `path` inside its module: a subfolder for lectures, exercises, … if
 /// that is switched on and the name (or the start of the text) tells the kind.
 fn destination_folder(config: &Config, course_folder: &Path, path: &Path, text: Option<String>) -> PathBuf {
+    match subfolder_for(config, course_folder, path, text) {
+        Some(name) => course_folder.join(name),
+        None => course_folder.to_path_buf(),
+    }
+}
+
+/// The subfolder of `course_folder` that `path` belongs in, if subfolders are on and one fits.
+pub(crate) fn subfolder_for(
+    config: &Config,
+    course_folder: &Path,
+    path: &Path,
+    text: Option<String>,
+) -> Option<String> {
     let features = &config.features;
     if !features.subfolders {
-        return course_folder.to_path_buf();
+        return None;
     }
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let category = categories::classify(&stem, None).or_else(|| {
-        if !config.read_file_contents || suffix(path) == ".zip" {
-            return None;
-        }
-        let text = text.unwrap_or_else(|| extract_text(path));
-        categories::classify(&stem, Some(&text))
-    });
-    let name = category.map(|c| categories::safe_folder_name(&features.subfolder_names[c as usize]));
-    match name {
-        Some(name) if !name.is_empty() => course_folder.join(name),
-        _ => course_folder.to_path_buf(),
-    }
+    let existing = categories::existing_subfolders(course_folder, &features.versions_folder);
+    let read_text =
+        || (config.read_file_contents && suffix(path) != ".zip").then(|| text.unwrap_or_else(|| extract_text(path)));
+    let name = categories::pick_subfolder(&stem, &features.subfolder_list, &existing, read_text)?;
+    Some(categories::safe_folder_name(&name)).filter(|n| !n.is_empty())
 }
 
 /// Move or copy `path` into the module `m` points to.

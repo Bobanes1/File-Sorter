@@ -168,7 +168,7 @@ impl App {
                                         self.update.dismissed = Some(release.version.clone());
                                     }
                                     if fx::button(ui, ButtonStyle::Text, "", lang.whats_new()).clicked() {
-                                        crate::desktop::open(std::path::Path::new(&release.page));
+                                        crate::desktop::open_url(&release.page);
                                     }
                                     if cfg!(windows)
                                         && release.download.is_some()

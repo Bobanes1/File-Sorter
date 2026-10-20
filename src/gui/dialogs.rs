@@ -38,6 +38,8 @@ impl App {
             return;
         }
         let subjects = self.subjects();
+        let subfolders_on = self.config.features.subfolders;
+        let mut create_subfolders = None;
         let mut close = false;
         let mut ok = false;
         let title =
@@ -74,6 +76,7 @@ impl App {
                 ok = true;
             }
             let valid = !d.name.trim().is_empty();
+            let editing = d.editing;
             actions(ui, |ui| {
                 if ui.add_enabled_ui(valid, |ui| fx::button(ui, ButtonStyle::Filled, "", lang.ok())).inner.clicked() {
                     ok = true;
@@ -81,10 +84,20 @@ impl App {
                 if fx::button(ui, ButtonStyle::Text, "", lang.cancel()).clicked() {
                     close = true;
                 }
+                if let Some(i) = editing.filter(|_| subfolders_on) {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        if fx::button(ui, ButtonStyle::Text, icon::FOLDER_PLUS, lang.create_subfolders()).clicked() {
+                            create_subfolders = Some(i);
+                        }
+                    });
+                }
             });
         });
         if modal.should_close() {
             close = true;
+        }
+        if let Some(i) = create_subfolders {
+            self.create_subfolders_for(i);
         }
         if ok && !self.dialog.as_ref().unwrap().name.trim().is_empty() {
             self.apply_dialog();

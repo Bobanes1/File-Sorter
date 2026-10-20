@@ -103,6 +103,26 @@ jobs:
           if (-not (Test-Path "$root\Downloads\two_days.pptx")) { throw "the two days old file was sorted with --hours 24" }
           Write-Host "only the recent files were sorted"
 
+      - name: Smoke-test sorting into subfolders
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "subfolders"
+          New-Item -ItemType Directory -Force "$root\Downloads", "$root\Studium\Informatik\Programmierung 1\Projekt" | Out-Null
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\prog1_VL3.pptx"
+          Copy-Item tests\fixtures\programming.pptx "$root\Downloads\prog1_Projekt_Anleitung.pptx"
+          @{
+            watch_folder = "$root\Downloads"
+            destination_root = "$root/Studium"
+            features = @{ subfolders = $true }
+            courses = @(@{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("prog1") })
+          } | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
+          $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--config", "`"$root\config.json`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
+          Get-Content "$root\file-sorter.log"
+          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\Vorlesung\prog1_VL3.pptx")) { throw "not in Vorlesung" }
+          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\Projekt\prog1_Projekt_Anleitung.pptx")) { throw "not in the Projekt folder" }
+          Write-Host "sorted into the subfolders"
+
       - name: Smoke-test looking for updates
         shell: pwsh
         run: |

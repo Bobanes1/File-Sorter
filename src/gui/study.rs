@@ -397,6 +397,10 @@ impl App {
 
     // ---------- this week ----------
 
+    pub(super) fn study_indexer(&self) -> Option<&Indexer> {
+        self.study.indexer.as_ref()
+    }
+
     pub(super) fn week_tab_visible(&self) -> bool {
         self.config.features.deadlines || self.config.features.weekly
     }

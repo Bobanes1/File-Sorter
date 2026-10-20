@@ -900,10 +900,104 @@ impl Lang {
             "Vorlesungsfolien, Übungen, Lösungen und Prüfungen im Modul in eigene Ordner legen.",
         )
     }
-    pub fn subfolder_names_hint(self) -> &'static str {
+    pub fn subfolder_list_hint(self) -> &'static str {
         self.pick(
-            "Folder names for: lectures · exercises · solutions · exams. Other files stay in the module folder.",
-            "Ordnernamen für: Vorlesung · Übungen · Lösungen · Prüfungen. Andere Dateien bleiben im Modulordner.",
+            "Every module gets these folders. A file goes into the one whose words are in its name (or at the start of the text). Folders you make inside a module yourself are used too when their name is in the file name.",
+            "Jedes Modul bekommt diese Ordner. Eine Datei kommt in den, dessen Wörter in ihrem Namen (oder am Anfang des Textes) stehen. Ordner, die du selbst in einem Modul anlegst, werden auch genutzt, wenn ihr Name im Dateinamen vorkommt.",
+        )
+    }
+    pub fn subfolder_name_hint(self) -> &'static str {
+        self.pick("Folder name", "Ordnername")
+    }
+    pub fn subfolder_words_hint(self) -> &'static str {
+        self.pick("Words, separated by commas", "Wörter, mit Komma getrennt")
+    }
+    pub fn subfolder_builtin_words(self, kind: crate::categories::Category) -> &'static str {
+        use crate::categories::Category;
+        match kind {
+            Category::Lecture => self.pick(
+                "knows VL, slides, script, chapter … – more words?",
+                "kennt VL, Folien, Skript, Kapitel … – weitere Wörter?",
+            ),
+            Category::Exercise => self.pick(
+                "knows exercise, sheet, assignment … – more words?",
+                "kennt Übung, Blatt, Serie, Aufgabe … – weitere Wörter?",
+            ),
+            Category::Solution => self.pick(
+                "knows solution, Lösung, Musterlösung … – more words?",
+                "kennt Lösung, Musterlösung, Solution … – weitere Wörter?",
+            ),
+            Category::Exam => self.pick(
+                "knows exam, Klausur, midterm … – more words?",
+                "kennt Klausur, Prüfung, Exam … – weitere Wörter?",
+            ),
+        }
+    }
+    pub fn add_subfolder(self) -> &'static str {
+        self.pick("Subfolder", "Unterordner")
+    }
+    pub fn create_in_all_modules(self) -> &'static str {
+        self.pick("Create in all modules", "In allen Modulen anlegen")
+    }
+    pub fn create_subfolders(self) -> &'static str {
+        self.pick("Create subfolders", "Unterordner anlegen")
+    }
+    pub fn resort_existing(self) -> &'static str {
+        self.pick("Sort existing files into subfolders", "Vorhandene Dateien einsortieren")
+    }
+    pub fn resort_existing_hint(self) -> &'static str {
+        self.pick(
+            "Move the files lying directly in the module folders into their subfolders (you see a preview first, and can undo it)",
+            "Die Dateien, die direkt in den Modulordnern liegen, in ihre Unterordner verschieben (zuerst mit Vorschau, rückgängig machbar)",
+        )
+    }
+    pub fn folders_created(self, count: usize) -> String {
+        match count {
+            0 => self.pick("All subfolders were already there", "Alle Unterordner waren schon da").into(),
+            1 => self.pick("1 folder created", "1 Ordner angelegt").into(),
+            n => self.fmt(format!("{n} folders created"), format!("{n} Ordner angelegt")),
+        }
+    }
+    pub fn nothing_to_resort(self) -> &'static str {
+        self.pick(
+            "No file in the module folders needs to go into a subfolder",
+            "Keine Datei in den Modulordnern gehört in einen Unterordner",
+        )
+    }
+    pub fn resort_explained(self, count: usize) -> String {
+        self.fmt(
+            format!("{count} files go into subfolders. Nothing is overwritten (a name that is taken gets «(1)»), files open in another program stay, and «Undo» puts everything back."),
+            format!("{count} Dateien kommen in Unterordner. Nichts wird überschrieben (ein besetzter Name bekommt «(1)»), geöffnete Dateien bleiben, und «Rückgängig» legt alles zurück."),
+        )
+    }
+    pub fn file_count(self, count: usize) -> String {
+        match count {
+            1 => self.pick("1 file", "1 Datei").into(),
+            n => self.fmt(format!("{n} files"), format!("{n} Dateien")),
+        }
+    }
+    pub fn resort_start(self) -> &'static str {
+        self.pick("Sort in", "Einsortieren")
+    }
+    pub fn resorted(self, count: usize) -> String {
+        match count {
+            1 => self.pick("1 file moved into its subfolder", "1 Datei in ihren Unterordner verschoben").into(),
+            n => self.fmt(format!("{n} files moved into subfolders"), format!("{n} Dateien in Unterordner verschoben")),
+        }
+    }
+    pub fn resort_undone(self) -> &'static str {
+        self.pick("Files put back into the module folders", "Dateien in die Modulordner zurückgelegt")
+    }
+    pub fn resort_open(self, count: usize) -> String {
+        self.fmt(
+            format!("{count} open in another program – they stay where they are"),
+            format!("{count} in einem anderen Programm geöffnet – sie bleiben, wo sie sind"),
+        )
+    }
+    pub fn resort_not_back(self, count: usize) -> String {
+        self.fmt(
+            format!("{count} files could not be put back"),
+            format!("{count} Dateien konnten nicht zurückgelegt werden"),
         )
     }
     pub fn subfolder_defaults(self) -> [&'static str; 4] {

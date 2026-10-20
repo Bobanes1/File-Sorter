@@ -13,6 +13,7 @@ mod features;
 mod overview;
 mod settings;
 mod study;
+mod subfolders;
 mod update;
 mod wizard;
 
@@ -189,6 +190,8 @@ pub(crate) struct App {
     update: update::UpdateState,
     /// The setup steps (first start, or from the settings).
     wizard: Option<wizard::Wizard>,
+    /// Moving files already in the modules into subfolders.
+    resort: subfolders::ResortState,
 }
 
 fn known_types() -> impl Iterator<Item = &'static str> {
@@ -264,6 +267,7 @@ impl App {
             archive: archive::ArchiveState::default(),
             update: update::UpdateState::default(),
             wizard: first_start.then(wizard::Wizard::new),
+            resort: Default::default(),
         };
         app.saved_config = app.config.clone();
         app.load_history();
@@ -436,15 +440,24 @@ impl App {
 
     /// «Undo» on an entry: put a file back, or take back keywords learned from one.
     fn undo_entry(&mut self, key: u64) {
-        let learned = self.cards.iter_mut().find(|c| c.key == key).and_then(|card| match &mut card.kind {
+        enum Taken {
+            Learned(String, Vec<String>),
+            Resorted(Vec<(PathBuf, PathBuf)>),
+        }
+        let taken = self.cards.iter_mut().find(|c| c.key == key).and_then(|card| match &mut card.kind {
             CardKind::Note(Note::Learned { module, words, undone: undone @ false }) => {
                 *undone = true;
-                Some((module.clone(), words.clone()))
+                Some(Taken::Learned(module.clone(), words.clone()))
+            }
+            CardKind::Note(Note::Resorted { moved, undone: undone @ false, .. }) => {
+                *undone = true;
+                Some(Taken::Resorted(moved.clone()))
             }
             _ => None,
         });
-        match learned {
-            Some((module, words)) => self.forget_keywords(&module, &words),
+        match taken {
+            Some(Taken::Learned(module, words)) => self.forget_keywords(&module, &words),
+            Some(Taken::Resorted(moved)) => self.undo_resort(moved),
             None => self.start_undo(key),
         }
     }
@@ -1003,6 +1016,7 @@ impl eframe::App for App {
         self.study_logic();
         self.archive_logic();
         self.update_logic();
+        self.resort_logic();
         while let Ok(event) = self.events_rx.try_recv() {
             self.handle_event(event);
         }
@@ -1085,6 +1099,7 @@ impl eframe::App for App {
         self.dialogs_ui(&ctx);
         self.archive_dialog_ui(&ctx);
         self.wizard_ui(&ctx);
+        self.resort_dialog_ui(&ctx);
         self.cloud_dialog_ui(&ctx);
         if let Some(bar) = &mut self.snackbar {
             match cards::snackbar_ui(&ctx, self.lang, bar, now) {

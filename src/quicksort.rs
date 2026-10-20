@@ -363,6 +363,8 @@ struct ResultsWindow {
     /// Finished undos and assignments, with the entry's key.
     undo_tx: Sender<(u64, Finished)>,
     undo_rx: Receiver<(u64, Finished)>,
+    /// Moved to the bottom right (where the system didn't say where that is up front).
+    placed: bool,
 }
 
 impl ResultsWindow {
@@ -379,6 +381,7 @@ impl ResultsWindow {
             keep_open: false,
             undo_tx,
             undo_rx,
+            placed: crate::winwin::work_area().is_some(),
         }
     }
 
@@ -413,6 +416,15 @@ impl eframe::App for ResultsWindow {
         let now = ctx.input(|i| i.time);
         let lang = self.lang;
         let p = fx::pal(ui);
+        // Linux: the screen's size is known once the window is open (X11 places it there;
+        // Wayland decides by itself).
+        if !self.placed
+            && let Some(screen) = ctx.input(|i| i.viewport().monitor_size)
+        {
+            self.placed = true;
+            let at = egui::pos2(screen.x - POPUP_SIZE[0] - 24.0, screen.y - POPUP_SIZE[1] - 72.0);
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
+        }
         while let Ok(batch) = self.rx.try_recv() {
             for result in batch {
                 if result.sorted() {

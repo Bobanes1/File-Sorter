@@ -1890,10 +1890,17 @@ impl Lang {
         self.pick("Show «Sort with File Sorter»", "«Mit File Sorter sortieren» anzeigen")
     }
     pub fn context_menu_hint(self) -> &'static str {
-        self.pick(
-            "Right-click files or a folder to sort them right away. On Windows 11 it's under «Show more options».",
-            "Rechtsklick auf Dateien oder einen Ordner sortiert sie sofort. Unter Windows 11 unter «Weitere Optionen anzeigen».",
-        )
+        if cfg!(windows) {
+            self.pick(
+                "Right-click files or a folder to sort them right away. On Windows 11 it's under «Show more options».",
+                "Rechtsklick auf Dateien oder einen Ordner sortiert sie sofort. Unter Windows 11 unter «Weitere Optionen anzeigen».",
+            )
+        } else {
+            self.pick(
+                "Right-click files or a folder to sort them right away: in Files (Nautilus) and Caja under «Scripts», in Nemo, Dolphin and Thunar directly, everywhere else under «Open with».",
+                "Rechtsklick auf Dateien oder einen Ordner sortiert sie sofort: in Dateien (Nautilus) und Caja unter «Skripte», in Nemo, Dolphin und Thunar direkt, sonst überall unter «Öffnen mit».",
+            )
+        }
     }
     pub fn results_window(self) -> &'static str {
         self.pick("Show the results window", "Ergebnisfenster anzeigen")

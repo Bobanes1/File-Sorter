@@ -226,7 +226,7 @@ impl App {
                 fx::card(ui, |ui| self.archive_settings_ui(ui));
                 ui.add_space(16.0);
 
-                if cfg!(windows) {
+                if crate::desktop::menu_supported() {
                     section_title(ui, lang.right_click());
                     fx::card(ui, |ui| {
                         setting_row(

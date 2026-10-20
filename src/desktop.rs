@@ -88,30 +88,46 @@ mod imp {
     }
 }
 
-/// Add (or refresh) the right-click entry for the running exe. Windows only.
+/// Add (or refresh) the right-click entry for the running exe: Explorer's on Windows, the
+/// file managers' on Linux (see `linux_menu`).
 pub fn register_menu(label: &str) -> io::Result<()> {
     #[cfg(windows)]
     {
         let exe = std::env::current_exe()?;
         imp::register(CLASSES, &exe, label)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let places = crate::linux_menu::Places::of_this_user().ok_or_else(|| io::Error::other("no home folder"))?;
+        crate::linux_menu::register(&places, label)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = label;
         Ok(())
     }
 }
 
-/// Remove the right-click entry. Windows only.
+/// Remove the right-click entry.
 pub fn unregister_menu() -> io::Result<()> {
     #[cfg(windows)]
     {
         imp::unregister(CLASSES)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let places = crate::linux_menu::Places::of_this_user().ok_or_else(|| io::Error::other("no home folder"))?;
+        crate::linux_menu::unregister(&places)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Ok(())
     }
+}
+
+/// Where a right-click entry can be added.
+pub fn menu_supported() -> bool {
+    cfg!(any(windows, target_os = "linux"))
 }
 
 /// Keep the menu entry in line with the setting (and with where the exe lives now).

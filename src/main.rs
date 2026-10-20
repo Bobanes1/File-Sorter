@@ -23,6 +23,8 @@ mod index;
 mod keywords;
 mod lean;
 mod ledger;
+#[cfg(target_os = "linux")]
+mod linux_menu;
 mod logger;
 mod matcher;
 mod notes;

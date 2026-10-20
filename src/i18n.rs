@@ -960,8 +960,8 @@ impl Lang {
     }
     pub fn laya_hint(self) -> &'static str {
         self.pick(
-            "Reads documents in over 100 languages: sorts what the keywords don't decide, and finds deadlines and exam dates in any sentence. A one-time download of about 2–3 GB (Python, PyTorch and the model, from their official sources); it runs only on this computer, and only while needed.",
-            "Liest Dokumente in über 100 Sprachen: ordnet zu, was die Stichwörter nicht entscheiden, und findet Abgabe- und Prüfungstermine in jedem Satz. Einmaliger Download von etwa 2–3 GB (Python, PyTorch und das Modell, aus ihren offiziellen Quellen); läuft nur auf diesem Computer und nur, wenn es gebraucht wird.",
+            "Reads documents in over 100 languages: sorts what the keywords don't decide, and finds deadlines and exam dates in any sentence. A one-time download of about 1.5–2 GB (Python, PyTorch and the model, from their official sources); it runs only on this computer, and only while needed.",
+            "Liest Dokumente in über 100 Sprachen: ordnet zu, was die Stichwörter nicht entscheiden, und findet Abgabe- und Prüfungstermine in jedem Satz. Einmaliger Download von etwa 1.5–2 GB (Python, PyTorch und das Modell, aus ihren offiziellen Quellen); läuft nur auf diesem Computer und nur, wenn es gebraucht wird.",
         )
     }
     pub fn laya_download(self) -> &'static str {
@@ -1008,8 +1008,8 @@ impl Lang {
     }
     pub fn setup_laya_hint(self) -> &'static str {
         self.pick(
-            "Better sorting and finding dates in any language. About 2–3 GB, downloaded in the background.",
-            "Besseres Zuordnen und Termine in jeder Sprache. Etwa 2–3 GB, im Hintergrund heruntergeladen.",
+            "Better sorting and finding dates in any language. About 1.5–2 GB, downloaded in the background.",
+            "Besseres Zuordnen und Termine in jeder Sprache. Etwa 1.5–2 GB, im Hintergrund heruntergeladen.",
         )
     }
     pub fn not_now(self) -> &'static str {

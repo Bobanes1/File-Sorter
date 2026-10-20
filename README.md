@@ -152,9 +152,9 @@ Select a module in the overview and switch to **Subfolders** (or turn on *Settin
 - **sorts what the keywords don't decide**: it reads the document and picks the module (only among the ones in question, only when it is clearly sure);
 - **finds deadlines and exam dates in any sentence and language**, and leaves out dates that are clearly something else (version dates, past events).
 
-It is **optional**: the setup offers it (ticked), File Sorter asks once after the update, and *Settings → Features → AI model Laya* has **Download**, a switch and **Remove**. Setting it up downloads about 2–3 GB once, in the background, from the official sources: [uv](https://github.com/astral-sh/uv) (a fixed release, checked against its SHA-256), which installs a private Python, the `laya` package with the CPU version of PyTorch, and Laya's multilingual model – all in File Sorter's settings folder (`laya`), apart from anything else on the computer. If the download stops, *Download* goes on where it stopped.
+It is **optional**: the setup offers it (ticked), File Sorter asks once after the update, and *Settings → Features → AI model Laya* has **Download**, a switch and **Remove**. Setting it up downloads about 1.5–2 GB once, in the background, from the official sources: [uv](https://github.com/astral-sh/uv) (a fixed release, checked against its SHA-256), which installs a private Python, the `laya` package with the CPU version of PyTorch, and Laya's multilingual model – all in File Sorter's settings folder (`laya`), apart from anything else on the computer. If the download stops, *Download* goes on where it stopped.
 
-It runs only on this computer: while File Sorter needs it, a small helper keeps the model loaded (about 1–1.5 GB of memory) and ends after 15 minutes without questions, while *Save resources in the background* is on and the window is away, and with File Sorter. The right-click window doesn't wait for it.
+It runs only on this computer: while File Sorter needs it, a small helper keeps the model loaded and ends after 15 minutes without questions, while *Save resources in the background* is on and the window is away, and with File Sorter. The right-click window doesn't wait for it.
 
 ## Updates
 

@@ -75,11 +75,36 @@ impl App {
         }
     }
 
+    /// The two folders on one line: Downloads → study folder, each by its name (the whole
+    /// path on hover), opened with a click and changed with the pencil.
     fn folders_ui(&mut self, ui: &mut egui::Ui) {
         let p = fx::pal(ui);
         let lang = self.lang;
-        ui.horizontal(|ui| {
-            ui.label(fx::title(lang.folders(), 16.0).color(p.on_surface));
+        let mut picked_watch = None;
+        let mut picked_study = None;
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), 38.0), Layout::left_to_right(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let (pill, change) =
+                folder_pill(ui, lang, icon::DOWNLOAD_SIMPLE, lang.field_watch(), &self.config.watch_folder);
+            self.watch_field_rect = Some(pill);
+            if change {
+                picked_watch = App::pick_folder(&self.config.watch_folder);
+            }
+            ui.label(RichText::new(icon::ARROW_RIGHT).size(16.0).color(p.outline));
+            let (_, change) =
+                folder_pill(ui, lang, icon::GRADUATION_CAP, lang.field_study(), &self.config.destination_root);
+            if change {
+                picked_study = App::pick_folder(&self.config.destination_root);
+            }
+            // Where the study folder is connected to (opens the settings).
+            if let Some(chip) = self.cloud_chip() {
+                let glyph = if self.cloud.moving() { icon::CLOUD_ARROW_UP } else { icon::CLOUD_CHECK };
+                let text = RichText::new(format!("{glyph}  {chip}")).small().color(p.primary);
+                let link = ui.add(egui::Label::new(text).sense(Sense::click()));
+                if link.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    self.switch_tab(super::Tab::Settings);
+                }
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let import = fx::button(ui, ButtonStyle::Text, icon::FOLDERS, lang.import_modules());
                 if import.on_hover_text(lang.layout_hint()).clicked() {
@@ -87,54 +112,10 @@ impl App {
                 }
             });
         });
-
-        /// Label, field and a "Change" button on one line. Returns the field and the folder picked, if any.
-        fn folder_row(ui: &mut egui::Ui, label: &str, change: &str, value: &mut String) -> (Rect, Option<String>) {
-            const LABEL_WIDTH: f32 = 236.0;
-            let p = fx::pal(ui);
-            ui.horizontal(|ui| {
-                ui.allocate_ui_with_layout(vec2(LABEL_WIDTH, 36.0), Layout::left_to_right(Align::Center), |ui| {
-                    ui.set_min_width(LABEL_WIDTH);
-                    ui.label(RichText::new(label).color(p.on_surface_variant));
-                });
-                let button_width = fx::text_size(ui, change, fx::medium_font(14.0)).x + 40.0 + 28.0;
-                let width = ui.available_width() - button_width - ui.spacing().item_spacing.x;
-                let field = ui
-                    .add(
-                        egui::TextEdit::singleline(value)
-                            .desired_width(width)
-                            .margin(Margin::symmetric(12, 8))
-                            .font(egui::TextStyle::Body),
-                    )
-                    .rect;
-                let picked = fx::button(ui, ButtonStyle::Tonal, icon::FOLDER_OPEN, change)
-                    .clicked()
-                    .then(|| App::pick_folder(value))
-                    .flatten();
-                (field, picked)
-            })
-            .inner
-        }
-
-        let (field, picked) = folder_row(ui, lang.field_watch(), lang.change(), &mut self.config.watch_folder);
-        self.watch_field_rect = Some(field);
-        if let Some(folder) = picked {
+        if let Some(folder) = picked_watch {
             self.config.watch_folder = folder;
         }
-        let (study, picked) = folder_row(ui, lang.field_study(), lang.change(), &mut self.config.destination_root);
-        // Where the study folder is connected to (opens the settings).
-        if let Some(chip) = self.cloud_chip() {
-            let glyph = if self.cloud.moving() { icon::CLOUD_ARROW_UP } else { icon::CLOUD_CHECK };
-            let text = RichText::new(format!("{glyph}  {chip}")).small().color(p.primary);
-            let rect =
-                Rect::from_min_size(egui::pos2(study.left() + 12.0, study.bottom() + 2.0), vec2(study.width(), 16.0));
-            let builder = egui::UiBuilder::new().max_rect(rect).layout(Layout::left_to_right(Align::Center));
-            let link = ui.scope_builder(builder, |ui| ui.add(egui::Label::new(text).sense(Sense::click()))).inner;
-            if link.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                self.switch_tab(super::Tab::Settings);
-            }
-        }
-        if let Some(folder) = picked {
+        if let Some(folder) = picked_study {
             self.config.destination_root = folder;
             if self.config.courses.is_empty() {
                 self.import_modules(true);
@@ -145,39 +126,98 @@ impl App {
     fn modules_ui(&mut self, ui: &mut egui::Ui) {
         let p = fx::pal(ui);
         let lang = self.lang;
-        ui.label(fx::title(lang.modules(), 16.0).color(p.on_surface));
+        ui.horizontal(|ui| {
+            ui.label(fx::title(lang.modules(), 16.0).color(p.on_surface));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if fx::button(ui, ButtonStyle::Text, icon::TREE_STRUCTURE, lang.feature_subfolders())
+                    .on_hover_text(lang.subfolder_list_title())
+                    .clicked()
+                {
+                    self.subfolder_action(super::subfolders::SubfolderAction::OpenList);
+                }
+            });
+        });
         ui.add_space(4.0);
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
-                ui.set_width(330.0);
+                ui.set_width(300.0);
                 egui::ScrollArea::vertical()
                     .id_salt("modules")
-                    .max_height(230.0)
+                    .max_height(250.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| self.module_rows(ui));
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if fx::button(ui, ButtonStyle::Tonal, icon::PLUS, lang.add()).clicked() {
-                        let subject = self.subjects().into_iter().next().unwrap_or_default();
-                        self.dialog =
-                            Some(CourseDialog { editing: None, subject, name: String::new(), focused: false });
-                    }
-                    let has_selection = self.selected.is_some();
-                    ui.add_enabled_ui(has_selection, |ui| {
-                        if fx::button(ui, ButtonStyle::Text, icon::PENCIL_SIMPLE, lang.edit()).clicked()
-                            && let Some(i) = self.selected
-                        {
-                            self.open_edit(i);
-                        }
-                        if fx::button(ui, ButtonStyle::Text, icon::TRASH, lang.delete()).clicked() {
-                            self.confirm_delete = self.selected;
-                        }
-                    });
-                });
+                if fx::button(ui, ButtonStyle::Tonal, icon::PLUS, lang.add()).clicked() {
+                    let subject = self.subjects().into_iter().next().unwrap_or_default();
+                    self.dialog = Some(CourseDialog { editing: None, subject, name: String::new(), focused: false });
+                }
             });
             ui.add_space(12.0);
-            ui.vertical(|ui| self.keywords_ui(ui));
+            // The selected module: what it is, its keywords or its subfolders.
+            let detail = egui::Frame::new()
+                .fill(p.container_high)
+                .corner_radius(CornerRadius::same(14))
+                .inner_margin(Margin::same(14));
+            let width = ui.available_width() - 28.0;
+            detail.show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    ui.set_min_height(268.0);
+                    match self.selected {
+                        Some(i) if i < self.config.courses.len() => self.module_detail_ui(ui, i),
+                        _ => {
+                            ui.add_space(70.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(RichText::new(icon::HAND_POINTING).size(30.0).color(p.outline));
+                                ui.label(RichText::new(lang.select_module()).color(p.on_surface_variant));
+                            });
+                        }
+                    }
+                });
+            });
         });
+    }
+
+    fn module_detail_ui(&mut self, ui: &mut egui::Ui, i: usize) {
+        let p = fx::pal(ui);
+        let lang = self.lang;
+        let course = self.config.courses[i].clone();
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(fx::title(&course.name, 17.0).color(p.on_surface));
+                if !course.subject.is_empty() {
+                    ui.label(RichText::new(&course.subject).small().color(p.on_surface_variant));
+                }
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                if fx::icon_button(ui, icon::TRASH).on_hover_text(lang.delete()).clicked() {
+                    self.confirm_delete = Some(i);
+                }
+                if fx::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(lang.edit()).clicked() {
+                    self.open_edit(i);
+                }
+                let folder = self.config.course_folder(&course);
+                if fx::icon_button(ui, icon::FOLDER_OPEN)
+                    .on_hover_text(format!("{}\n{}", lang.open_module_folder(), folder.display()))
+                    .clicked()
+                {
+                    crate::desktop::open(&folder);
+                }
+            });
+        });
+        ui.add_space(8.0);
+        let panes = [
+            (ModulePane::Keywords, lang.keywords_title().to_string()),
+            (ModulePane::Subfolders, lang.feature_subfolders().to_string()),
+        ];
+        fx::segmented(ui, "module-pane", &mut self.module_pane, &panes);
+        ui.add_space(8.0);
+        match self.module_pane {
+            ModulePane::Keywords => self.keywords_ui(ui, i),
+            ModulePane::Subfolders => self.module_subfolders_ui(ui, i),
+        }
     }
 
     /// The module list: avatar per study program, name, study program, counter and glow.
@@ -277,13 +317,11 @@ impl App {
         }
     }
 
-    fn keywords_ui(&mut self, ui: &mut egui::Ui) {
+    fn keywords_ui(&mut self, ui: &mut egui::Ui, i: usize) {
         let p = fx::pal(ui);
         let lang = self.lang;
-        let enabled = self.selected.is_some();
-        ui.label(RichText::new(lang.keywords_title()).family(fx::medium()).color(p.on_surface));
         ui.label(RichText::new(lang.keywords_hint()).small().color(p.on_surface_variant));
-        const VISIBLE_ROWS: usize = 7;
+        const VISIBLE_ROWS: usize = 6;
         // Fixed height: long keyword lists scroll instead of pushing everything below out of view.
         let row_height = ui.text_style_height(&egui::TextStyle::Body);
         let changed = egui::ScrollArea::vertical()
@@ -291,16 +329,15 @@ impl App {
             .max_height(row_height * VISIBLE_ROWS as f32 + 20.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                let hint = if enabled { "prog1\nINF-101\nProf. Müller" } else { lang.select_module() };
                 let edit = egui::TextEdit::multiline(&mut self.keywords_text)
                     .desired_rows(VISIBLE_ROWS)
                     .desired_width(f32::INFINITY)
                     .margin(Margin::symmetric(12, 8))
-                    .hint_text(hint);
-                ui.add_enabled(enabled, edit).changed()
+                    .hint_text("prog1\nINF-101\nProf. Müller");
+                ui.add(edit).changed()
             })
             .inner;
-        if changed && let Some(i) = self.selected {
+        if changed {
             self.config.courses[i].keywords = self
                 .keywords_text
                 .lines()
@@ -317,20 +354,19 @@ impl App {
                 ui.label(RichText::new(lang.scanning()).color(p.primary));
             });
         } else {
-            let response = ui
-                .add_enabled_ui(enabled, |ui| {
-                    fx::button(ui, ButtonStyle::Tonal, icon::SPARKLE, lang.suggest_keywords())
-                })
-                .inner;
+            let response = fx::button(ui, ButtonStyle::Tonal, icon::SPARKLE, lang.suggest_keywords());
             if response.on_hover_text(lang.suggest_tooltip()).clicked() {
                 self.start_keyword_scan();
             }
         }
-        if let Some(i) = self.selected {
-            let folder = self.config.course_folder(&self.config.courses[i]);
-            let text = format!("{} {}", lang.files_go_to(), folder.display());
-            ui.add(egui::Label::new(RichText::new(text).small().color(p.on_surface_variant)).wrap());
-        }
+        // Where the files go, from the study folder on ("Studium › Informatik › Programmieren").
+        let folder = self.config.course_folder(&self.config.courses[i]);
+        let root = crate::config::expand_user(self.config.destination_root.trim());
+        let start = root.parent().unwrap_or(&root);
+        let relative = folder.strip_prefix(start).unwrap_or(&folder);
+        let place = relative.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join(" › ");
+        let text = format!("{} {place}", lang.files_go_to());
+        ui.add(egui::Label::new(RichText::new(text).small().color(p.on_surface_variant)).wrap());
     }
 
     // ---------- controls and activity ----------
@@ -509,6 +545,55 @@ impl App {
             self.glows.insert(flight.target, now);
         }
     }
+}
+
+/// What the selected module shows.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub(super) enum ModulePane {
+    #[default]
+    Keywords,
+    Subfolders,
+}
+
+/// A folder as a rounded pill with its name (the whole path on hover; a click opens it) and a
+/// pencil to choose another one. Returns the pill's place and whether the pencil was clicked.
+fn folder_pill(ui: &mut egui::Ui, lang: crate::i18n::Lang, glyph: &str, what: &str, path: &str) -> (Rect, bool) {
+    let p = fx::pal(ui);
+    let full = crate::config::expand_user(path.trim());
+    let name = full.file_name().map(|n| n.to_string_lossy().into_owned()).filter(|_| !path.trim().is_empty());
+    let shown = name.clone().unwrap_or_else(|| lang.not_chosen().to_string());
+    let frame = egui::Frame::new().fill(p.container_high).corner_radius(CornerRadius::same(18)).inner_margin(Margin {
+        left: 12,
+        right: 4,
+        top: 4,
+        bottom: 4,
+    });
+    let mut change = false;
+    let response = frame
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(RichText::new(glyph).size(16.0).color(p.primary));
+            let short = match shown.chars().count() {
+                n if n > 28 => shown.chars().take(27).collect::<String>() + "…",
+                _ => shown.clone(),
+            };
+            let label =
+                egui::Label::new(RichText::new(short).family(fx::medium()).color(p.on_surface)).sense(Sense::click());
+            let link = ui.add(label);
+            let hover = format!("{what}\n{}", if name.is_some() { full.display().to_string() } else { shown.clone() });
+            if link.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hover).clicked() {
+                if full.is_dir() {
+                    crate::desktop::open(&full);
+                } else {
+                    change = true;
+                }
+            }
+            if fx::icon_button(ui, icon::PENCIL_SIMPLE).on_hover_text(lang.change()).clicked() {
+                change = true;
+            }
+        })
+        .response;
+    (response.rect, change)
 }
 
 /// One choice in the "sort existing files" menu: a check for the remembered one, title and hint.

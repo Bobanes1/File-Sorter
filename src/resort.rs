@@ -52,9 +52,18 @@ pub struct Planned {
 }
 
 /// The files lying directly in a module folder that belong in one of its subfolders.
+#[cfg(test)]
 pub fn plan(config: &Config) -> Vec<Planned> {
+    plan_for(config, None)
+}
+
+/// The same for one module (`Some(index)`) or all of them.
+pub fn plan_for(config: &Config, module: Option<usize>) -> Vec<Planned> {
     let mut planned = Vec::new();
-    for course in &config.courses {
+    for (i, course) in config.courses.iter().enumerate() {
+        if module.is_some_and(|m| m != i) {
+            continue;
+        }
         let folder = config.course_folder(course);
         let Ok(entries) = fs::read_dir(&folder) else { continue };
         let mut files: Vec<PathBuf> = entries
@@ -180,6 +189,8 @@ mod tests {
             ]
         );
         assert_eq!(summary(&planned).len(), 3);
+        assert_eq!(plan_for(&config, Some(0)), planned, "all in the first module");
+        assert!(plan_for(&config, Some(1)).is_empty());
         let report = apply(&planned, &config);
         assert_eq!(report.moved.len(), 3);
         assert_eq!(fs::read_to_string(module.join("Übungen").join("Blatt 2.pdf")).unwrap(), "mine");

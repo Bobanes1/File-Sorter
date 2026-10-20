@@ -26,6 +26,7 @@ mod origin;
 mod quicksort;
 mod resort;
 mod sorter;
+mod subfolder_learn;
 mod tray;
 mod undo;
 mod unzip;

@@ -192,6 +192,8 @@ pub(crate) struct App {
     wizard: Option<wizard::Wizard>,
     /// Moving files already in the modules into subfolders.
     resort: subfolders::ResortState,
+    /// What the selected module shows: its keywords or its subfolders.
+    module_pane: overview::ModulePane,
 }
 
 fn known_types() -> impl Iterator<Item = &'static str> {
@@ -268,6 +270,7 @@ impl App {
             update: update::UpdateState::default(),
             wizard: first_start.then(wizard::Wizard::new),
             resort: Default::default(),
+            module_pane: Default::default(),
         };
         app.saved_config = app.config.clone();
         app.load_history();
@@ -443,6 +446,7 @@ impl App {
         enum Taken {
             Learned(String, Vec<String>),
             Resorted(Vec<(PathBuf, PathBuf)>),
+            FolderWords(Vec<crate::config::LearnedFolder>),
         }
         let taken = self.cards.iter_mut().find(|c| c.key == key).and_then(|card| match &mut card.kind {
             CardKind::Note(Note::Learned { module, words, undone: undone @ false }) => {
@@ -453,11 +457,19 @@ impl App {
                 *undone = true;
                 Some(Taken::Resorted(moved.clone()))
             }
+            CardKind::Note(Note::FolderWords { before, undone: undone @ false, .. }) => {
+                *undone = true;
+                Some(Taken::FolderWords(before.clone()))
+            }
             _ => None,
         });
         match taken {
             Some(Taken::Learned(module, words)) => self.forget_keywords(&module, &words),
             Some(Taken::Resorted(moved)) => self.undo_resort(moved),
+            Some(Taken::FolderWords(before)) => {
+                self.config.features.subfolder_learned = before;
+                self.save_quietly();
+            }
             None => self.start_undo(key),
         }
     }
@@ -1100,6 +1112,7 @@ impl eframe::App for App {
         self.archive_dialog_ui(&ctx);
         self.wizard_ui(&ctx);
         self.resort_dialog_ui(&ctx);
+        self.subfolder_list_dialog(&ctx);
         self.cloud_dialog_ui(&ctx);
         if let Some(bar) = &mut self.snackbar {
             match cards::snackbar_ui(&ctx, self.lang, bar, now) {

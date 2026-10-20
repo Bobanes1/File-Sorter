@@ -13,10 +13,8 @@ impl App {
     /// Returns true if a setting changed.
     pub(super) fn features_ui(&mut self, ui: &mut egui::Ui) -> bool {
         let lang = self.lang;
-        let busy = self.resort_busy();
         let f = &mut self.config.features;
         let mut changed = false;
-        let mut action = super::subfolders::SubfolderAction::None;
         changed |= switch(ui, icon::BRAIN, lang.feature_learn(), lang.feature_learn_hint(), &mut f.learn);
         divider(ui);
         changed |= switch(ui, icon::GLOBE, lang.feature_origin(), lang.feature_origin_hint(), &mut f.origin);
@@ -24,7 +22,19 @@ impl App {
         let (title, hint) = (lang.feature_subfolders(), lang.feature_subfolders_hint());
         changed |= switch(ui, icon::TREE_STRUCTURE, title, hint, &mut f.subfolders);
         if f.subfolders {
-            action = super::subfolders::subfolder_list_ui(ui, lang, &mut f.subfolder_list, busy, &mut changed);
+            // The list, creating and sorting in are in the overview, at the module.
+            ui.horizontal(|ui| {
+                ui.add_space(40.0);
+                ui.label(RichText::new(lang.subfolders_managed_in_overview()).small().color(fx::pal(ui).primary));
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(40.0);
+                ui.vertical(|ui| {
+                    let (title, hint) = (lang.feature_auto_learn(), lang.feature_auto_learn_hint());
+                    changed |= switch(ui, icon::BRAIN, title, hint, &mut f.subfolder_auto_learn);
+                });
+            });
         }
         divider(ui);
         changed |= switch(ui, icon::FILE_ZIP, lang.feature_unzip(), lang.feature_unzip_hint(), &mut f.unzip);
@@ -63,7 +73,6 @@ impl App {
             });
             ui.add_space(8.0);
         }
-        self.subfolder_action(action);
         changed
     }
 }

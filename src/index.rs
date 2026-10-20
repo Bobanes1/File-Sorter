@@ -101,6 +101,17 @@ impl Index {
         self.docs.len()
     }
 
+    /// The first `words` words of every document with text, by path.
+    pub fn starts(&self, words: usize) -> std::collections::HashMap<PathBuf, String> {
+        self.docs
+            .iter()
+            .filter_map(|d| {
+                let first = d.pages.first()?;
+                Some((d.path.clone(), first.split_whitespace().take(words).collect::<Vec<_>>().join(" ")))
+            })
+            .collect()
+    }
+
     /// Documents with text changed after `since` (nanoseconds since 1970) that `skip` doesn't
     /// rule out, at most `limit`: path, size, modification time (seconds) and the text of
     /// their first `pages` pages.

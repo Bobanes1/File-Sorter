@@ -635,7 +635,8 @@ pub(crate) fn subfolder_for(
     let existing = categories::existing_subfolders(course_folder, &features.versions_folder);
     let read_text =
         || (config.read_file_contents && suffix(path) != ".zip").then(|| text.unwrap_or_else(|| extract_text(path)));
-    let name = categories::pick_subfolder(&stem, &features.subfolder_list, &existing, read_text)?;
+    let name =
+        categories::pick_subfolder(&stem, &features.subfolder_list, &features.subfolder_learned, &existing, read_text)?;
     Some(categories::safe_folder_name(&name)).filter(|n| !n.is_empty())
 }
 

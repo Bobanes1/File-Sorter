@@ -67,9 +67,6 @@ impl Lang {
     }
 
     // ---------- folders ----------
-    pub fn folders(self) -> &'static str {
-        self.pick("Folders", "Ordner")
-    }
     pub fn layout_hint(self) -> &'static str {
         self.pick("Layout: Study folder \\ Study program \\ Module", "Aufbau: Studienordner \\ Studienfach \\ Modul")
     }
@@ -1065,6 +1062,108 @@ impl Lang {
             format!("{count} files could not be put back"),
             format!("{count} Dateien konnten nicht zurückgelegt werden"),
         )
+    }
+    pub fn subfolders_off(self) -> &'static str {
+        self.pick(
+            "Subfolders are off: files go straight into the module folder.",
+            "Unterordner sind aus: Dateien kommen direkt in den Modulordner.",
+        )
+    }
+    pub fn use_subfolders(self) -> &'static str {
+        self.pick("Use subfolders", "Unterordner verwenden")
+    }
+    pub fn subfolder_not_created(self) -> &'static str {
+        self.pick("not created yet", "noch nicht angelegt")
+    }
+    pub fn loose_files(self, count: usize) -> String {
+        match count {
+            0 => self
+                .pick("No file lies directly in the module folder.", "Keine Datei liegt direkt im Modulordner.")
+                .into(),
+            1 => self.pick("1 file lies directly in the module folder.", "1 Datei liegt direkt im Modulordner.").into(),
+            n => self.fmt(
+                format!("{n} files lie directly in the module folder."),
+                format!("{n} Dateien liegen direkt im Modulordner."),
+            ),
+        }
+    }
+    pub fn create_here(self) -> &'static str {
+        self.pick("Create", "Anlegen")
+    }
+    pub fn create_here_hint(self) -> &'static str {
+        self.pick(
+            "Create the subfolders of the list in this module",
+            "Die Unterordner der Liste in diesem Modul anlegen",
+        )
+    }
+    pub fn resort_here(self) -> &'static str {
+        self.pick("Sort in", "Einsortieren")
+    }
+    pub fn resort_here_hint(self) -> &'static str {
+        self.pick(
+            "Move the files lying directly in this module folder into their subfolders (preview first, can be undone)",
+            "Die Dateien, die direkt in diesem Modulordner liegen, in ihre Unterordner verschieben (zuerst Vorschau, rückgängig machbar)",
+        )
+    }
+    pub fn learn_folders(self) -> &'static str {
+        self.pick("Learn from files", "Aus Dateien lernen")
+    }
+    pub fn learn_folders_hint(self) -> &'static str {
+        self.pick(
+            "Look at the files already in the subfolders of all modules and learn which words in a name mean which subfolder",
+            "Die Dateien, die schon in den Unterordnern aller Module liegen, ansehen und lernen, welche Wörter im Namen zu welchem Unterordner gehören",
+        )
+    }
+    pub fn edit_list(self) -> &'static str {
+        self.pick("Edit list…", "Liste bearbeiten…")
+    }
+    pub fn learned_words(self) -> &'static str {
+        self.pick("Learned:", "Gelernt:")
+    }
+    pub fn remove_word_hint(self) -> &'static str {
+        self.pick("Remove – it isn't learned again", "Entfernen – wird nicht wieder gelernt")
+    }
+    pub fn folder_words_learned(self, words: usize, folders: usize) -> String {
+        match (words, folders) {
+            (0, _) => self.pick("No new subfolder words learned", "Keine neuen Wörter für Unterordner gelernt").into(),
+            (1, _) => self.pick("1 word learned for a subfolder", "1 Wort für einen Unterordner gelernt").into(),
+            (w, 1) => self
+                .fmt(format!("{w} words learned for a subfolder"), format!("{w} Wörter für einen Unterordner gelernt")),
+            (w, f) => self.fmt(
+                format!("{w} words learned for {f} subfolders"),
+                format!("{w} Wörter für {f} Unterordner gelernt"),
+            ),
+        }
+    }
+    pub fn folder_words_undone(self) -> &'static str {
+        self.pick("Learned subfolder words taken back", "Gelernte Unterordner-Wörter zurückgenommen")
+    }
+    pub fn subfolder_list_title(self) -> &'static str {
+        self.pick("Subfolders of all modules", "Unterordner aller Module")
+    }
+    pub fn feature_auto_learn(self) -> &'static str {
+        self.pick("Learn from existing files by itself", "Automatisch aus vorhandenen Dateien lernen")
+    }
+    pub fn feature_auto_learn_hint(self) -> &'static str {
+        self.pick(
+            "Every 30 minutes and after sorting in, learn from the files in the subfolders which words belong where. Otherwise only on «Learn from files».",
+            "Alle 30 Minuten und nach dem Einsortieren aus den Dateien in den Unterordnern lernen, welche Wörter wohin gehören. Sonst nur mit «Aus Dateien lernen».",
+        )
+    }
+    pub fn subfolders_managed_in_overview(self) -> &'static str {
+        self.pick(
+            "Create, sort in and edit the list: Overview › select a module › «Subfolders».",
+            "Anlegen, einsortieren und Liste bearbeiten: Übersicht › Modul wählen › «Unterordner».",
+        )
+    }
+    pub fn open_this_folder(self) -> &'static str {
+        self.pick("Open folder", "Ordner öffnen")
+    }
+    pub fn open_module_folder(self) -> &'static str {
+        self.pick("Open module folder", "Modulordner öffnen")
+    }
+    pub fn not_chosen(self) -> &'static str {
+        self.pick("not chosen", "nicht gewählt")
     }
     pub fn subfolder_defaults(self) -> [&'static str; 4] {
         match self {

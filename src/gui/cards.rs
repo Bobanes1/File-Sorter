@@ -60,6 +60,14 @@ pub(crate) enum Note {
         moved: Vec<(PathBuf, PathBuf)>,
         undone: bool,
     },
+    /// Subfolder words learned from the files in the subfolders; `before` is what was known
+    /// before, for «Undo».
+    FolderWords {
+        title: String,
+        details: String,
+        before: Vec<crate::config::LearnedFolder>,
+        undone: bool,
+    },
     /// Keywords learned from a file the user assigned by hand (`undone` once taken back).
     Learned {
         module: String,
@@ -209,6 +217,13 @@ pub(crate) fn note_title(lang: Lang, note: &Note) -> String {
         Note::ScanFailed => lang.scan_failed().into(),
         Note::Learned { module, words, undone } => lang.learned(module, words.len(), *undone),
         Note::Folders { title, .. } => title.clone(),
+        Note::FolderWords { title, undone, .. } => {
+            if *undone {
+                lang.folder_words_undone().to_string()
+            } else {
+                title.clone()
+            }
+        }
         Note::Resorted { title, undone, .. } => {
             if *undone {
                 lang.resort_undone().to_string()
@@ -303,6 +318,10 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
                 Note::ScanFailed | Note::ConfigUnreadable { .. } => make(icon::X, bad, title, None, None),
                 Note::Folders { details, .. } => {
                     make(icon::FOLDERS, blue, title, (!details.is_empty()).then(|| details.clone()), None)
+                }
+                Note::FolderWords { details, undone, .. } => {
+                    let colors = if *undone { neutral } else { blue };
+                    make(icon::BRAIN, colors, title, (!details.is_empty()).then(|| details.clone()), None)
                 }
                 Note::Resorted { details, undone, .. } => {
                     let colors = if *undone { neutral } else { blue };
@@ -406,7 +425,9 @@ pub(crate) fn activity_row(ui: &mut egui::Ui, lang: Lang, card: &Card, now: f64,
                                 let learned = matches!(
                                     card.kind,
                                     CardKind::Note(
-                                        Note::Learned { undone: false, .. } | Note::Resorted { undone: false, .. }
+                                        Note::Learned { undone: false, .. }
+                                            | Note::Resorted { undone: false, .. }
+                                            | Note::FolderWords { undone: false, .. }
                                     )
                                 );
                                 if (card.undoable().is_some() || learned)

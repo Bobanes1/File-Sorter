@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontData, FontFamily, FontId, Id, Pos2, Rect, RichText, Sense, Shadow, Stroke,
-    StrokeKind, TextStyle, Theme, Vec2, pos2, vec2,
+    StrokeKind, TextStyle, Theme, pos2, vec2,
 };
 use egui_phosphor::regular as icon;
 
@@ -609,11 +609,6 @@ pub fn pulse_dot(painter: &egui::Painter, center: Pos2, color: Color32, active: 
         painter.circle_stroke(center, 3.5 + phase * 7.0, Stroke::new(1.5, color.gamma_multiply(1.0 - phase)));
     }
     painter.circle_filled(center, 3.5, color);
-}
-
-/// Size of a text in the given font, for laying out painted things.
-pub fn text_size(ui: &egui::Ui, text: &str, font: FontId) -> Vec2 {
-    ui.painter().layout_no_wrap(text.to_owned(), font, Color32::WHITE).size()
 }
 
 #[cfg(test)]

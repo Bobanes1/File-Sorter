@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use crate::config::Subfolder;
+use crate::config::{LearnedFolder, Subfolder};
 use crate::matcher::normalise;
 
 /// The kinds of files that get their own subfolder, in the order of
@@ -100,13 +100,15 @@ pub fn existing_subfolders(module: &Path, versions_folder: &str) -> Vec<String> 
     names
 }
 
-/// The subfolder a file goes into: one whose own words are in the file name, else the kind
+/// The subfolder a file goes into: one whose own words are in the file name, else the one
+/// whose learned words are (learned from the files already in the subfolders), else the kind
 /// the name says (lecture, exercise, solution, exam), else a folder already in the module
 /// whose name is in the file name ("Projekt" for "Projekt_Anleitung.pdf"); and only if the
 /// name says nothing, the same on the start of the text (`text`, read only then).
 pub fn pick_subfolder(
     stem: &str,
     list: &[Subfolder],
+    learned: &[LearnedFolder],
     existing: &[String],
     text: impl FnOnce() -> Option<String>,
 ) -> Option<String> {
@@ -114,8 +116,14 @@ pub fn pick_subfolder(
     let by_words = |text: &str| {
         list.iter().find(|f| f.keywords.iter().any(|k| mentions(text, &normalise(k)))).map(|f| f.name.clone())
     };
+    // Learned words count for a folder of the list or one this module has.
+    let here = |folder: &str| {
+        list.iter().any(|f| f.name.eq_ignore_ascii_case(folder))
+            || existing.iter().any(|e| e.eq_ignore_ascii_case(folder))
+    };
+    let by_learned = |text: &str| crate::subfolder_learn::best_folder(text, learned, here);
     let by_kind = |category: Category| list.iter().find(|f| f.builtin == Some(category)).map(|f| f.name.clone());
-    if let Some(folder) = by_words(&name) {
+    if let Some(folder) = by_words(&name).or_else(|| by_learned(stem)) {
         return Some(folder);
     }
     if let Some(category) = of_words(name.split(' ')) {
@@ -127,7 +135,7 @@ pub fn pick_subfolder(
     }
     let text = text()?;
     let start = normalise(&text).split(' ').take(TITLE_WORDS).collect::<Vec<_>>().join(" ");
-    by_words(&start).or_else(|| of_words(start.split(' ')).and_then(by_kind))
+    by_words(&start).or_else(|| by_learned(&start)).or_else(|| of_words(start.split(' ')).and_then(by_kind))
 }
 
 /// A folder name the user typed, made safe: no path separators or characters Windows
@@ -189,18 +197,38 @@ mod tests {
             builtin: None,
         });
         let existing = vec!["Projekt".into(), "Vorlesung".into(), "Bilder".into()];
-        let pick = |stem: &str| pick_subfolder(stem, &list, &existing, || None);
+        let pick = |stem: &str| pick_subfolder(stem, &list, &[], &existing, || None);
         assert_eq!(pick("Zusammenfassung VL3").as_deref(), Some("Zusammenfassungen"), "own words first");
         assert_eq!(pick("stats cheat sheet").as_deref(), Some("Zusammenfassungen"));
         assert_eq!(pick("VL03_Rekursion").as_deref(), Some("Vorlesung"));
         assert_eq!(pick("Musterlösung Serie 7").as_deref(), Some("Lösungen"));
         assert_eq!(pick("Projekt_Anleitung").as_deref(), Some("Projekt"), "a folder the user made");
         assert_eq!(pick("Organisatorisches"), None);
-        let from_text = pick_subfolder("scan_0042", &list, &existing, || Some("Übungsblatt 3".into()));
+        let from_text = pick_subfolder("scan_0042", &list, &[], &existing, || Some("Übungsblatt 3".into()));
         assert_eq!(from_text.as_deref(), Some("Übungen"));
         // A kind whose folder was removed from the list: no subfolder.
         let without: Vec<_> = list.iter().filter(|f| f.builtin != Some(Lecture)).cloned().collect();
-        assert_eq!(pick_subfolder("VL03", &without, &[], || None), None);
+        assert_eq!(pick_subfolder("VL03", &without, &[], &[], || None), None);
+    }
+
+    #[test]
+    fn learned_words_come_after_own_words_and_before_the_kind() {
+        let mut list = Subfolder::defaults();
+        list[0].keywords = vec!["Zusammenfassung".into()];
+        let learned = vec![
+            LearnedFolder { name: "Vorlesung".into(), words: vec!["handout".into()], removed: vec![] },
+            // A learned word for «Übungen» that the name «Lösung» would send elsewhere.
+            LearnedFolder { name: "Übungen".into(), words: vec!["korrektur".into()], removed: vec![] },
+            LearnedFolder { name: "Projekt".into(), words: vec!["meilenstein".into()], removed: vec![] },
+        ];
+        let pick = |stem: &str, existing: &[String]| pick_subfolder(stem, &list, &learned, existing, || None);
+        assert_eq!(pick("Handout Woche 3", &[]).as_deref(), Some("Vorlesung"));
+        assert_eq!(pick("Lösung Korrektur", &[]).as_deref(), Some("Übungen"), "learned before the kind");
+        assert_eq!(pick("Zusammenfassung Korrektur", &[]).as_deref(), Some("Vorlesung"), "own words first");
+        assert_eq!(pick("Meilenstein 2", &[]), None, "no such folder here");
+        assert_eq!(pick("Meilenstein 2", &["Projekt".into()]).as_deref(), Some("Projekt"));
+        let from_text = pick_subfolder("scan_0042", &list, &learned, &[], || Some("Handout zur Woche 4".into()));
+        assert_eq!(from_text.as_deref(), Some("Vorlesung"));
     }
 
     #[test]

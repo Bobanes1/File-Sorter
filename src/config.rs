@@ -249,6 +249,10 @@ pub struct Features {
     pub subfolders: bool,
     /// The subfolders every module has, and the words that send a file into each.
     pub subfolder_list: Vec<Subfolder>,
+    /// Words learned from the files already in the subfolders, per subfolder.
+    pub subfolder_learned: Vec<LearnedFolder>,
+    /// Learn them by itself now and then (else only on «Learn»).
+    pub subfolder_auto_learn: bool,
     /// 0.9/0.10 saved only the names of the four built-in subfolders here.
     #[serde(skip_serializing, rename = "subfolder_names")]
     pub old_subfolder_names: Option<[String; 4]>,
@@ -276,6 +280,8 @@ impl Default for Features {
             origin: true,
             subfolders: false,
             subfolder_list: Subfolder::defaults(),
+            subfolder_learned: Vec::new(),
+            subfolder_auto_learn: false,
             old_subfolder_names: None,
             unzip: false,
             versions: false,
@@ -300,6 +306,18 @@ pub struct Subfolder {
     /// exams), which come with their own words in German and English.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builtin: Option<Category>,
+}
+
+/// Words that the files in a subfolder have in their names, learned from them ("vl" for
+/// «Vorlesung», "musterlosung" for «Lösungen»), and the ones the user took out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct LearnedFolder {
+    pub name: String,
+    pub words: Vec<String>,
+    /// Taken out by the user: not learned again.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
 }
 
 impl Subfolder {

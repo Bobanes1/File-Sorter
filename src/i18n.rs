@@ -463,6 +463,15 @@ impl Lang {
     }
 
     // ---------- background and tray ----------
+    pub fn lean_background(self) -> &'static str {
+        self.pick("Save resources in the background", "Im Hintergrund Ressourcen sparen")
+    }
+    pub fn lean_background_hint(self) -> &'static str {
+        self.pick(
+            "Less memory and computing while the window is closed or minimised; in return files are read a little less thoroughly (name and first page, no text recognition). With the window open, everything runs in full.",
+            "Weniger Arbeitsspeicher und Rechenzeit, solange das Fenster geschlossen oder minimiert ist; dafür werden Dateien etwas weniger gründlich erkannt (Name und erste Seite, keine Texterkennung). Mit offenem Fenster läuft alles wieder voll.",
+        )
+    }
     pub fn background(self) -> &'static str {
         self.pick("Keep running in the background", "Im Hintergrund weiterlaufen")
     }

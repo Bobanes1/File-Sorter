@@ -237,7 +237,9 @@ fn pdf_text(data: &[u8]) -> Option<String> {
         }
     }
     let pages = doc.get_pages().len() as u32;
-    for page in 1..=pages.min(MAX_PAGES) {
+    // Saving resources in the background: the first page only.
+    let max = if crate::lean::active() { 1 } else { MAX_PAGES };
+    for page in 1..=pages.min(max) {
         let mut output = pdf_extract::PlainTextOutput::new(&mut text);
         // A page that fails to parse shouldn't hide the text of the others.
         let _ = pdf_extract::output_doc_page(&doc, &mut output, page);

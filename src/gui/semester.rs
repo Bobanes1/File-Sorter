@@ -133,7 +133,7 @@ impl App {
                 Err(e) => self.semester.error = Some(e),
             }
         }
-        if self.semester.fetching.is_none() {
+        if self.semester.fetching.is_none() && !self.lean {
             let now = chrono::Utc::now().timestamp();
             if let Some(url) =
                 self.semester.table.subscriptions.iter().find(|s| now - s.read > REFRESH_LINK).map(|s| s.url.clone())

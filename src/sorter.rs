@@ -740,8 +740,12 @@ fn place_file(
         let versions_name = if versions_name.is_empty() { "Ältere Versionen".to_string() } else { versions_name };
         // By name, checked against the title pages (and by title page when the name says nothing).
         let start = |p: &Path| crate::extract::first_pages(p, 1);
-        let own = text.clone().unwrap_or_else(|| start(path));
-        let others = crate::versions::versions_by_content(&folder, path, &own, start);
+        let own = if crate::lean::active() { String::new() } else { text.clone().unwrap_or_else(|| start(path)) };
+        let others = if crate::lean::active() {
+            crate::versions::other_versions(&folder, path)
+        } else {
+            crate::versions::versions_by_content(&folder, path, &own, start)
+        };
         if others.iter().any(|other| crate::versions::is_older(path, other)) {
             // The file that arrives is the older one ("v1" while "v2" is there).
             folder = folder.join(&versions_name);

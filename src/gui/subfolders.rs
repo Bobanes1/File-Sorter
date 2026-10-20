@@ -269,7 +269,7 @@ impl App {
         }
         let features = &self.config.features;
         let now = self.now();
-        if features.subfolders && features.subfolder_auto_learn && !self.config.courses.is_empty() {
+        if features.subfolders && features.subfolder_auto_learn && !self.config.courses.is_empty() && !self.lean {
             // The first time a little after the start, when the index is loaded.
             let next = *self.resort.next_learn.get_or_insert(now + 20.0);
             if now >= next && self.resort.learning.is_none() {

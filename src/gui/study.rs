@@ -267,6 +267,12 @@ impl App {
         }
     }
 
+    /// Drop search results (saving resources in the background).
+    pub(super) fn study_forget_results(&mut self) {
+        self.study.hits = Vec::new();
+        self.study.searched.clear();
+    }
+
     /// Remind of deadlines that come close (checked every minute, also in the background).
     fn remind(&mut self) {
         let features = &self.config.features;
@@ -304,6 +310,7 @@ impl App {
         use std::sync::atomic::Ordering;
         let now = self.now();
         if !self.config.features.classifier
+            || self.lean
             || self.config.courses.is_empty()
             || now < self.study.model_at
             || self.study.training.load(Ordering::Relaxed)

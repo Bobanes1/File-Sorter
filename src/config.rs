@@ -162,6 +162,8 @@ impl Course {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// While the window is closed or minimised: use less memory and reading.
+    pub lean_background: bool,
     pub watch_folder: String,
     pub destination_root: String,
     pub extensions: Vec<String>,
@@ -448,6 +450,7 @@ pub enum ThemeChoice {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            lean_background: false,
             watch_folder: home().join("Downloads").to_string_lossy().into_owned(),
             destination_root: home().join("University").to_string_lossy().into_owned(),
             extensions: DEFAULT_EXTENSIONS.iter().map(|e| e.to_string()).collect(),

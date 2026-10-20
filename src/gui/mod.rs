@@ -188,6 +188,10 @@ pub(crate) struct App {
     study: study::Study,
     semester: semester::Semester,
     notes: crate::notes::Notes,
+    /// Saving resources right now (window hidden, and asked for in the settings).
+    lean: bool,
+    /// Whether the search index was told to pause (it may start after saving began).
+    index_paused: bool,
     /// Finishing a semester (archive).
     archive: archive::ArchiveState,
     /// A new version of File Sorter.
@@ -278,6 +282,8 @@ impl App {
             study,
             semester,
             notes,
+            lean: false,
+            index_paused: false,
             archive: archive::ArchiveState::default(),
             update: update::UpdateState::default(),
             wizard: first_start.then(wizard::Wizard::new),
@@ -860,6 +866,35 @@ impl App {
     }
 
     /// Keep watching in the notification area when the window is closed.
+    /// While the window is hidden and the user asked for it: drop what can be read again
+    /// later and read files less thoroughly; everything back when the window shows.
+    fn lean_logic(&mut self, ctx: &egui::Context) {
+        let minimised = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        let hidden = self.in_tray() || minimised || std::env::var_os("FILE_SORTER_TEST_HIDDEN").is_some();
+        let want = self.config.lean_background && hidden;
+        // The search index pauses (and frees its texts) with it, also one started later.
+        if let Some(indexer) = self.study_indexer()
+            && self.index_paused != want
+        {
+            indexer.pause(want);
+            self.index_paused = want;
+        }
+        if want == self.lean {
+            return;
+        }
+        self.lean = want;
+        crate::lean::set(want);
+        if want {
+            crate::ocr::forget_cache();
+            crate::classifier::forget();
+            self.study_forget_results();
+            crate::lean::trim_memory();
+            log::info!("Saving resources in the background");
+        } else {
+            log::info!("Back to full strength");
+        }
+    }
+
     fn background_active(&self) -> bool {
         self.config.background && tray::supported()
     }
@@ -1037,6 +1072,7 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.window_logic(ctx, frame);
+        self.lean_logic(ctx);
         self.cloud_logic();
         self.study_logic();
         self.archive_logic();

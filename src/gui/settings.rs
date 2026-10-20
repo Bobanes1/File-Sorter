@@ -201,6 +201,10 @@ impl App {
                             changed |= fx::toggle(ui, &mut self.config.background).changed();
                         });
                     }
+                    divider(ui);
+                    setting_row(ui, icon::LEAF, lang.lean_background(), lang.lean_background_hint(), |ui| {
+                        changed |= fx::toggle(ui, &mut self.config.lean_background).changed();
+                    });
                 });
                 ui.add_space(16.0);
 

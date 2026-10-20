@@ -45,6 +45,12 @@ struct Stored {
     docs: Vec<Doc>,
 }
 
+/// The same for saving, without a copy.
+#[derive(Serialize)]
+struct StoredRef<'a> {
+    docs: &'a [Doc],
+}
+
 /// The index in memory, with the text folded for searching (lower-case, no accents; one
 /// character for each character of the original, so positions carry over).
 #[derive(Debug, Default)]
@@ -98,8 +104,11 @@ impl Index {
     }
 
     pub fn load(file: &Path) -> Index {
-        let stored: Stored =
-            fs::read_to_string(file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        // Read as a stream: the file can be large, and needn't be in memory twice.
+        let stored: Stored = fs::File::open(file)
+            .ok()
+            .and_then(|f| serde_json::from_reader(std::io::BufReader::new(f)).ok())
+            .unwrap_or_default();
         Index::from_docs(stored.docs)
     }
 
@@ -602,11 +611,20 @@ fn run(
             Job::Pause => {
                 *paused = true;
                 watcher = None;
+                // The texts are on disk: free them (also what a pass just finished put back).
+                *index.write().unwrap() = Index::default();
+                crate::lean::trim_memory();
             }
             Job::Resume => {
                 *paused = false;
                 if let Some((folder, _)) = root.as_ref() {
                     watcher = watch(folder, tx.clone());
+                }
+                // Dropped from memory while paused: back from disk (only changes are read then).
+                if index.read().is_ok_and(|i| i.docs.is_empty())
+                    && let Some(file) = &file
+                {
+                    *index.write().unwrap() = Index::load(file);
                 }
             }
             Job::Refresh | Job::Changed => {}
@@ -654,15 +672,18 @@ fn run(
             }
         });
         let changed = docs != old;
-        *index.write().unwrap() = Index::from_docs(docs.clone());
-        busy.store(false, std::sync::atomic::Ordering::Relaxed);
-        repaint();
+        drop(old);
         if changed
             && let Some(file) = &file
-            && let Err(e) = crate::cloud::save_json(&Stored { docs }, file)
+            && let Err(e) = crate::cloud::save_json(&StoredRef { docs: &docs }, file)
         {
             log::info!("Could not save the search index: {e}");
         }
+        *index.write().unwrap() = Index::from_docs(docs);
+        busy.store(false, std::sync::atomic::Ordering::Relaxed);
+        repaint();
+        // The copies made for this pass are gone: give their memory back.
+        crate::lean::trim_memory();
     }
 }
 
@@ -768,6 +789,37 @@ mod tests {
         let (text, marks) = snippet(raw, &fold(raw), &["obst".to_string(), "apfel".to_string()]);
         assert_eq!(text, "Äpfel und Birnen sind Obst");
         assert_eq!(marks.iter().map(|m| &text[m.clone()]).collect::<Vec<_>>(), ["Äpfel", "Obst"]);
+    }
+
+    /// Paused (saving resources): the texts leave memory; resumed: back from disk, and what
+    /// changed meanwhile is read.
+    #[test]
+    fn pausing_frees_the_texts_and_resuming_brings_them_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, root) = (tmp.path().join("state"), tmp.path().join("Studium"));
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(root.join("Prog")).unwrap();
+        make_pdf(&root.join("Prog/vl1.pdf"), "Rekursion und Iteration");
+        let indexer = Indexer::start(Some(state.clone()), || {});
+        let wait_for = |what: &dyn Fn(&Index) -> bool| {
+            for _ in 0..200 {
+                if !indexer.busy() && what(&indexer.index.read().unwrap()) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            false
+        };
+        indexer.set_root(root.clone(), vec![".pdf".into()]);
+        assert!(wait_for(&|i| i.len() == 1 && state.join(INDEX_FILE).exists()));
+        indexer.pause(true);
+        assert!(wait_for(&|i| i.len() == 0), "dropped while paused");
+        make_pdf(&root.join("Prog/vl2.pdf"), "Rekursion");
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(indexer.index.read().unwrap().len(), 0, "nothing read while paused");
+        indexer.pause(false);
+        assert!(wait_for(&|i| i.len() == 2), "back from disk, and the new file read");
+        assert_eq!(indexer.index.read().unwrap().search("rekursion", 5).len(), 2);
     }
 
     #[test]

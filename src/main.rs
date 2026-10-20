@@ -20,6 +20,7 @@ mod history;
 mod i18n;
 mod index;
 mod keywords;
+mod lean;
 mod ledger;
 mod logger;
 mod matcher;

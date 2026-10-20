@@ -36,7 +36,7 @@ pub fn enabled() -> bool {
     if !TEST_ON.with(|on| on.get()) {
         return false;
     }
-    ENABLED.load(Ordering::Relaxed) && available() != Engine::Missing
+    ENABLED.load(Ordering::Relaxed) && !crate::lean::active() && available() != Engine::Missing
 }
 
 #[cfg(test)]

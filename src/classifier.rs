@@ -150,9 +150,20 @@ impl Model {
     }
 }
 
+static CACHE: Mutex<Option<(PathBuf, SystemTime, Model)>> = Mutex::new(None);
+
+/// Drop the model from memory (saving resources in the background).
+pub fn forget() {
+    if let Ok(mut cache) = CACHE.lock() {
+        *cache = None;
+    }
+}
+
 /// The model saved in the state folder, read again when the file changed.
 pub fn load(config: &Config) -> Option<Model> {
-    static CACHE: Mutex<Option<(PathBuf, SystemTime, Model)>> = Mutex::new(None);
+    if crate::lean::active() {
+        return None;
+    }
     let file = config.state_file(MODEL_FILE)?;
     let modified = fs::metadata(&file).and_then(|m| m.modified()).ok()?;
     let mut cache = CACHE.lock().ok()?;

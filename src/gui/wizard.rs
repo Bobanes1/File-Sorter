@@ -7,7 +7,7 @@ use egui_phosphor::regular as icon;
 use super::App;
 use super::dialogs::{actions, dialog_frame};
 use crate::cloud::CloudMode;
-use crate::config::{expand_user, scan_study_folder};
+use crate::config::expand_user;
 use crate::fx::{self, ButtonStyle};
 
 pub(super) struct Wizard {
@@ -15,11 +15,13 @@ pub(super) struct Wizard {
     start_watching: bool,
     /// Modules found when the study folder was read (none yet: `None`).
     found: Option<usize>,
+    /// The layout was guessed from the study folder (once, when the modules step opens).
+    layout_guessed: bool,
 }
 
 impl Wizard {
     pub(super) fn new() -> Wizard {
-        Wizard { step: 0, start_watching: true, found: None }
+        Wizard { step: 0, start_watching: true, found: None, layout_guessed: false }
     }
 }
 
@@ -72,9 +74,24 @@ impl App {
                         egui::Label::new(RichText::new(lang.setup_modules_text()).color(p.on_surface_variant)).wrap(),
                     );
                     ui.add_space(12.0);
+                    if let Some(w) = &mut self.wizard
+                        && !w.layout_guessed
+                    {
+                        w.layout_guessed = true;
+                        if self.config.courses.is_empty() {
+                            let root = expand_user(self.config.destination_root.trim());
+                            self.config.flat_modules =
+                                crate::config::looks_flat(&root, &self.config.features.subfolder_list);
+                        }
+                    }
+                    ui.label(RichText::new(lang.layout_label()).small().color(p.on_surface_variant));
+                    let layouts =
+                        [(false, lang.layout_programs().to_string()), (true, lang.layout_flat().to_string())];
+                    changed |= fx::segmented(ui, "wizard-layout", &mut self.config.flat_modules, &layouts);
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if fx::button(ui, ButtonStyle::Tonal, icon::FOLDERS, lang.import_modules()).clicked() {
-                            let found = scan_study_folder(&self.study_root());
+                            let found = self.scan_modules();
                             let total = found.len();
                             crate::config::merge_courses(&mut self.config.courses, found);
                             self.sort_courses();

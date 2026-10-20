@@ -10,6 +10,7 @@ mod cards;
 mod cloud;
 mod dialogs;
 mod features;
+mod flatten;
 mod overview;
 mod semester;
 mod settings;
@@ -195,6 +196,7 @@ pub(crate) struct App {
     index_paused: bool,
     /// Finishing a semester (archive).
     archive: archive::ArchiveState,
+    flatten: flatten::FlattenState,
     /// A new version of File Sorter.
     update: update::UpdateState,
     /// The setup steps (first start, or from the settings).
@@ -286,6 +288,7 @@ impl App {
             lean: false,
             index_paused: false,
             archive: archive::ArchiveState::default(),
+            flatten: flatten::FlattenState::default(),
             update: update::UpdateState::default(),
             wizard: first_start.then(wizard::Wizard::new),
             resort: Default::default(),
@@ -465,6 +468,7 @@ impl App {
         enum Taken {
             Learned(String, Vec<String>),
             Resorted(Vec<(PathBuf, PathBuf)>),
+            Flattened(Vec<crate::flatten::Done>),
             FolderWords(Vec<crate::config::LearnedFolder>),
         }
         let taken = self.cards.iter_mut().find(|c| c.key == key).and_then(|card| match &mut card.kind {
@@ -476,6 +480,10 @@ impl App {
                 *undone = true;
                 Some(Taken::Resorted(moved.clone()))
             }
+            CardKind::Note(Note::Flattened { done, undone: undone @ false, .. }) => {
+                *undone = true;
+                Some(Taken::Flattened(done.clone()))
+            }
             CardKind::Note(Note::FolderWords { before, undone: undone @ false, .. }) => {
                 *undone = true;
                 Some(Taken::FolderWords(before.clone()))
@@ -485,6 +493,7 @@ impl App {
         match taken {
             Some(Taken::Learned(module, words)) => self.forget_keywords(&module, &words),
             Some(Taken::Resorted(moved)) => self.undo_resort(moved),
+            Some(Taken::Flattened(done)) => self.undo_flatten(done),
             Some(Taken::FolderWords(before)) => {
                 self.config.features.subfolder_learned = before;
                 self.save_quietly();
@@ -649,6 +658,40 @@ impl App {
         expand_user(self.config.destination_root.trim())
     }
 
+    /// A module's label changed (moved out of its study program): its notes, lessons,
+    /// deadlines and learned download places follow it.
+    fn relabel_module(&mut self, old: &str, new: &str) {
+        if old == new {
+            return;
+        }
+        if let Some(text) = self.notes.by_module.remove(old) {
+            self.notes.by_module.insert(new.to_string(), text);
+            if let Some(file) = self.config.state_file(crate::notes::NOTES_FILE)
+                && let Err(e) = self.notes.save(&file)
+            {
+                log::info!("Could not save the notes: {e}");
+            }
+        }
+        let mut lessons = false;
+        for lesson in self.semester.table.lessons.iter_mut().filter(|l| l.module == old) {
+            lesson.module = new.to_string();
+            lessons = true;
+        }
+        if lessons {
+            self.save_timetable();
+        }
+        if self.study_relabel(old, new) {
+            self.save_deadlines();
+        }
+        crate::origin::relabel(&self.config, old, new);
+    }
+
+    /// The modules in the study folder, read as the chosen layout says.
+    fn scan_modules(&self) -> Vec<Course> {
+        let programs: Vec<String> = self.config.courses.iter().map(|c| c.subject.clone()).filter(|s| !s.is_empty()).collect();
+        scan_study_folder(&self.study_root(), self.config.flat_modules, &programs)
+    }
+
     fn subjects(&self) -> Vec<String> {
         let mut subjects: Vec<String> =
             self.config.courses.iter().map(|c| c.subject.clone()).filter(|s| !s.is_empty()).collect();
@@ -715,7 +758,7 @@ impl App {
             }
             return;
         }
-        let found = scan_study_folder(&root);
+        let found = self.scan_modules();
         if found.is_empty() {
             if !quiet {
                 self.error = Some(ErrorBox::NoModulesFound);
@@ -1078,6 +1121,7 @@ impl eframe::App for App {
         self.cloud_logic();
         self.study_logic();
         self.archive_logic();
+        self.flatten_logic();
         self.update_logic();
         self.resort_logic();
         self.semester_logic();
@@ -1178,6 +1222,7 @@ impl eframe::App for App {
         self.flights_ui(&ctx);
         self.dialogs_ui(&ctx);
         self.archive_dialog_ui(&ctx);
+        self.flatten_dialog_ui(&ctx);
         self.wizard_ui(&ctx);
         self.resort_dialog_ui(&ctx);
         self.subfolder_list_dialog(&ctx);

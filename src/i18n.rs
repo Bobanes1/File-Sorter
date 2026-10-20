@@ -1025,6 +1025,80 @@ impl Lang {
             n => self.fmt(format!("{n} modules archived"), format!("{n} Module archiviert")),
         }
     }
+    pub fn auto_results_window(self) -> &'static str {
+        self.pick("Results window for automatic sorting", "Ergebnisfenster beim automatischen Sortieren")
+    }
+    pub fn auto_results_window_hint(self) -> &'static str {
+        self.pick(
+            "When files are sorted while File Sorter is minimised, in the notification area or behind other windows: show them bottom right, with «Undo».",
+            "Wenn Dateien sortiert werden, während File Sorter minimiert, im Infobereich oder hinter anderen Fenstern ist: unten rechts anzeigen, mit «Rückgängig».",
+        )
+    }
+    pub fn flat_modules(self) -> &'static str {
+        self.pick("Modules directly in the study folder", "Module direkt im Studienordner")
+    }
+    pub fn flat_modules_hint(self) -> &'static str {
+        self.pick(
+            "Studies/Statistics instead of Studies/Computer Science/Statistics – no folder per study program (major, minor).",
+            "Studium/Statistik statt Studium/Informatik/Statistik – kein Ordner pro Studiengang (Haupt-, Nebenfach).",
+        )
+    }
+    pub fn layout_label(self) -> &'static str {
+        self.pick("How is your study folder organised?", "Wie ist dein Studienordner aufgebaut?")
+    }
+    pub fn layout_programs(self) -> &'static str {
+        self.pick("Program › Module", "Studiengang › Modul")
+    }
+    pub fn layout_flat(self) -> &'static str {
+        self.pick("Modules directly", "Module direkt")
+    }
+    pub fn flatten_title(self) -> &'static str {
+        self.pick("Move the module folders up?", "Modulordner nach oben verschieben?")
+    }
+    pub fn flatten_text(self, count: usize) -> String {
+        match count {
+            1 => self
+                .pick(
+                    "1 module is in a study program's folder. Move it directly into the study folder? Nothing is overwritten, and «Undo» puts it back.",
+                    "1 Modul liegt im Ordner eines Studiengangs. Direkt in den Studienordner verschieben? Es wird nichts überschrieben, und «Rückgängig» stellt es zurück.",
+                )
+                .into(),
+            n => self.fmt(
+                format!("{n} modules are in study programs' folders. Move them directly into the study folder? Nothing is overwritten, and «Undo» puts them back."),
+                format!("{n} Module liegen in Ordnern von Studiengängen. Direkt in den Studienordner verschieben? Es wird nichts überschrieben, und «Rückgängig» stellt sie zurück."),
+            ),
+        }
+    }
+    pub fn flatten_kept(self) -> &'static str {
+        self.pick("These stay where they are:", "Diese bleiben, wo sie sind:")
+    }
+    pub fn flatten_own_folder(self) -> &'static str {
+        self.pick("its folder was chosen by hand", "eigener Ordner gewählt")
+    }
+    pub fn flatten_taken(self, path: &str) -> String {
+        self.fmt(format!("{path} exists already"), format!("{path} gibt es schon"))
+    }
+    pub fn flatten_move(self, count: usize) -> String {
+        match count {
+            1 => self.pick("Move 1 module", "1 Modul verschieben").into(),
+            n => self.fmt(format!("Move {n} modules"), format!("{n} Module verschieben")),
+        }
+    }
+    pub fn flatten_skip(self) -> &'static str {
+        self.pick("Don't move", "Nicht verschieben")
+    }
+    pub fn flatten_done(self, count: usize) -> String {
+        match count {
+            1 => self.pick("1 module is now directly in the study folder", "1 Modul liegt jetzt direkt im Studienordner").into(),
+            n => self.fmt(
+                format!("{n} modules are now directly in the study folder"),
+                format!("{n} Module liegen jetzt direkt im Studienordner"),
+            ),
+        }
+    }
+    pub fn flatten_undone(self) -> &'static str {
+        self.pick("Modules put back into their study programs", "Module zurück in ihre Studiengänge verschoben")
+    }
     pub fn restore(self) -> &'static str {
         self.pick("Restore", "Wiederherstellen")
     }

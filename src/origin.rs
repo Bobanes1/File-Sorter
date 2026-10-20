@@ -199,6 +199,15 @@ impl Origins {
         }
     }
 
+    /// A module's label changed («Informatik › Statistik» → «Statistik»).
+    pub fn relabel(&mut self, old: &str, new: &str) {
+        for place in self.places.values_mut() {
+            if let Some(count) = place.modules.remove(old) {
+                *place.modules.entry(new.to_string()).or_default() += count;
+            }
+        }
+    }
+
     /// A file from `key` was taken out of `module` again (it was sorted there by mistake).
     pub fn forget(&mut self, key: &str, module: &str) {
         if let Some(place) = self.places.get_mut(key) {
@@ -213,6 +222,11 @@ pub fn lookup(config: &Config, source: &Source) -> Option<usize> {
     let origins = Origins::load(&file);
     let label = origins.module_for(&source.key)?;
     config.courses.iter().position(|c| c.label() == label)
+}
+
+/// A module's label changed: what was learned for it stays with it.
+pub fn relabel(config: &Config, old: &str, new: &str) {
+    update(config, |origins| origins.relabel(old, new));
 }
 
 /// Note that a file from `source` went into `module`.

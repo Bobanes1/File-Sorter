@@ -65,6 +65,13 @@ pub(crate) enum Note {
         moved: Vec<(PathBuf, PathBuf)>,
         undone: bool,
     },
+    /// Modules moved directly into the study folder; `done` is for «Undo».
+    Flattened {
+        title: String,
+        details: String,
+        done: Vec<crate::flatten::Done>,
+        undone: bool,
+    },
     /// Subfolder words learned from the files in the subfolders; `before` is what was known
     /// before, for «Undo».
     FolderWords {
@@ -241,6 +248,13 @@ pub(crate) fn note_title(lang: Lang, note: &Note) -> String {
                 title.clone()
             }
         }
+        Note::Flattened { title, undone, .. } => {
+            if *undone {
+                lang.flatten_undone().to_string()
+            } else {
+                title.clone()
+            }
+        }
         Note::ConfigUnreadable { path, error } => lang.config_unreadable(path, error),
         Note::Cloud { title, .. } => title.clone(),
     }
@@ -337,6 +351,10 @@ fn look(p: &Palette, lang: Lang, card: &Card) -> Look {
                 Note::Resorted { details, undone, .. } => {
                     let colors = if *undone { neutral } else { blue };
                     make(icon::ARROWS_DOWN_UP, colors, title, (!details.is_empty()).then(|| details.clone()), None)
+                }
+                Note::Flattened { details, undone, .. } => {
+                    let colors = if *undone { neutral } else { blue };
+                    make(icon::FOLDERS, colors, title, (!details.is_empty()).then(|| details.clone()), None)
                 }
                 Note::Learned { words, undone, .. } => {
                     let words = words.iter().map(|w| format!("«{w}»")).collect::<Vec<_>>().join(" · ");
@@ -446,6 +464,7 @@ pub(crate) fn activity_row(
                                     CardKind::Note(
                                         Note::Learned { undone: false, .. }
                                             | Note::Resorted { undone: false, .. }
+                                            | Note::Flattened { undone: false, .. }
                                             | Note::FolderWords { undone: false, .. }
                                     )
                                 );

@@ -148,7 +148,11 @@ impl App {
                     .show(ui, |ui| self.module_rows(ui));
                 ui.add_space(4.0);
                 if fx::button(ui, ButtonStyle::Tonal, icon::PLUS, lang.add()).clicked() {
-                    let subject = self.subjects().into_iter().next().unwrap_or_default();
+                    let subject = if self.config.flat_modules {
+                        String::new()
+                    } else {
+                        self.subjects().into_iter().next().unwrap_or_default()
+                    };
                     self.dialog = Some(CourseDialog { editing: None, subject, name: String::new(), focused: false });
                 }
             });

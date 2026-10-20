@@ -66,7 +66,7 @@ pub struct Moved {
     pub files: Vec<PathBuf>,
 }
 
-fn files_in(folder: &Path) -> Vec<PathBuf> {
+pub(crate) fn files_in(folder: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
@@ -127,7 +127,7 @@ pub fn restore(archived: &Archived) -> Result<Moved, String> {
     Ok(Moved { from, to, report, files })
 }
 
-fn move_folder(from: &Path, to: &Path) -> Result<Option<Report>, String> {
+pub(crate) fn move_folder(from: &Path, to: &Path) -> Result<Option<Report>, String> {
     if !from.is_dir() {
         return Ok(None);
     }
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(fs::read_to_string(expected.join("Übungen").join("Blatt1.pdf")).unwrap(), "notes");
         assert!(!folder.exists());
         // Scanning the study folder doesn't take the archive for a study program.
-        assert!(crate::config::scan_study_folder(&tmp.path().join("University")).is_empty());
+        assert!(crate::config::scan_study_folder(&tmp.path().join("University"), false, &[]).is_empty());
 
         // Meanwhile a new file with the same name appeared in the old place: both are kept.
         fs::create_dir_all(folder.join("Übungen")).unwrap();

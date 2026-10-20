@@ -387,7 +387,17 @@ impl App {
         }
     }
 
-    fn save_deadlines(&self) {
+    /// Deadlines of module `old` now belong to `new` (true if there were any).
+    pub(super) fn study_relabel(&mut self, old: &str, new: &str) -> bool {
+        let mut any = false;
+        for d in self.study.deadlines.items.iter_mut().filter(|d| d.module == old) {
+            d.module = new.to_string();
+            any = true;
+        }
+        any
+    }
+
+    pub(super) fn save_deadlines(&self) {
         if let Some(file) = self.config.state_file(DEADLINES_FILE)
             && let Err(e) = self.study.deadlines.save(&file)
         {

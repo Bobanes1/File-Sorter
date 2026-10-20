@@ -193,6 +193,12 @@ pub struct Config {
     pub autostart: bool,
     /// Show the small results window after sorting from the right-click menu.
     pub results_window: bool,
+    /// Show it also when files are sorted by themselves (watching, sorting existing files)
+    /// while the window isn't in front.
+    pub auto_results_window: bool,
+    /// Modules directly in the study folder (`Studium/Statistik`), without a folder per
+    /// study program (`Studium/Informatik/Statistik`).
+    pub flat_modules: bool,
     /// Keep watching in the notification area when the window is closed (Windows).
     pub background: bool,
     /// The study folder in OneDrive, Dropbox, Google Drive, … (moved there, or a copy).
@@ -466,6 +472,8 @@ impl Default for Config {
             watch_on_open: false,
             autostart: false,
             results_window: true,
+            auto_results_window: true,
+            flat_modules: false,
             background: false,
             cloud: CloudSettings::default(),
             features: Features::default(),
@@ -645,22 +653,29 @@ fn file_name(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// Find module folders laid out as root/<subject>/<module>.
+/// Find module folders laid out as root/<subject>/<module>, or with `flat` as root/<module>
+/// (where folders named in `programs` are still study programs with modules in them: those
+/// not moved up yet).
 ///
 /// Each module gets the significant words of its name as starter keywords; words
 /// shared by several modules (e.g. "Analysis" in "Analysis I" and "Analysis II")
 /// are left out because they can't tell the modules apart. The full module name
 /// is matched anyway, which separates those, and so is its core name without
 /// filler words ("Einführung in die Analysis I" → "analysis i").
-pub fn scan_study_folder(root: &Path) -> Vec<Course> {
+pub fn scan_study_folder(root: &Path, flat: bool, programs: &[String]) -> Vec<Course> {
     if !root.is_dir() {
         return Vec::new();
     }
     let mut found: Vec<Course> = Vec::new();
     // The semester archive holds finished modules, not a study program.
     for subject_dir in visible_subdirs(root).into_iter().filter(|d| file_name(d) != crate::archive::ARCHIVE_FOLDER) {
+        let name = file_name(&subject_dir);
+        if flat && !programs.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
+            found.push(Course::new(name, &[]));
+            continue;
+        }
         for module_dir in visible_subdirs(&subject_dir) {
-            found.push(Course::new(file_name(&module_dir), &[]).with_subject(file_name(&subject_dir)));
+            found.push(Course::new(file_name(&module_dir), &[]).with_subject(name.clone()));
         }
     }
 
@@ -687,6 +702,40 @@ pub fn scan_study_folder(root: &Path) -> Vec<Course> {
         course.keywords = keywords;
     }
     found
+}
+
+/// Whether the folders directly in `root` look like modules rather than study programs:
+/// most of them hold documents themselves, or only the usual subfolders of a module
+/// («Vorlesung», «Übungen», …).
+pub fn looks_flat(root: &Path, subfolders: &[Subfolder]) -> bool {
+    let dirs: Vec<PathBuf> =
+        visible_subdirs(root).into_iter().filter(|d| file_name(d) != crate::archive::ARCHIVE_FOLDER).collect();
+    if dirs.is_empty() {
+        return false;
+    }
+    const USUAL: &[&str] = &[
+        "vorlesung", "vorlesungen", "vl", "folien", "skript", "ubung", "ubungen", "uebungen", "serien", "blatter",
+        "losungen", "loesungen", "prufungen", "altklausuren", "notizen", "literatur", "lectures", "slides",
+        "exercises", "solutions", "exams", "notes",
+    ];
+    let is_subfolder = |name: &str| {
+        let name = normalise(name);
+        USUAL.contains(&name.as_str())
+            || subfolders.iter().any(|f| normalise(&f.name) == name || f.keywords.iter().any(|w| normalise(w) == name))
+    };
+    let module_like = dirs
+        .iter()
+        .filter(|dir| {
+            let has_files = fs::read_dir(dir).is_ok_and(|entries| {
+                entries.flatten().any(|e| {
+                    e.file_type().is_ok_and(|t| t.is_file()) && !e.file_name().to_string_lossy().starts_with('.')
+                })
+            });
+            let children = visible_subdirs(dir);
+            has_files || (!children.is_empty() && children.iter().all(|c| is_subfolder(&file_name(c))))
+        })
+        .count();
+    module_like * 2 > dirs.len()
 }
 
 /// Add modules from `found` that aren't in `existing` yet. Returns how many were added.
@@ -798,7 +847,7 @@ mod tests {
     #[test]
     fn scan_finds_modules_with_starter_keywords() {
         let tmp = tempfile::tempdir().unwrap();
-        let found = scan_study_folder(&make_tree(tmp.path()));
+        let found = scan_study_folder(&make_tree(tmp.path()), false, &[]);
         let get = |s: &str, n: &str| found.iter().find(|c| c.subject == s && c.name == n).map(|c| c.keywords.clone());
         assert_eq!(found.len(), 4);
         assert_eq!(get("Informatik", "Programmierung 1").unwrap(), vec!["programmierung"]);
@@ -810,8 +859,25 @@ mod tests {
     }
 
     #[test]
+    fn flat_study_folders_have_the_modules_directly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Uni");
+        for dir in ["Statistik/Vorlesung", "Statistik/Übungen", "Programmieren", "Informatik/Datenbanken", "Archiv/HS2025"]
+        {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join("Programmieren/vl1.pdf"), "x").unwrap();
+        // Informatik is a program whose modules weren't moved up yet.
+        let found = scan_study_folder(&root, true, &["Informatik".to_string()]);
+        let labels: Vec<String> = found.iter().map(|c| c.label()).collect();
+        assert_eq!(labels, ["Informatik › Datenbanken", "Programmieren", "Statistik"]);
+        assert!(looks_flat(&root, &[]), "modules hold files or their usual subfolders");
+        assert!(!looks_flat(&make_tree(tmp.path()), &[]), "programs with modules in them");
+    }
+
+    #[test]
     fn scan_missing_folder() {
-        assert!(scan_study_folder(Path::new("/definitely/not/here")).is_empty());
+        assert!(scan_study_folder(Path::new("/definitely/not/here"), false, &[]).is_empty());
     }
 
     #[test]
@@ -819,10 +885,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let studium = make_tree(tmp.path());
         let mut existing = vec![Course::new("Programmierung 1", &["prog1", "java"]).with_subject("Informatik")];
-        assert_eq!(merge_courses(&mut existing, scan_study_folder(&studium)), 3);
+        assert_eq!(merge_courses(&mut existing, scan_study_folder(&studium, false, &[])), 3);
         assert_eq!(existing.len(), 4);
         assert_eq!(existing[0].keywords, vec!["prog1", "java"]);
-        assert_eq!(merge_courses(&mut existing, scan_study_folder(&studium)), 0);
+        assert_eq!(merge_courses(&mut existing, scan_study_folder(&studium, false, &[])), 0);
     }
 
     #[test]

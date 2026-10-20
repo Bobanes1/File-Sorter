@@ -372,6 +372,8 @@ fn languages() -> String {
 #[cfg(not(windows))]
 fn tesseract(image: &Path) -> Option<String> {
     let out = std::process::Command::new("tesseract")
+        // One core: it runs in the background, and several threads fight each other badly.
+        .env("OMP_THREAD_LIMIT", "1")
         .arg(image)
         .arg("stdout")
         .args(["-l", &languages()])

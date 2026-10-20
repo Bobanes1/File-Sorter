@@ -219,7 +219,7 @@ impl App {
 
     /// A module's folder moved: the history and the activity list follow it; files that
     /// stayed (open in another program) are listed.
-    fn after_folder_move(&mut self, moved: &Moved, problems: &mut Vec<String>) {
+    pub(super) fn after_folder_move(&mut self, moved: &Moved, problems: &mut Vec<String>) {
         let Some(report) = &moved.report else { return };
         if let Some(dir) = &self.config.state_dir
             && let Err(e) = crate::history::record_relocation(dir, &moved.from, &moved.to, &report.renamed)

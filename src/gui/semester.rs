@@ -101,7 +101,7 @@ fn fetch(url: &str) -> Result<String, String> {
 }
 
 impl App {
-    fn save_timetable(&self) {
+    pub(super) fn save_timetable(&self) {
         if let Some(file) = self.config.state_file(TIMETABLE_FILE)
             && let Err(e) = self.semester.table.save(&file)
         {

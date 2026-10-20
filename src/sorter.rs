@@ -1327,7 +1327,7 @@ pub(crate) mod tests {
         let cfg = Config {
             watch_folder: downloads.to_string_lossy().into(),
             destination_root: studium.to_string_lossy().into(),
-            courses: crate::config::scan_study_folder(&studium),
+            courses: crate::config::scan_study_folder(&studium, false, &[]),
             ..Config::default()
         };
         let sort = |name: &str, text: &str| {

@@ -4,7 +4,7 @@ use eframe::egui::{self, Align, Id, Layout, Margin, RichText, Sense, vec2};
 use egui_phosphor::regular as icon;
 
 use super::{App, ErrorBox};
-use crate::config::{Course, scan_study_folder};
+use crate::config::Course;
 use crate::fx::{self, ButtonStyle};
 use crate::watcher::StartError;
 
@@ -38,6 +38,7 @@ impl App {
             return;
         }
         let subjects = self.subjects();
+        let flat = self.config.flat_modules;
         let subfolders_on = self.config.features.subfolders;
         let mut create_subfolders = None;
         let mut close = false;
@@ -50,20 +51,25 @@ impl App {
             let d = self.dialog.as_mut().unwrap();
             ui.label(fx::title(title, 22.0).color(p.on_surface));
             ui.add_space(12.0);
-            ui.label(RichText::new(lang.study_program()).small().color(p.on_surface_variant));
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut d.subject).desired_width(330.0).margin(Margin::symmetric(12, 8)),
-                );
-                egui::ComboBox::from_id_salt("subject-choices").selected_text("").width(28.0).show_ui(ui, |ui| {
-                    for s in &subjects {
-                        if ui.selectable_label(d.subject == *s, s).clicked() {
-                            d.subject = s.clone();
+            // Modules directly in the study folder have no program (unless one still has).
+            if !flat || !d.subject.is_empty() {
+                ui.label(RichText::new(lang.study_program()).small().color(p.on_surface_variant));
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut d.subject)
+                            .desired_width(330.0)
+                            .margin(Margin::symmetric(12, 8)),
+                    );
+                    egui::ComboBox::from_id_salt("subject-choices").selected_text("").width(28.0).show_ui(ui, |ui| {
+                        for s in &subjects {
+                            if ui.selectable_label(d.subject == *s, s).clicked() {
+                                d.subject = s.clone();
+                            }
                         }
-                    }
+                    });
                 });
-            });
-            ui.add_space(6.0);
+                ui.add_space(6.0);
+            }
             ui.label(RichText::new(lang.module()).small().color(p.on_surface_variant));
             let name = ui.add(
                 egui::TextEdit::singleline(&mut d.name).desired_width(f32::INFINITY).margin(Margin::symmetric(12, 8)),
@@ -113,14 +119,17 @@ impl App {
         let course = match d.editing {
             Some(i) => {
                 let c = &mut self.config.courses[i];
+                let old = c.label();
                 c.subject = subject;
                 c.name = name;
-                c.clone()
+                let course = c.clone();
+                self.relabel_module(&old, &course.label());
+                course
             }
             None => {
                 let mut course = Course::new(name, &[]).with_subject(subject);
                 // Reuse the starter keywords an import would give this module, if its folder exists.
-                if let Some(found) = scan_study_folder(&self.study_root()).into_iter().find(|f| {
+                if let Some(found) = self.scan_modules().into_iter().find(|f| {
                     f.subject.to_lowercase() == course.subject.to_lowercase()
                         && f.name.to_lowercase() == course.name.to_lowercase()
                 }) {

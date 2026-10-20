@@ -14,6 +14,7 @@ mod config;
 mod deadlines;
 mod desktop;
 mod extract;
+mod flatten;
 mod fx;
 mod gui;
 mod history;

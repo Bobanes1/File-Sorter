@@ -114,13 +114,20 @@ fn find_programs(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn from_synthetic(dir: &Path) -> Result<(Vec<Program>, Vec<Example>), String> {
+    let folder_name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // All programs first: a group's records may belong to programs of another group
+    // (the mixed-language files). Each program remembers its group, which names the faculty.
     let mut programs: Vec<Program> = Vec::new();
+    let mut group_of: Vec<String> = Vec::new();
+    for file in find_programs(dir) {
+        let text = fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let list: Vec<Program> = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
+        group_of.extend(list.iter().map(|_| folder_name(file.parent().unwrap_or(dir))));
+        programs.extend(list);
+    }
     let mut examples = Vec::new();
     for file in find_programs(dir) {
         let group = file.parent().unwrap_or(dir);
-        let text = fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-        let list: Vec<Program> = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
-        programs.extend(list);
         let mut record_files: Vec<PathBuf> = fs::read_dir(group)
             .map_err(|e| e.to_string())?
             .flatten()
@@ -150,10 +157,9 @@ fn from_synthetic(dir: &Path) -> Result<(Vec<Program>, Vec<Example>), String> {
                     ),
                 };
                 let p = &programs[program];
-                // The group folder names the faculty the same way for every generator.
-                let faculty = group.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let meta = json!({"source": "synthetic", "faculty": faculty, "field": p.faculty, "program": p.program,
-                    "lang": if r.lang.is_empty() { &p.lang } else { &r.lang }, "kind": r.kind, "file": where_});
+                let meta = json!({"source": "synthetic", "faculty": group_of[program], "field": p.faculty,
+                    "program": p.program, "lang": if r.lang.is_empty() { &p.lang } else { &r.lang },
+                    "kind": r.kind, "mixed": folder_name(group) != group_of[program], "file": where_});
                 examples.push(Example { program, module, name: r.file_name, text: r.text, meta });
             }
         }
@@ -320,10 +326,19 @@ mod tests {
               \"file_name\": \"Fall3.pdf\", \"text\": \"Irrtum über Tatumstände\"}\n\
              {\"program\": \"Jus\", \"module\": null, \"kind\": \"admin\", \"file_name\": \"Mensa.pdf\", \"text\": \"Menü\"}\n",
         );
+        // Files of another group's program (the mixed-language ones) count for that program.
+        let mixed = tmp.path().join("a-mixed");
+        write(&mixed.join("programs.json"), "[]");
+        write(
+            &mixed.join("records-mixed.jsonl"),
+            "{\"program\": \"Jus\", \"module\": \"Strafrecht BT\", \"lang\": \"en\", \"file_name\": \"paper.pdf\", \"text\": \"Theft\"}\n",
+        );
         let out = tmp.path().join("rows.jsonl");
-        assert_eq!(run(tmp.path(), &out).unwrap(), 4);
+        assert_eq!(run(tmp.path(), &out).unwrap(), 6);
         let rows: Vec<Value> =
             fs::read_to_string(&out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!((&rows[0]["meta"]["faculty"], &rows[0]["meta"]["mixed"]), (&json!("law"), &json!(true)));
+        let rows = &rows[2..];
         let first = &rows[0];
         assert_eq!(first["state"], laya::state_for("Fall3.pdf", "Irrtum über Tatumstände"));
         let q = &first["questions"]["module"];

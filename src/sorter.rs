@@ -579,8 +579,9 @@ fn choose_course(
     // A ZIP file's list of files is like a name, so it is always read.
     let zip = suffix(path) == ".zip";
     let features = &config.features;
-    // «Ask Laya first»: it decides about every file, the keywords only when it isn't sure.
-    if features.laya && features.laya_first && crate::laya::available() {
+    // With Laya on, it alone decides (the rules only when it can't be asked: not there,
+    // failed, fewer than two modules, or saving resources).
+    if features.laya && crate::laya::available() {
         if text.is_none() && (config.read_file_contents || zip) {
             *text = Some(if zip && !config.read_file_contents {
                 crate::extract::zip_names(path)
@@ -588,10 +589,16 @@ fn choose_course(
                 extract_text(path)
             });
         }
-        if let Some((label, p)) = crate::laya::module_for(config, &file_name(path), text.as_deref().unwrap_or(""), &[])
-            && let Some(course) = config.courses.iter().position(|c| c.label() == label)
-        {
-            return Ok(Match { course, score: 0, reason: Reason::Ai((p * 100.0).round() as u8) });
+        use crate::laya::ModuleChoice;
+        match crate::laya::module_of(config, &file_name(path), text.as_deref().unwrap_or("")) {
+            Some(ModuleChoice::Sure(label, p)) => {
+                if let Some(course) = config.courses.iter().position(|c| c.label() == label) {
+                    return Ok(Match { course, score: 0, reason: Reason::Ai((p * 100.0).round() as u8) });
+                }
+            }
+            Some(ModuleChoice::Between(candidates)) => return Err(LeftReason::Unsure { candidates }),
+            Some(ModuleChoice::Nothing) => return Err(LeftReason::NoMatch),
+            None => {}
         }
     }
     let read = |p: &Path| {
@@ -610,20 +617,6 @@ fn choose_course(
         Decision::Nothing => Vec::new(),
     };
     let labels: Vec<String> = candidates.iter().map(|(i, _)| config.courses[*i].label()).collect();
-    // The AI model reads the document (in any language): only among the candidates when
-    // there are some, and only when it is clearly sure.
-    if features.laya && crate::laya::available() {
-        if text.is_none() && config.read_file_contents {
-            *text = Some(extract_text(path));
-        }
-        let allowed = if labels.len() >= 2 { labels.as_slice() } else { &[] };
-        if let Some((label, p)) =
-            crate::laya::module_for(config, &file_name(path), text.as_deref().unwrap_or(""), allowed)
-            && let Some(course) = config.courses.iter().position(|c| c.label() == label)
-        {
-            return Ok(Match { course, score: 0, reason: Reason::Ai((p * 100.0).round() as u8) });
-        }
-    }
     // The modules' other files: only among the candidates when there are some.
     if features.classifier {
         let allowed = (labels.len() >= 2).then_some(labels.as_slice());
@@ -722,39 +715,15 @@ pub(crate) fn subfolder_for(
     let existing = categories::existing_subfolders(course_folder, &features.versions_folder);
     let read_text =
         || (config.read_file_contents && suffix(path) != ".zip").then(|| text.unwrap_or_else(|| extract_text(path)));
-    // The AI model reads documents whose name says nothing (or every one: «Ask Laya first»).
-    let ask = |text: &str| {
-        if !features.laya {
-            return None;
-        }
+    // With Laya on, it alone decides; not sure: the module's folder itself.
+    let name = if features.laya && crate::laya::available() {
+        let text = read_text().unwrap_or_default();
         let options = categories::subfolder_options(&features.subfolder_list, &existing);
-        let (folder, p) = crate::laya::subfolder_for(&file_name(path), text, &options)?;
+        let (folder, p) = crate::laya::subfolder_of(&file_name(path), &text, &options)?;
         log::info!("Laya put {} into the subfolder «{folder}» ({:.0} % sure)", file_name(path), p * 100.0);
-        Some(folder)
-    };
-    let name = if features.laya && features.laya_first && crate::laya::available() {
-        let text = read_text();
-        match text.as_deref().and_then(ask) {
-            Some(folder) => folder,
-            // Not sure: the rules, without asking again.
-            None => categories::pick_subfolder(
-                &stem,
-                &features.subfolder_list,
-                &features.subfolder_learned,
-                &existing,
-                || text,
-                |_| None,
-            )?,
-        }
+        folder
     } else {
-        categories::pick_subfolder(
-            &stem,
-            &features.subfolder_list,
-            &features.subfolder_learned,
-            &existing,
-            read_text,
-            ask,
-        )?
+        categories::pick_subfolder(&stem, &features.subfolder_list, &features.subfolder_learned, &existing, read_text)?
     };
     Some(categories::safe_folder_name(&name)).filter(|n| !n.is_empty())
 }

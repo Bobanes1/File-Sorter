@@ -446,12 +446,9 @@ pub struct Features {
     pub ask_when_unsure: bool,
     /// Learn the modules from the files already in them, for files the keywords don't decide.
     pub classifier: bool,
-    /// Use the AI model Laya (once it is set up) for documents the keywords don't decide,
-    /// and to find deadlines and exams in any language.
+    /// Use the AI model Laya (once it is set up): it alone decides each file's module and
+    /// subfolder, and it finds deadlines and exams in any language.
     pub laya: bool,
-    /// Ask Laya first about every file's module and subfolder; the keywords and rules decide
-    /// only when it isn't sure (otherwise it is asked only when they don't decide).
-    pub laya_first: bool,
     /// Recognise the text of scanned PDFs and pictures.
     pub ocr: bool,
     /// Remind of deadlines and exams with a system notification.
@@ -489,7 +486,6 @@ impl Default for Features {
             ask_when_unsure: true,
             classifier: true,
             laya: true,
-            laya_first: false,
             ocr: true,
             reminders: true,
             timetable_hint: true,

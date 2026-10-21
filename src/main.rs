@@ -267,9 +267,6 @@ fn main() -> ExitCode {
         return quicksort::run_results(&args.config);
     }
 
-    // The window, --headless and --sort-now may use the AI model (not the right-click window,
-    // which shouldn't wait for it to load).
-    laya::allow();
     if args.laya_setup || args.laya_check {
         return laya_command(&args);
     }
@@ -355,8 +352,11 @@ fn laya_command(args: &Args) -> ExitCode {
         ];
         let text = "Lineare Regression und Varianzanalyse: Schätzung der Parameter, Konfidenzintervalle, \
                     t-Test und p-Werte für die Koeffizienten.";
-        let module = laya::module_for(&config, "kapitel4.pdf", text, &[]);
+        let module = laya::module_of(&config, "kapitel4.pdf", text);
         log::info!("Laya: kapitel4.pdf (regression, variance) → {module:?}");
+        let rounded = |p: Vec<(String, f32)>| {
+            p.into_iter().map(|(o, p)| format!("{o} {:.0} %", p * 100.0)).collect::<Vec<_>>().join(", ")
+        };
         // Dates: (sentence, the category it gets; None: no entry; «must» be found).
         let dates = [
             ("Le devoir 3 est à rendre avant le vendredi 7 novembre 2026 à 18h.", Some("exercise"), true),
@@ -379,14 +379,16 @@ fn laya_command(args: &Args) -> ExitCode {
             laya::date_categories(&sentences, &hand_ins)
         );
         let reference = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap_or_default();
-        let mut ok = module.is_some_and(|(m, _)| m == "Statistik");
-        // Files of other faculties: right, or not sure – never sure of a wrong module.
+        let mut ok = matches!(&module, Some(laya::ModuleChoice::Sure(m, _)) if m == "Statistik");
+        // Files of other faculties (Laya sorting alone): right, or not sure – never sure of a wrong module.
         for (modules, name, text, expected) in laya::REAL_CASES {
             let courses = modules.iter().map(|m| config::Course::new(*m, &[])).collect();
             let faculty = config::Config { courses, ..Default::default() };
-            let got = laya::module_for(&faculty, name, text, &[]);
-            let right = got.as_ref().is_none_or(|(m, _)| m == modules[expected]);
-            log::info!("Laya: {name} (for «{}») → {got:?}{}", modules[expected], if right { "" } else { "  ✗" });
+            let raw = laya::module_probabilities(&faculty, name, text).map(rounded).unwrap_or_default();
+            let got = laya::module_of(&faculty, name, text);
+            let right = !matches!(&got, Some(laya::ModuleChoice::Sure(m, _)) if m != modules[expected]);
+            let note = if right { "" } else { "  ✗" };
+            log::info!("Laya: {name} (for «{}») → {got:?} [{raw}]{note}", modules[expected]);
             ok &= right;
         }
         for (sentence, expected, must) in dates {
@@ -423,22 +425,32 @@ fn laya_command(args: &Args) -> ExitCode {
                 Some("Prüfungen"),
             ),
             (
+                "Universität Zürich, Institut für Mathematik, Analysis I, HS 2026, Prof. Dr. M. Muster. Serie 5. \
+                 Abgabe bis Freitag. 1. Berechnen Sie die Ableitung von f(x) = x^2 sin x. 2. Zeigen Sie, dass f \
+                 stetig ist.",
+                Some("Übungen"),
+            ),
+            (
+                "Lineare Algebra – Folien Woche 6. Eigenwerte und Eigenvektoren. Motivation, Beispiele, \
+                 charakteristisches Polynom, Diagonalisierung. Zusammenfassung der Woche.",
+                Some("Vorlesung"),
+            ),
+            (
                 "Analysis I, Herbstsemester 2026. Organisatorisches: Sprechstunde nach Vereinbarung, Raum HG G 5, \
                  Kontakt per E-Mail an die Assistierenden. Bewertung: eine schriftliche Klausur am Ende des \
                  Semesters.",
                 None,
             ),
         ];
-        let list = config::Subfolder::defaults();
-        let subfolders = categories::subfolder_options(&list, &[]);
+        let subfolders = categories::subfolder_options(&config::Subfolder::defaults(), &[]);
         for (text, expected) in documents {
-            let raw = laya::subfolder_for("scan_0042.pdf", text, &subfolders);
-            let ask = |text: &str| laya::subfolder_for("scan_0042.pdf", text, &subfolders).map(|(f, _)| f);
-            let got = categories::pick_subfolder("scan_0042", &list, &[], &[], || Some(text.to_string()), ask);
-            // The rules decide where they can; the model must not put a document in a wrong folder.
-            let right = got.as_deref() == expected || got.is_none() && expected.is_none();
+            // Laya sorting alone: each into its folder, and the course information into none.
+            let raw =
+                laya::subfolder_probabilities("scan_0042.pdf", text, &subfolders).map(rounded).unwrap_or_default();
+            let got = laya::subfolder_of("scan_0042.pdf", text, &subfolders).map(|(f, _)| f);
+            let right = got.as_deref() == expected;
             let note = if right { "" } else { "  ✗" };
-            log::info!("Laya: a document for {expected:?} → {got:?} (the model alone: {raw:?}){note}");
+            log::info!("Laya: a document for {expected:?} → {got:?} [{raw}]{note}");
             ok &= right;
         }
         if !ok {

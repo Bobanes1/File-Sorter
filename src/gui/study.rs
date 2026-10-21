@@ -840,7 +840,6 @@ impl App {
                 ui.add_space(margin);
                 ui.vertical(|ui| {
                     ui.set_width(width);
-                    self.today_lessons_ui(ui);
                     if self.config.features.deadlines {
                         self.deadlines_ui(ui);
                         ui.add_space(16.0);

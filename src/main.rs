@@ -312,6 +312,22 @@ fn main() -> ExitCode {
     // Headless: results are logged by the watcher itself.
     let watch_path = config.watch_path();
     let _cloud = headless_cloud_copy(&config);
+    // Files lying in module folders go into their subfolders (once offered in the window).
+    let features = &config.features;
+    if features.subfolders && features.subfolder_auto_resort && config.auto_resort_offered {
+        let config = config.clone();
+        std::thread::spawn(move || {
+            let mut seen = resort::Seen::new();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(5 * 60));
+                let planned = resort::plan_settled(&config, &mut seen);
+                if !planned.is_empty() {
+                    let report = resort::apply(&planned, &config);
+                    log::info!("Put {} file(s) from module folders into their subfolders", report.moved.len());
+                }
+            }
+        });
+    }
     let mut watcher = watcher::FolderWatcher::new(config, Arc::new(|_| {})).with_lock(watch_lock_path(&args.config));
     if let Err(e) = watcher.start() {
         log::error!("{e}");

@@ -44,6 +44,8 @@ impl App {
             ui.horizontal(|ui| {
                 ui.add_space(40.0);
                 ui.vertical(|ui| {
+                    let (title, hint) = (lang.feature_auto_resort(), lang.feature_auto_resort_hint());
+                    changed |= switch(ui, icon::ARROW_BEND_DOWN_RIGHT, title, hint, &mut f.subfolder_auto_resort);
                     let (title, hint) = (lang.feature_auto_learn(), lang.feature_auto_learn_hint());
                     changed |= switch(ui, icon::BRAIN, title, hint, &mut f.subfolder_auto_learn);
                 });

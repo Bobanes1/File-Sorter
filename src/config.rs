@@ -290,6 +290,10 @@ pub struct Config {
     /// Setting up the AI model Laya was offered (at the setup, or once after the update).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub laya_offered: bool,
+    /// The files lying in module folders when automatic sorting into subfolders came were
+    /// shown once (sorted in, or left).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto_resort_offered: bool,
     /// Modules only in the grades list (no folder, nothing sorted into them).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub grade_modules: Vec<Course>,
@@ -424,6 +428,8 @@ pub struct Features {
     pub subfolder_learned: Vec<LearnedFolder>,
     /// Learn them by itself now and then (else only on «Learn»).
     pub subfolder_auto_learn: bool,
+    /// Files lying directly in a module folder go into their subfolder by themselves.
+    pub subfolder_auto_resort: bool,
     /// 0.9/0.10 saved only the names of the four built-in subfolders here.
     #[serde(skip_serializing, rename = "subfolder_names")]
     pub old_subfolder_names: Option<[String; 4]>,
@@ -474,6 +480,7 @@ impl Default for Features {
             subfolder_list: Subfolder::defaults(),
             subfolder_learned: Vec::new(),
             subfolder_auto_learn: false,
+            subfolder_auto_resort: true,
             old_subfolder_names: None,
             unzip: false,
             versions: false,
@@ -573,6 +580,7 @@ impl Default for Config {
             features: Features::default(),
             archived: Vec::new(),
             laya_offered: false,
+            auto_resort_offered: false,
             grade_modules: Vec::new(),
             state_dir: None,
         }

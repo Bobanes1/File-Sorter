@@ -88,6 +88,9 @@ pub struct Extras {
     pub extracted: Option<Extracted>,
     /// The ZIP file could not be unpacked (why).
     pub unzip_failed: Option<String>,
+    /// Subfolders are on, but none fit: it went into the module's folder itself.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub no_subfolder: bool,
 }
 
 impl Extras {
@@ -182,12 +185,13 @@ impl SortResult {
         let name = self.file_name();
         let saved_as =
             self.renamed_to().map(|n| format!(" as {n}, another version is already there")).unwrap_or_default();
+        let no_subfolder = if self.extras.no_subfolder { "; no subfolder fit" } else { "" };
         match &self.outcome {
             Outcome::Moved { course, reason, .. } => {
-                format!("Moved {name} → {course}{saved_as} ({})", reason.describe())
+                format!("Moved {name} → {course}{saved_as} ({}{no_subfolder})", reason.describe())
             }
             Outcome::Copied { course, reason, .. } => {
-                format!("Copied {name} → {course}{saved_as} ({})", reason.describe())
+                format!("Copied {name} → {course}{saved_as} ({}{no_subfolder})", reason.describe())
             }
             Outcome::DuplicateRemoved { course, .. } => {
                 format!("Removed {name}: the same file is already in {course}")
@@ -834,6 +838,7 @@ fn place_file(
         Err(MoveError::Failed(e)) => return SortResult::left(path, LeftReason::Error(e.to_string())),
     };
     result.extras.older_versions = older_versions;
+    result.extras.no_subfolder = config.features.subfolders && target.parent() == Some(course_folder.as_path());
     if config.features.unzip && suffix(&target) == ".zip" {
         match crate::unzip::extract_next_to(&target) {
             Ok(extracted) => result.extras.extracted = Some(extracted),

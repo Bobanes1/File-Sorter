@@ -1713,6 +1713,27 @@ impl Lang {
     pub fn create_subfolders(self) -> &'static str {
         self.pick("Create subfolders", "Unterordner anlegen")
     }
+    pub fn no_subfolder_fit(self) -> &'static str {
+        self.pick("no subfolder fit", "kein Unterordner passte")
+    }
+    pub fn feature_auto_resort(self) -> &'static str {
+        self.pick("Sort leftover files into subfolders", "Liegengebliebene Dateien einsortieren")
+    }
+    pub fn feature_auto_resort_hint(self) -> &'static str {
+        self.pick(
+            "Files lying directly in a module folder (copied in by hand, synced, or sorted before) go into their subfolder by themselves, a few minutes after they came – with «Undo» in Activity; a file put back stays.",
+            "Dateien, die direkt in einem Modulordner liegen (von Hand hineinkopiert, synchronisiert oder früher sortiert), kommen ein paar Minuten danach von selbst in ihren Unterordner – mit «Rückgängig» in der Aktivität; eine zurückgelegte Datei bleibt.",
+        )
+    }
+    pub fn auto_resort_offer_title(self) -> &'static str {
+        self.pick("Sort files into subfolders?", "Dateien in Unterordner einsortieren?")
+    }
+    pub fn auto_resort_offer(self, count: usize) -> String {
+        self.fmt(
+            format!("{count} files lie directly in module folders and fit a subfolder. From now on, such files go into their subfolder by themselves – these too? Nothing is overwritten, and «Undo» in Activity puts them back."),
+            format!("{count} Dateien liegen direkt in Modulordnern und passen in einen Unterordner. Ab jetzt kommen solche Dateien von selbst in ihren Unterordner – diese auch? Nichts wird überschrieben, und «Rückgängig» in der Aktivität legt sie zurück."),
+        )
+    }
     pub fn resort_existing(self) -> &'static str {
         self.pick("Sort existing files into subfolders", "Vorhandene Dateien einsortieren")
     }

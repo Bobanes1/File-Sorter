@@ -387,6 +387,9 @@ fn extras_text(lang: Lang, result: &SortResult) -> Option<String> {
     if let Some(error) = &extras.unzip_failed {
         parts.push(lang.not_unpacked(error));
     }
+    if extras.no_subfolder {
+        parts.push(lang.no_subfolder_fit().to_string());
+    }
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 

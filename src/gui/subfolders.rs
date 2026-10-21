@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Align, Id, Layout, Margin, RichText, vec2};
 use egui_phosphor::regular as icon;
@@ -20,6 +21,8 @@ use crate::subfolder_learn;
 
 /// How often subfolder words are learned by themselves (when that is switched on).
 const LEARN_EVERY: f64 = 30.0 * 60.0;
+/// How often the module folders are looked through for files to put into subfolders.
+const AUTO_EVERY: f64 = 5.0 * 60.0;
 /// How long the file counts of a module's subfolders are kept before they are read again.
 const COUNTS_FOR: f64 = 5.0;
 
@@ -57,6 +60,16 @@ pub(super) struct ResortState {
     /// The shared list is open.
     list_open: bool,
     counts: Option<Counts>,
+    /// Looking for files lying in module folders that fit a subfolder (by itself).
+    auto: Option<Receiver<Vec<Planned>>>,
+    /// When to look next.
+    next_auto: Option<f64>,
+    /// Files looked at unchanged (not again), and what decided then (looked at again when the
+    /// subfolders or Laya change).
+    seen: Arc<Mutex<resort::Seen>>,
+    seen_for: String,
+    /// The preview is the first offer to sort in what lies in the module folders.
+    first_offer: bool,
 }
 
 /// A learned word with a «×» that takes it out. Returns true when that was clicked.
@@ -253,6 +266,7 @@ impl App {
             self.resort.learning = None;
             self.after_learning(learned, by_itself);
         }
+        self.auto_resort_logic();
         let features = &self.config.features;
         let now = self.now();
         if features.subfolders && features.subfolder_auto_learn && !self.config.courses.is_empty() && !self.lean {
@@ -265,6 +279,75 @@ impl App {
         } else {
             self.resort.next_learn = None;
         }
+    }
+
+    /// Every few minutes: the files lying directly in a module folder that fit a subfolder go
+    /// into it by themselves (the first time, those already there are shown first).
+    fn auto_resort_logic(&mut self) {
+        if let Some(rx) = &self.resort.auto
+            && let Ok(planned) = rx.try_recv()
+        {
+            self.resort.auto = None;
+            if planned.is_empty() {
+                if !self.config.auto_resort_offered {
+                    self.config.auto_resort_offered = true;
+                    self.settings_changed();
+                }
+            } else if !self.config.auto_resort_offered {
+                self.resort.first_offer = true;
+                self.resort.preview = Some(planned);
+            } else {
+                log::info!("Putting {} file(s) from module folders into their subfolders", planned.len());
+                self.apply_resort(planned);
+            }
+        }
+        let features = &self.config.features;
+        let busy = self.resort.planning.is_some()
+            || self.resort.applying.is_some()
+            || self.resort.preview.is_some()
+            || self.resort.auto.is_some();
+        if !features.subfolders
+            || !features.subfolder_auto_resort
+            || self.config.courses.is_empty()
+            || self.lean
+            || busy
+        {
+            return;
+        }
+        let now = self.now();
+        let next = *self.resort.next_auto.get_or_insert(now + 30.0);
+        if now < next {
+            // Also when nothing else happens in the window meanwhile.
+            self.ctx.request_repaint_after(std::time::Duration::from_secs_f64(next - now));
+            return;
+        }
+        self.resort.next_auto = Some(now + AUTO_EVERY);
+        // What decides a file's subfolder changed: look at all files again.
+        let deciding = format!("{:?}{}", features.subfolder_list, features.laya && crate::laya::available());
+        if deciding != self.resort.seen_for {
+            self.resort.seen_for = deciding;
+            if let Ok(mut seen) = self.resort.seen.lock() {
+                seen.clear();
+            }
+        }
+        let (tx, rx) = channel();
+        let (config, seen, ctx) = (self.config.clone(), self.resort.seen.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let planned = seen.lock().map(|mut seen| resort::plan_settled(&config, &mut seen)).unwrap_or_default();
+            let _ = tx.send(planned);
+            ctx.request_repaint();
+        });
+        self.resort.auto = Some(rx);
+    }
+
+    fn apply_resort(&mut self, planned: Vec<Planned>) {
+        let (tx, rx) = channel();
+        let (config, ctx) = (self.config.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(resort::apply(&planned, &config));
+            ctx.request_repaint();
+        });
+        self.resort.applying = Some(rx);
     }
 
     fn after_learning(&mut self, learned: Vec<LearnedFolder>, by_itself: bool) {
@@ -560,17 +643,20 @@ impl App {
     pub(super) fn resort_dialog_ui(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
         let Some(planned) = &self.resort.preview else { return };
+        let first = self.resort.first_offer;
         let mut start = false;
         let mut close = false;
         let modal = egui::Modal::new(Id::new("resort-dialog")).frame(dialog_frame(ctx)).show(ctx, |ui| {
             let p = fx::pal(ui);
             ui.set_width(480.0);
-            ui.label(fx::title(lang.resort_existing(), 22.0).color(p.on_surface));
+            let (title, explained) = if first {
+                (lang.auto_resort_offer_title(), lang.auto_resort_offer(planned.len()))
+            } else {
+                (lang.resort_existing(), lang.resort_explained(planned.len()))
+            };
+            ui.label(fx::title(title, 22.0).color(p.on_surface));
             ui.add_space(8.0);
-            ui.add(
-                egui::Label::new(RichText::new(lang.resort_explained(planned.len())).color(p.on_surface_variant))
-                    .wrap(),
-            );
+            ui.add(egui::Label::new(RichText::new(explained).color(p.on_surface_variant)).wrap());
             ui.add_space(8.0);
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                 let mut last_module = String::new();
@@ -590,22 +676,28 @@ impl App {
                 if fx::button(ui, ButtonStyle::Filled, "", lang.resort_start()).clicked() {
                     start = true;
                 }
-                if fx::button(ui, ButtonStyle::Text, "", lang.cancel()).clicked() {
+                let later = if first { lang.not_now() } else { lang.cancel() };
+                if fx::button(ui, ButtonStyle::Text, "", later).clicked() {
                     close = true;
                 }
             });
         });
+        let closed = close || modal.should_close();
+        if (start || closed) && first {
+            self.resort.first_offer = false;
+            self.config.auto_resort_offered = true;
+            self.settings_changed();
+        }
         if start {
             let planned = self.resort.preview.take().unwrap_or_default();
-            let (tx, rx) = channel();
-            let (config, ctx) = (self.config.clone(), self.ctx.clone());
-            std::thread::spawn(move || {
-                let _ = tx.send(resort::apply(&planned, &config));
-                ctx.request_repaint();
-            });
-            self.resort.applying = Some(rx);
-        } else if close || modal.should_close() {
-            self.resort.preview = None;
+            self.apply_resort(planned);
+        } else if closed {
+            // «Not now» on the first offer: these stay; files coming later go by themselves.
+            if let Some(planned) = self.resort.preview.take()
+                && first
+            {
+                resort::keep(&self.config, planned.into_iter().map(|p| p.file));
+            }
         }
     }
 }

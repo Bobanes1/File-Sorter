@@ -20,7 +20,7 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
-APP = (0.6, 2.0)   # MIN_PROBABILITY, MIN_LEAD in src/laya.rs today
+APP = (0.7, 2.0)   # MIN_PROBABILITY, MIN_LEAD of laya-uni-1, the model apps have today
 TARGET_PRECISION = 0.95
 MIN_PROBABILITIES = [round(0.05 * i, 2) for i in range(0, 20)]
 MIN_LEADS = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0]

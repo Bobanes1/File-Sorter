@@ -785,7 +785,7 @@ mod tests {
     }
 
     /// Reads the newest manifest, downloads about 680 MB (into FILE_SORTER_LAYA_DIR, or a
-    /// temporary folder) and asks the real
+    /// temporary folder; skipped when a model is installed there) and asks the real
     /// model about files of faculties other than computer science. (The heart-cycle lecture
     /// leans to Anatomie at 39 %: not sure enough to sort, which is what this checks.)
     #[test]
@@ -794,8 +794,10 @@ mod tests {
         let root = std::env::var_os("FILE_SORTER_LAYA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join("file-sorter-laya-uni"));
-        let newest = fetch_manifest().unwrap();
-        install(&root, &newest).unwrap();
+        // A model already installed there is used as it is: that is how an unpublished one is tried.
+        if installed(&root).is_none() {
+            install(&root, &fetch_manifest().unwrap()).unwrap();
+        }
         let manifest = installed(&root).unwrap();
         let model = Laya::load(&root.join(&manifest.name)).unwrap();
         let cases = [

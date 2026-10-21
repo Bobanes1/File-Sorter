@@ -14,3 +14,4 @@ results/
 oer/train/*.local.json
 data-v1/
 __pycache__/
+results2/

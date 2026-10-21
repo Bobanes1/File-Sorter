@@ -28,8 +28,13 @@ const EXERCISE_WORDS: &[&str] = &["blatt", "serie", "sheet", "ue", "ub", "hw", "
 const LECTURE_STARTS: &[&str] = &["vorlesung", "lecture", "folie", "slide", "skript", "script", "kapitel", "chapter"];
 const LECTURE_WORDS: &[&str] = &["vl", "handout", "notes", "kap"];
 
-/// How many words at the start of a document are looked at when the name says nothing.
+/// How many words at the start of a document are its title when the name says nothing.
 const TITLE_WORDS: usize = 12;
+/// How far the title may reach after a header («Universität Zürich · Institut für … · Prof.
+/// …»): words here still count, but less.
+const HEAD_WORDS: usize = 40;
+/// How much of the text is looked through for signs of its kind.
+const BODY_WORDS: usize = 400;
 
 fn of_word(word: &str) -> Option<Category> {
     let starts = |list: &[&str]| list.iter().any(|s| word.starts_with(s));
@@ -72,6 +77,63 @@ pub fn classify(stem: &str, text: Option<&str>) -> Option<Category> {
     }
     let start = normalise(text?);
     of_words(start.split(' ').take(TITLE_WORDS))
+}
+
+/// The kind a document's text shows beyond its first words: a title after a header, numbered
+/// tasks and «Zeigen Sie …» (an exercise sheet), «Lösung» (solutions), «Bearbeitungszeit»,
+/// «Hilfsmittel» and points (an exam), «Definition 3.1», «Satz 3.2», «Beweis», «Kapitel 3» (lecture
+/// material). Only a clear lead counts (at least 4 points and twice the next): a single «Klausur»
+/// in a course description, or «die nächste Übung» on a slide, doesn't decide.
+fn kind_of_text(normalised: &str) -> Option<Category> {
+    use Category::*;
+    let words: Vec<&str> = normalised.split_whitespace().take(BODY_WORDS).collect();
+    let number = |i: usize| words.get(i).is_some_and(|w| w.chars().all(|c| c.is_ascii_digit()));
+    let mut tasks = std::collections::BTreeSet::new();
+    let (mut lecture, mut proofs, mut outline) = (0, 0, 0);
+    let (mut asks, mut abgabe, mut exam, mut exam_points, mut solutions) = (0, 0, 0, 0, 0);
+    for (i, word) in words.iter().enumerate() {
+        let next = words.get(i + 1).copied().unwrap_or("");
+        match *word {
+            "aufgabe" | "exercise" | "problem" | "task" | "exercice" | "esercizio" if number(i + 1) => {
+                tasks.insert(next);
+            }
+            "definition" | "satz" | "theorem" | "lemma" | "korollar" | "corollary" | "kapitel" | "chapter"
+                if number(i + 1) =>
+            {
+                lecture += 2;
+            }
+            "beweis" | "proof" => proofs += 1,
+            "zeigen" | "berechnen" | "bestimmen" | "beweisen" | "begrunden" | "skizzieren" if next == "sie" => {
+                asks += 1
+            }
+            "show" | "prove" if next == "that" => asks += 1,
+            "abgabe" | "due" => abgabe = 1,
+            "bearbeitungszeit" | "prufungsdauer" => exam += 3,
+            "hilfsmittel" | "matrikelnummer" | "matrikelnr" => exam += 2,
+            "punkte" | "points" | "pkt" | "punkt" if i > 0 && number(i - 1) => exam_points += 1,
+            "inhalt" | "outline" | "agenda" | "lernziele" | "zusammenfassung" => outline = 1,
+            _ => {}
+        }
+        if i >= TITLE_WORDS && SOLUTION_PARTS.iter().any(|s| word.contains(s)) {
+            solutions += 1;
+        }
+    }
+    let mut points = [0u32; 4];
+    // A title after a header: its strongest kind (a solution beats an exam, …, as in a name),
+    // more if it is numbered like a title («Übungsblatt 4», «Serie 5»; not «eine Klausur am …»).
+    if let Some(kind) = of_words(words.iter().take(HEAD_WORDS).skip(TITLE_WORDS).copied()) {
+        let numbered = (TITLE_WORDS..HEAD_WORDS.min(words.len()))
+            .any(|i| of_word(words[i]) == Some(kind) && (number(i + 1) || number(i.wrapping_sub(1))));
+        points[kind as usize] += if numbered { 4 } else { 2 };
+    }
+    points[Exercise as usize] += if tasks.len() >= 2 { 3 } else { 0 } + asks.min(3) + abgabe;
+    points[Lecture as usize] += lecture.min(6) + proofs.min(2) + outline;
+    points[Exam as usize] += exam.min(6) + exam_points.min(3);
+    points[Solution as usize] += (2 * solutions).min(4);
+    let mut ranked: Vec<(Category, u32)> = [Lecture, Exercise, Solution, Exam].map(|k| (k, points[k as usize])).into();
+    ranked.sort_by_key(|(_, p)| std::cmp::Reverse(*p));
+    let ((kind, best), (_, second)) = (ranked[0], ranked[1]);
+    (best >= 4 && best >= 2 * second).then_some(kind)
 }
 
 /// Whether a (normalised) keyword occurs in normalised text: a whole phrase, or the start of
@@ -137,9 +199,13 @@ pub fn pick_subfolder(
     if let Some(dir) = existing.iter().find(|dir| !listed(dir) && mentions(&name, &normalise(dir))) {
         return Some(dir.clone());
     }
-    let text = text()?;
-    let start = normalise(&text).split(' ').take(TITLE_WORDS).collect::<Vec<_>>().join(" ");
-    by_words(&start).or_else(|| by_learned(&start)).or_else(|| of_words(start.split(' ')).and_then(by_kind))
+    let text = normalise(&text()?);
+    let start = text.split_whitespace().take(TITLE_WORDS).collect::<Vec<_>>().join(" ");
+    let head = text.split_whitespace().take(HEAD_WORDS).collect::<Vec<_>>().join(" ");
+    by_words(&head)
+        .or_else(|| by_learned(&head))
+        .or_else(|| of_words(start.split(' ')).and_then(by_kind))
+        .or_else(|| kind_of_text(&text).and_then(by_kind))
 }
 
 /// The folders a file can go in, for the AI model: each with the words that say it (as a
@@ -195,6 +261,38 @@ mod tests {
         let options = subfolder_options(&list, &["Projekt".to_string(), "übungen".to_string()]);
         let names: Vec<&str> = options.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["Vorlesung", "Übungen", "Lösungen", "Prüfungen", "Projekt"]);
+    }
+
+    #[test]
+    fn the_text_tells_the_kind_beyond_its_first_words() {
+        use Category::*;
+        let kind = |text: &str| kind_of_text(&normalise(text));
+        let header = "Universität Zürich, Institut für Mathematik, Analysis I, Herbstsemester 2026, Prof. Dr. M. \
+                      Muster, Assistenz: A. Beispiel. ";
+        let sheet =
+            format!("{header}Serie 5. Abgabe bis Freitag. 1. Berechnen Sie f'. 2. Zeigen Sie, dass f stetig ist.");
+        assert_eq!(kind(&sheet), Some(Exercise));
+        let tasks = "Aufgabe 1 (Folgen). Zeigen Sie, dass a_n konvergiert. Aufgabe 2. Bestimmen Sie den Grenzwert.";
+        assert_eq!(kind(tasks), Some(Exercise));
+        let solution = format!("{header}Musterlösung zu Blatt 4. Aufgabe 1: Lösung: Da die Folge beschränkt ist, …");
+        assert_eq!(kind(&solution), Some(Solution));
+        let exam =
+            "Analysis I, 2. Februar 2026. Bearbeitungszeit: 120 Minuten. Hilfsmittel: keine. Aufgabe 1 (10 Punkte)";
+        assert_eq!(kind(exam), Some(Exam));
+        let script = "Folgen und Reihen. Definition 3.1: … Satz 3.2: Jede konvergente Folge ist beschränkt. Beweis: …";
+        assert_eq!(kind(script), Some(Lecture));
+        // One stray word doesn't decide.
+        let slide =
+            "Eigenwerte und Eigenvektoren. Definition 6.1 … Satz 6.2 … Beweis … Die nächste Übung ist am Montag.";
+        assert_ne!(kind(slide), Some(Exercise));
+        let info = "Analysis I, Herbstsemester 2026. Organisatorisches: Sprechstunde nach Vereinbarung, Raum HG G 5, \
+                    Kontakt per E-Mail. Bewertung: eine schriftliche Klausur am Ende des Semesters.";
+        assert_eq!(kind(info), None);
+        // In the folders: a header before «Übungsblatt 4» no longer hides it.
+        let list = crate::config::Subfolder::defaults();
+        let text = || Some(format!("{header}Übungsblatt 4"));
+        assert_eq!(pick_subfolder("scan_0042", &list, &[], &[], text).as_deref(), Some("Übungen"));
+        assert_eq!(pick_subfolder("scan_0043", &list, &[], &[], || Some(info.to_string())), None);
     }
 
     #[test]

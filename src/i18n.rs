@@ -969,6 +969,15 @@ impl Lang {
             "Laya, ein auf Kursdateien aller Fakultäten trainiertes Sprachmodell (laya-uni, von Nils Briggen), liest Dokumente in vielen Sprachen: Es ordnet zu, was die Stichwörter nicht entscheiden, legt Dokumente in Unterordner, wo die Regeln es nicht können, und findet Termine in jedem Satz. Einmaliger Download von etwa 680 MB; es läuft nur auf diesem Computer, braucht beim Arbeiten etwa 1,4 GB Arbeitsspeicher und gibt ihn danach wieder frei.",
         )
     }
+    pub fn laya_first(self) -> &'static str {
+        self.pick("Ask Laya first", "Laya zuerst fragen")
+    }
+    pub fn laya_first_hint(self) -> &'static str {
+        self.pick(
+            "Laya decides the module and the subfolder of every file, before the keywords and rules; they only decide when Laya isn't sure. Takes about a second per file. Off: Laya only decides what the keywords and rules don't.",
+            "Laya entscheidet bei jeder Datei zuerst über Modul und Unterordner, vor den Stichwörtern und Regeln; diese entscheiden nur, wenn Laya nicht sicher ist. Braucht etwa eine Sekunde pro Datei. Aus: Laya entscheidet nur, was Stichwörter und Regeln nicht entscheiden.",
+        )
+    }
     pub fn laya_download(self) -> &'static str {
         self.pick("Download", "Herunterladen")
     }

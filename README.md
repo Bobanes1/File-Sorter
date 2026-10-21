@@ -155,7 +155,9 @@ File Sorter can use **laya-uni**, a language model by [Nils Briggen](https://git
 - picks the **subfolder** for a document neither whose name nor whose first lines say anything;
 - **finds deadlines, exams and other appointments in any sentence and language** that the rules don't know (it never takes away a date the rules found), and picks their category when the rules can't.
 
-It is **optional**: the setup offers it (ticked), File Sorter asks once after the update, and *Settings → Features → AI model Laya* has **Download** (with a progress bar), a switch and **Remove**. It downloads about 680 MB once into `laya-uni` next to the settings; each file is checked against its size and SHA-256, which are fixed in File Sorter – a newer model only comes with a newer File Sorter, after it was tested with the real model. An interrupted download goes on where it stopped. (The Laya of File Sorter 0.15–0.16, with its own Python, is replaced by it and removed.)
+It is **optional**: the setup offers it (ticked), File Sorter asks once after the update, and *Settings → Features → AI model Laya* has **Download** (with a progress bar), a switch and **Remove**.
+
+**Ask Laya first** (under the switch, off by default): Laya decides the module and the subfolder of *every* file, before the keywords and rules – they only decide when Laya isn't sure. It takes about a second per file. Off, Laya only decides what the keywords and rules don't. It downloads about 680 MB once into `laya-uni` next to the settings; each file is checked against its size and SHA-256, which are fixed in File Sorter – a newer model only comes with a newer File Sorter, after it was tested with the real model. An interrupted download goes on where it stopped. (The Laya of File Sorter 0.15–0.16, with its own Python, is replaced by it and removed.)
 
 It runs only on this computer, natively (no Python): while it is in use it needs about 1.4 GB of memory and about a second per question; it leaves memory after 15 minutes without questions, while *Save resources in the background* is on and the window is away, and with File Sorter. The right-click window doesn't wait for it.
 

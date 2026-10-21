@@ -45,7 +45,7 @@ impl Reason {
             Reason::Origin(host) => format!("downloaded from {host} like earlier files of this module"),
             Reason::Learned(k) => format!("like the module's other files ({})", k.join(", ")),
             Reason::Timetable(m) => format!("a tie; the lesson of {m} was running"),
-            Reason::Ai(p) => format!("the AI model read it ({p}% sure)"),
+            Reason::Ai(p) => format!("the AI model read it, {p}% sure"),
         }
     }
 }

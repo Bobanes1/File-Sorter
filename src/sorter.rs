@@ -563,6 +563,11 @@ fn sort_any_file(path: &Path, config: &Config, patience: Duration, target: Targe
     result
 }
 
+#[cfg(test)]
+pub(crate) fn choose_course_for_test(path: &Path, config: &Config) -> Result<Match, LeftReason> {
+    choose_course(path, config, None, &mut None)
+}
+
 /// The module for `path` and why, or why it stays: no module fits, or several fit about
 /// equally well. The text read from the file (if it was read) is left in `text`.
 fn choose_course(
@@ -573,6 +578,22 @@ fn choose_course(
 ) -> Result<Match, LeftReason> {
     // A ZIP file's list of files is like a name, so it is always read.
     let zip = suffix(path) == ".zip";
+    let features = &config.features;
+    // «Ask Laya first»: it decides about every file, the keywords only when it isn't sure.
+    if features.laya && features.laya_first && crate::laya::available() {
+        if text.is_none() && (config.read_file_contents || zip) {
+            *text = Some(if zip && !config.read_file_contents {
+                crate::extract::zip_names(path)
+            } else {
+                extract_text(path)
+            });
+        }
+        if let Some((label, p)) = crate::laya::module_for(config, &file_name(path), text.as_deref().unwrap_or(""), &[])
+            && let Some(course) = config.courses.iter().position(|c| c.label() == label)
+        {
+            return Ok(Match { course, score: 0, reason: Reason::Ai((p * 100.0).round() as u8) });
+        }
+    }
     let read = |p: &Path| {
         if let Some(t) = text.as_ref() {
             return t.clone();
@@ -581,7 +602,6 @@ fn choose_course(
         *text = Some(t.clone());
         t
     };
-    let features = &config.features;
     let margin = if features.ask_when_unsure { crate::matcher::UNSURE_MARGIN } else { 0 };
     let candidates = match crate::matcher::decide(path, &config.courses, config.read_file_contents || zip, margin, read)
     {
@@ -702,7 +722,7 @@ pub(crate) fn subfolder_for(
     let existing = categories::existing_subfolders(course_folder, &features.versions_folder);
     let read_text =
         || (config.read_file_contents && suffix(path) != ".zip").then(|| text.unwrap_or_else(|| extract_text(path)));
-    // The AI model reads documents whose name says nothing.
+    // The AI model reads documents whose name says nothing (or every one: «Ask Laya first»).
     let ask = |text: &str| {
         if !features.laya {
             return None;
@@ -712,14 +732,30 @@ pub(crate) fn subfolder_for(
         log::info!("Laya put {} into the subfolder «{folder}» ({:.0} % sure)", file_name(path), p * 100.0);
         Some(folder)
     };
-    let name = categories::pick_subfolder(
-        &stem,
-        &features.subfolder_list,
-        &features.subfolder_learned,
-        &existing,
-        read_text,
-        ask,
-    )?;
+    let name = if features.laya && features.laya_first && crate::laya::available() {
+        let text = read_text();
+        match text.as_deref().and_then(ask) {
+            Some(folder) => folder,
+            // Not sure: the rules, without asking again.
+            None => categories::pick_subfolder(
+                &stem,
+                &features.subfolder_list,
+                &features.subfolder_learned,
+                &existing,
+                || text,
+                |_| None,
+            )?,
+        }
+    } else {
+        categories::pick_subfolder(
+            &stem,
+            &features.subfolder_list,
+            &features.subfolder_learned,
+            &existing,
+            read_text,
+            ask,
+        )?
+    };
     Some(categories::safe_folder_name(&name)).filter(|n| !n.is_empty())
 }
 

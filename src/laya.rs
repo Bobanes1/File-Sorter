@@ -932,6 +932,38 @@ pub mod tests {
         assert_eq!(subfolder_for("info.pdf", "Willkommen im Kurs", &options), None);
     }
 
+    /// «Ask Laya first»: it decides before the keywords and rules (which decide only when it
+    /// isn't sure); without it, the keywords and rules decide what they can.
+    #[test]
+    fn asked_first_laya_decides_before_the_rules() {
+        use crate::config::Course;
+        let tmp = tempfile::tempdir().unwrap();
+        fake(stand_in);
+        let mut cfg = test_config(tmp.path());
+        cfg.courses.push(Course::new("Statistik", &["stat101"]));
+        cfg.features.subfolders = true;
+        // The name says «programming», the text is about statistics.
+        let file = cfg.watch_path().join("programming_kapitel4.txt");
+        fs::write(&file, "Varianzanalyse und Regression: Schätzung der Parameter.").unwrap();
+        let module =
+            |cfg: &Config| crate::sorter::choose_course_for_test(&file, cfg).map(|m| cfg.courses[m.course].label());
+        assert_eq!(module(&cfg).as_deref(), Ok("Programming Course"));
+        cfg.features.laya_first = true;
+        assert_eq!(module(&cfg).as_deref(), Ok("Statistik"));
+        // Not sure (nothing about statistics): the keywords decide as before.
+        let other = cfg.watch_path().join("programming_week2.txt");
+        fs::write(&other, "Loops and functions.").unwrap();
+        let m = crate::sorter::choose_course_for_test(&other, &cfg).map(|m| cfg.courses[m.course].label());
+        assert_eq!(m.as_deref(), Ok("Programming Course"));
+        // Subfolders: the name says «Lösung», the text is an exercise sheet.
+        let sheet = cfg.watch_path().join("Loesung_Blatt3.txt");
+        fs::write(&sheet, "Blatt 3. Aufgabe 1: Zeigen Sie, dass die Folge konvergiert.").unwrap();
+        let folder = |cfg: &Config| crate::sorter::subfolder_for(cfg, tmp.path(), &sheet, None);
+        assert_eq!(folder(&cfg).as_deref(), Some("Übungen"));
+        cfg.features.laya_first = false;
+        assert_eq!(folder(&cfg).as_deref(), Some("Lösungen"));
+    }
+
     /// Downloads the model (about 680 MB, into FILE_SORTER_LAYA_DIR or a temporary folder) and
     /// asks it about files of faculties other than computer science. (The heart-cycle lecture
     /// leans to Anatomie at 39 %: not sure enough to sort, which is what this checks.)

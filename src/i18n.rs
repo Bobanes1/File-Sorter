@@ -965,25 +965,12 @@ impl Lang {
     }
     pub fn laya_hint(self) -> &'static str {
         self.pick(
-            "Reads documents in over 100 languages: sorts what the keywords don't decide, and finds deadlines and exam dates in any sentence. A one-time download of about 1.5–2 GB (Python, PyTorch and the model, from their official sources); it runs only on this computer, and only while needed.",
-            "Liest Dokumente in über 100 Sprachen: ordnet zu, was die Stichwörter nicht entscheiden, und findet Abgabe- und Prüfungstermine in jedem Satz. Einmaliger Download von etwa 1.5–2 GB (Python, PyTorch und das Modell, aus ihren offiziellen Quellen); läuft nur auf diesem Computer und nur, wenn es gebraucht wird.",
+            "Laya, a language model fine-tuned on course files of all faculties (laya-uni, by Nils Briggen), reads documents in many languages: it sorts what the keywords don't decide, puts documents into subfolders when the rules can't, and finds deadlines in any sentence. A one-time download of about 680 MB; it runs only on this computer, needs about 1.4 GB of memory while in use and gives it back when not needed.",
+            "Laya, ein auf Kursdateien aller Fakultäten trainiertes Sprachmodell (laya-uni, von Nils Briggen), liest Dokumente in vielen Sprachen: Es ordnet zu, was die Stichwörter nicht entscheiden, legt Dokumente in Unterordner, wo die Regeln es nicht können, und findet Termine in jedem Satz. Einmaliger Download von etwa 680 MB; es läuft nur auf diesem Computer, braucht beim Arbeiten etwa 1,4 GB Arbeitsspeicher und gibt ihn danach wieder frei.",
         )
     }
     pub fn laya_download(self) -> &'static str {
         self.pick("Download", "Herunterladen")
-    }
-    pub fn laya_step(self, step: crate::laya::Step) -> String {
-        use crate::laya::Step;
-        let what = match step {
-            Step::Tool => self.pick("the installer (uv)", "das Installationsprogramm (uv)"),
-            Step::Python => self.pick("Python", "Python"),
-            Step::Packages => self.pick("Laya and PyTorch – the biggest part", "Laya und PyTorch – der grösste Teil"),
-            Step::Model => self.pick("the model", "das Modell"),
-        };
-        self.fmt(
-            format!("Setting up: step {} of 4, {what}…", step.number()),
-            format!("Wird eingerichtet: Schritt {} von 4, {what}…", step.number()),
-        )
     }
     pub fn laya_installed(self, gb: f64) -> String {
         self.fmt(format!("Set up · {gb:.1} GB"), format!("Eingerichtet · {gb:.1} GB"))
@@ -993,9 +980,9 @@ impl Lang {
     }
     pub fn laya_error(self, error: &str) -> String {
         self.fmt(
-            format!("Setting up failed: {error} – «Download» tries again where it stopped."),
+            format!("The download failed: {error} – «Download» goes on where it stopped."),
             format!(
-                "Einrichten fehlgeschlagen: {error} – «Herunterladen» versucht es dort weiter, wo es stehen blieb."
+                "Der Download ist fehlgeschlagen: {error} – «Herunterladen» macht dort weiter, wo er stehen blieb."
             ),
         )
     }
@@ -1013,8 +1000,8 @@ impl Lang {
     }
     pub fn setup_laya_hint(self) -> &'static str {
         self.pick(
-            "Better sorting and finding dates in any language. About 1.5–2 GB, downloaded in the background.",
-            "Besseres Zuordnen und Termine in jeder Sprache. Etwa 1.5–2 GB, im Hintergrund heruntergeladen.",
+            "Better sorting and finding dates in any language. About 680 MB, downloaded in the background.",
+            "Besseres Zuordnen und Termine in jeder Sprache. Etwa 680 MB, im Hintergrund heruntergeladen.",
         )
     }
     pub fn not_now(self) -> &'static str {
@@ -1622,6 +1609,9 @@ impl Lang {
             "When the keywords don't decide, compare a file with the files already in each module and sort it only if one is clearly more alike.",
             "Wenn die Stichwörter nicht entscheiden, eine Datei mit den Dateien vergleichen, die schon in den Modulen liegen, und nur einsortieren, wenn eines klar ähnlicher ist.",
         )
+    }
+    pub fn laya_download_progress(self, done_mb: u64, total_mb: u64) -> String {
+        self.fmt(format!("{done_mb} of {total_mb} MB"), format!("{done_mb} von {total_mb} MB"))
     }
     pub fn feature_ask_unsure(self) -> &'static str {
         self.pick("Ask when unsure", "Bei Unsicherheit nachfragen")

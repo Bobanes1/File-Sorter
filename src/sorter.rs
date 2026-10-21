@@ -574,6 +574,9 @@ fn choose_course(
     // A ZIP file's list of files is like a name, so it is always read.
     let zip = suffix(path) == ".zip";
     let read = |p: &Path| {
+        if let Some(t) = text.as_ref() {
+            return t.clone();
+        }
         let t = if zip && !config.read_file_contents { crate::extract::zip_names(p) } else { extract_text(p) };
         *text = Some(t.clone());
         t

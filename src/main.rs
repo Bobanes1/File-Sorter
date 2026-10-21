@@ -22,6 +22,7 @@ mod i18n;
 mod index;
 mod keywords;
 mod laya;
+mod laya_rows;
 mod lean;
 mod ledger;
 #[cfg(target_os = "linux")]
@@ -69,6 +70,7 @@ Usage: file-sorter [--config PATH] [--headless | --sort-now | [--sort] FILE... [
   --list-clouds     write the cloud folders found (OneDrive, Dropbox, …) to the log
   --check-update    write whether a newer File Sorter is available to the log
   --read-text FILE  write the text read from FILE (with text recognition for scans) to the log
+  --laya-rows IN OUT  write training rows for the Laya model (see training/laya-uni)
   --config PATH     settings file (default: per-user config.json)";
 
 struct Args {
@@ -91,6 +93,8 @@ struct Args {
     check_update: bool,
     /// Print the text read from this file (with text recognition for scans), and exit.
     read_text: Option<PathBuf>,
+    /// `--laya-rows IN OUT`: write fine-tuning rows for the Laya model, and exit.
+    laya_rows: Option<(PathBuf, PathBuf)>,
     /// Started again after an update: wait until the old process (this id) has ended.
     wait_for: Option<u32>,
 }
@@ -111,6 +115,7 @@ fn parse_args() -> Result<Args, String> {
         list_clouds: false,
         check_update: false,
         read_text: None,
+        laya_rows: None,
         wait_for: None,
     };
     let mut it = std::env::args().skip(1);
@@ -129,6 +134,11 @@ fn parse_args() -> Result<Args, String> {
             "--list-clouds" => args.list_clouds = true,
             "--check-update" => args.check_update = true,
             "--read-text" => args.read_text = Some(it.next().ok_or("--read-text needs a file")?.into()),
+            "--laya-rows" => {
+                let input = it.next().ok_or("--laya-rows needs an input folder and an output file")?;
+                let output = it.next().ok_or("--laya-rows needs an output file")?;
+                args.laya_rows = Some((input.into(), output.into()));
+            }
             "--wait-for" => args.wait_for = it.next().and_then(|pid| pid.parse().ok()),
             "--config" => args.config = it.next().ok_or("--config needs a path")?.into(),
             "--days" | "--hours" => {
@@ -196,6 +206,18 @@ fn main() -> ExitCode {
         log::info!("Text recognition: {:?}", ocr::available());
         log::info!("Text of {}:\n{text}", file.display());
         return if ocr::letters(&text) > 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+    }
+    if let Some((input, output)) = &args.laya_rows {
+        return match laya_rows::run(input, output) {
+            Ok(n) => {
+                println!("{n} rows written to {}", output.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
     }
     if args.check_update {
         return match update::check() {
@@ -309,9 +331,15 @@ fn laya_command(args: &Args) -> ExitCode {
     let dir = config::config_path_dir(&args.config);
     let place = laya::Place::new(&dir);
     if args.laya_setup {
-        if let Err(e) =
-            laya::install(&place, |step| log::info!("Setting up Laya: step {} of 4 ({step:?})", step.number()))
-        {
+        let mut shown = 0;
+        let progress = |done: u64, total: u64| {
+            let tenth = (done * 10).checked_div(total).unwrap_or(0);
+            if tenth > shown {
+                shown = tenth;
+                log::info!("Downloading Laya: {} of {} MB", done / 1_000_000, total / 1_000_000);
+            }
+        };
+        if let Err(e) = laya::install(&place, progress) {
             log::error!("Laya could not be set up: {e}");
             return ExitCode::FAILURE;
         }
@@ -352,6 +380,15 @@ fn laya_command(args: &Args) -> ExitCode {
         );
         let reference = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap_or_default();
         let mut ok = module.is_some_and(|(m, _)| m == "Statistik");
+        // Files of other faculties: right, or not sure – never sure of a wrong module.
+        for (modules, name, text, expected) in laya::REAL_CASES {
+            let courses = modules.iter().map(|m| config::Course::new(*m, &[])).collect();
+            let faculty = config::Config { courses, ..Default::default() };
+            let got = laya::module_for(&faculty, name, text, &[]);
+            let right = got.as_ref().is_none_or(|(m, _)| m == modules[expected]);
+            log::info!("Laya: {name} (for «{}») → {got:?}{}", modules[expected], if right { "" } else { "  ✗" });
+            ok &= right;
+        }
         for (sentence, expected, must) in dates {
             let found = deadlines::find_in(sentence, reference, &categories);
             let got: Vec<&str> = found.iter().map(|f| f.category.as_str()).collect();

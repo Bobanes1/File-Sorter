@@ -149,14 +149,15 @@ Select a module in the overview and switch to **Subfolders** (or turn on *Settin
 
 ## The AI model Laya
 
-[Laya](https://huggingface.co/convaiinnovations/laya) (by ConvAI Innovations, Apache 2.0) is a model that reads text in over 100 languages and answers questions with probabilities. With it, File Sorter
+File Sorter can use **laya-uni**, a language model by [Nils Briggen](https://github.com/NilsBriggen): [Laya](https://huggingface.co/convaiinnovations/laya) (by ConvAI Innovations, multilingual, Apache 2.0) fine-tuned on course files of every faculty – from law and medicine to history, engineering and design – in German, English, French and Italian ([model card](https://github.com/NilsBriggen/laya-uni), training and tests in `training/laya-uni/`). With it, File Sorter
 
-- **sorts what the keywords don't decide**: it reads the document and picks the module (only among the ones in question, only when it is clearly sure), and the **subfolder** for a document neither whose name nor whose first lines say anything;
-- **finds deadlines, exams and other appointments in any sentence and language** that the rules don't know (it never takes away a date the rules found).
+- **sorts what the keywords don't decide**: it reads the document and picks the module (only among the ones in question, only when it is clearly sure). On real course PDFs of 13 faculties it put 79 % of files first into the right module, and of the files it was sure enough to sort, 95 % went to the right place (the base Laya: 60 % and 76 %). Formula-heavy maths PDFs are its weak spot;
+- picks the **subfolder** for a document neither whose name nor whose first lines say anything;
+- **finds deadlines, exams and other appointments in any sentence and language** that the rules don't know (it never takes away a date the rules found), and picks their category when the rules can't.
 
-It is **optional**: the setup offers it (ticked), File Sorter asks once after the update, and *Settings → Features → AI model Laya* has **Download**, a switch and **Remove**. Setting it up downloads about 1.5–2 GB once, in the background, from the official sources: [uv](https://github.com/astral-sh/uv) (a fixed release, checked against its SHA-256), which installs a private Python, the `laya` package with the CPU version of PyTorch, and Laya's multilingual model – all in File Sorter's settings folder (`laya`), apart from anything else on the computer. If the download stops, *Download* goes on where it stopped.
+It is **optional**: the setup offers it (ticked), File Sorter asks once after the update, and *Settings → Features → AI model Laya* has **Download** (with a progress bar), a switch and **Remove**. It downloads about 680 MB once into `laya-uni` next to the settings; each file is checked against its size and SHA-256, which are fixed in File Sorter – a newer model only comes with a newer File Sorter, after it was tested with the real model. An interrupted download goes on where it stopped. (The Laya of File Sorter 0.15–0.16, with its own Python, is replaced by it and removed.)
 
-It runs only on this computer: while File Sorter needs it, a small helper keeps the model loaded and ends after 15 minutes without questions, while *Save resources in the background* is on and the window is away, and with File Sorter. The right-click window doesn't wait for it.
+It runs only on this computer, natively (no Python): while it is in use it needs about 1.4 GB of memory and about a second per question; it leaves memory after 15 minutes without questions, while *Save resources in the background* is on and the window is away, and with File Sorter. The right-click window doesn't wait for it.
 
 ## Updates
 
@@ -226,6 +227,7 @@ The entry is added when you open File Sorter, and it follows the exe if you move
 2. **File name first:** the module name and each keyword are looked for as whole words (`ai` doesn't match `maintain`; `algorithm` matches `algorithms`; case, accents, `_`, `-` and `.` don't matter, and `INF101`, `INF-101` and `INF 101` are all the same).
 3. **Then the content:** if the file name doesn't point to exactly one module, the text of the first pages of PDFs, the first slides of PowerPoints, or the start of Word documents is read and scored the same way.
 4. **How much a hit counts:** a keyword several modules share counts less (shared by two modules: half), and hits on the title page (the first ~60 words) count double. Keywords of six letters or more also match with **one typo** («Statisitk»), and **short forms of the module name** count when only one module has them («LinAlg» and «LA» for *Lineare Algebra*, «Prog1» for *Programmieren 1*, «Stat» for *Statistik*) – both at half weight.
+   **With the AI model Laya** set up (see [The AI model Laya](#the-ai-model-laya)), a file the keywords don't decide – nothing fits, or two modules about equally – is read by it: it picks one of your modules (only among the ones in question), and sorts the file only when it is clearly sure (70 % and twice as likely as the next). The activity list then says «the AI model (Laya) read it – 82 % sure»; *Undo* works as always.
 5. The module with the most points wins. **When two modules fit about equally well** (less than 25 % apart) and *Ask when unsure* is on, the file stays where it is and *Activity* asks «Unsicher: Statistik oder Programmieren?» with a button for each. Before asking, File Sorter tries three more things:
    - **Learned from the modules' files** (*Learn the modules from their files*): a small naive Bayes model knows each module by the names and first words of the files already in its folder, and answers only when it is clearly sure (80 % and twice as likely as the next).
    - **The timetable** (*Use the timetable for ties*): if one of the modules in question had its lesson when the file came (15 minutes before to 15 after), that one wins. It never decides against what the file says and never sorts a file nothing else fits – during a lesson you may well be working on something else.
@@ -270,7 +272,7 @@ Everything on the **Settings** tab is saved as soon as you change it (a green *S
 
 ## Save resources in the background
 
-*Settings → Save resources in the background* (off by default) makes File Sorter lighter while its window is closed (running next to the clock) or minimised: the search index leaves memory (it is on disk), files are read by name and first page only – without text recognition, the learned model or comparing versions by content – and learning, calendar links and the update check wait. Watching, sorting, undo and reminders go on. When the window is shown again, everything runs in full and what changed meanwhile is read. With 1600 documents of 22 pages in the study folder: about 460 MB with the window open, about 155 MB in the background with this setting on.
+*Settings → Save resources in the background* (off by default) makes File Sorter lighter while its window is closed (running next to the clock) or minimised: the search index leaves memory (it is on disk), files are read by name and first page only – without text recognition, the learned model, the AI model Laya or comparing versions by content – and learning, calendar links and the update check wait. Watching, sorting, undo and reminders go on. When the window is shown again, everything runs in full and what changed meanwhile is read. With 1600 documents of 22 pages in the study folder: about 460 MB with the window open, about 155 MB in the background with this setting on.
 
 ## Run it without a window / start automatically
 

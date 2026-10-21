@@ -140,7 +140,7 @@ pub fn check() -> Result<Option<Release>, String> {
     Ok(is_newer(&release.version, env!("CARGO_PKG_VERSION")).then_some(release))
 }
 
-fn sha256_of(path: &Path) -> std::io::Result<String> {
+pub(crate) fn sha256_of(path: &Path) -> std::io::Result<String> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 256 * 1024];

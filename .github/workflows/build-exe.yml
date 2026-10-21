@@ -149,7 +149,7 @@ jobs:
           if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\scan_0042.pdf")) { throw "the scan was not sorted by its text" }
           Write-Host "the scanned PDF was read and sorted"
 
-      - name: Test the AI model Laya (set up from the official sources, then ask it)
+      - name: Test the AI model Laya (download laya-uni, then ask it)
         shell: pwsh
         run: |
           $root = Join-Path $env:RUNNER_TEMP "laya"
@@ -595,15 +595,15 @@ jobs:
           test -f "$root/Studium/Informatik/Programmierung 1/lecture one.pptx"
           echo "right-click sorting works on Linux"
 
-      - name: Test the AI model Laya (set up from the official sources, then ask it)
+      - name: Test the AI model Laya (download laya-uni, then ask it)
         run: |
           root=$RUNNER_TEMP/laya
           mkdir -p "$root"
           echo '{}' > "$root/config.json"
           status=0
           dist/FileSorter/file-sorter --laya-setup --laya-check --config "$root/config.json" || status=$?
-          grep -i "laya" "$root/file-sorter.log" | grep -v "setup (packages)" | tail -30
-          du -sh "$root/laya"
+          grep -i "laya" "$root/file-sorter.log" | tail -40
+          du -sh "$root/laya-uni"
           exit $status
 
       - name: Smoke-test sorting and text recognition

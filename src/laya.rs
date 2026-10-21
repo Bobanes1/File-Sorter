@@ -1,298 +1,259 @@
-//! Laya: an optional AI model (ConvAI Innovations, Apache 2.0, huggingface.co/convaiinnovations/laya)
-//! that reads text in 100+ languages and answers typed questions with probabilities. File
-//! Sorter asks it which module a document belongs to when the keywords don't decide, and
-//! which dates in a document are deadlines or exams.
+//! The AI model Laya, optional: it reads documents in many languages and answers questions
+//! about them – which module a file belongs to when the keywords don't decide, which subfolder
+//! when the rules don't, and what a date in a sentence is. It runs on this computer, natively
+//! (no Python); only the model (about 680 MB) is downloaded once, into the state folder.
 //!
-//! Laya runs in Python (PyTorch). Setting it up (optional, a few GB) fetches `uv` (Astral's
-//! Python installer: a fixed release, checked against its SHA-256), which installs a private
-//! Python with the `laya` package (the CPU build of PyTorch) and Laya's multilingual
-//! checkpoint – all in File Sorter's own folder, apart from anything else on the computer.
-//! While File Sorter needs it, a small helper (`laya_helper.py`) keeps the model loaded and
-//! answers over its standard input and output; it ends after a while without questions,
-//! while saving resources in the background, and when File Sorter ends.
+//! The model is laya-uni by Nils Briggen: Laya (convaiinnovations/laya, multilingual
+//! checkpoint) fine-tuned on course files of every faculty (`training/laya-uni`). It is a
+//! ModernBERT encoder plus a small decision head: each answer option sits behind a `[MASK]`
+//! marker, and the head scores the markers – a port of Laya's own `rl_common.py` /
+//! `rl_agent_api.py` (choice questions only).
+//!
+//! The model is pinned: its files' URLs and SHA-256 are in this file, and a newer model only
+//! comes with a newer File Sorter (tested with the real model in CI first).
 
+use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Mutex;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use candle_core::{D, DType, Device, IndexOp, Module, Tensor};
+use candle_nn::{Embedding, LayerNorm, Linear, VarBuilder};
+use candle_transformers::models::modernbert::{self, ModernBert};
+use serde::Deserialize;
 
-/// The uv release fetched, with the SHA-256 of its downloads (from the release's `.sha256`).
-const UV_VERSION: &str = "0.12.20";
-const UV_SHA256_WINDOWS: &str = "95f9bc30fbb3574d276e28ac4a6de932d25153645853d13da8c21eec3bc88d06";
-const UV_SHA256_LINUX: &str = "6590717592ace991ff83a63fef799e3ad9d33ecc8f96c5d6bdd732496e79337f";
-/// The `laya` package and the Python it runs on.
-const LAYA_PACKAGE: &str = "laya==0.4.12";
-const PYTHON_VERSION: &str = "3.12";
-const HELPER: &str = include_str!("../resources/laya_helper.py");
+use crate::config::{Config, Course};
 
-/// How long the model may take to load (the first time it reads a GB from disk).
-const LOAD_TIME: Duration = Duration::from_secs(240);
-/// How long one answer may take.
-const ANSWER_TIME: Duration = Duration::from_secs(120);
-/// Without questions this long, the helper ends (its memory goes back to the system).
+/// laya-uni-1: its files, and the confidence it needs before it chooses a module (chosen on
+/// its validation rows, see training/laya-uni).
+const MODEL: &str = r#"{"name": "laya-uni-1", "min_probability": 0.7, "min_lead": 2.0, "files": [
+ {"name": "rl_agent_config.json", "size": 4987, "sha256": "c06f9dff24ed9f1132e5e44020381d380d3b5ea30e650f90a82ff6378215c6ff"},
+ {"name": "encoder-config.json", "size": 1939, "sha256": "36b7d4898274ed6f06ce9c1f0e34034d8bd39295ab232d7cabc41a3eac821e5f"},
+ {"name": "tokenizer.json", "size": 34363188, "sha256": "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f"},
+ {"name": "model.safetensors", "size": 643835524, "sha256": "2a73a52757ff1557d59abcdb43db469327df077146ce68140292a943572925bb"}]}"#;
+/// Where the model's files are published (the release laya-uni-1 of NilsBriggen/laya-uni).
+const MODEL_URL: &str = "https://github.com/NilsBriggen/laya-uni/releases/download/laya-uni-1/";
+/// Where File Sorter 0.15–0.16 kept Laya with its own Python (removed once laya-uni is there).
+const OLD_DIR: &str = "laya";
+pub const INSTRUCTIONS: &str = "Which university module does this file belong to?";
+/// Enough text for the model's 1024 tokens; tokenizing a whole book would only cost time.
+const MAX_TEXT_CHARS: usize = 6000;
+/// Option texts are cut to this many tokens (as in training).
+const MAX_OPTION_TOKENS: usize = 48;
+/// The model leaves memory after this long without questions.
 const IDLE: Duration = Duration::from_secs(15 * 60);
-/// After the helper failed, it isn't tried again for this long.
+/// After the model failed to load, it is tried again after this long.
+#[cfg_attr(test, allow(dead_code))]
 const RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
 
-/// Where Laya lives: `<state>/laya`.
+/// The model's files and the confidence it needs to choose a module.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct Manifest {
+    name: String,
+    /// The answer must be at least this likely,
+    min_probability: f32,
+    /// and this many times as likely as the second.
+    min_lead: f32,
+    files: Vec<Asset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct Asset {
+    name: String,
+    size: u64,
+    sha256: String,
+}
+
+impl Manifest {
+    fn get() -> Manifest {
+        serde_json::from_str(MODEL).expect("the built-in manifest is valid")
+    }
+
+    fn size(&self) -> u64 {
+        self.files.iter().map(|f| f.size).sum()
+    }
+}
+
+/// Where Laya is kept: `<state>/laya-uni/<model>/`.
 #[derive(Debug, Clone)]
 pub struct Place {
-    pub dir: PathBuf,
+    root: PathBuf,
+    /// The folder of File Sorter 0.15–0.16's Laya (with Python).
+    old: PathBuf,
 }
 
 impl Place {
     pub fn new(state_dir: &Path) -> Place {
-        Place { dir: state_dir.join("laya") }
+        Place { root: state_dir.join("laya-uni"), old: state_dir.join(OLD_DIR) }
     }
 
-    fn uv(&self) -> PathBuf {
-        self.dir.join(if cfg!(windows) { "uv.exe" } else { "uv" })
+    fn model_dir(&self) -> PathBuf {
+        self.root.join(Manifest::get().name)
     }
 
-    fn venv(&self) -> PathBuf {
-        self.dir.join("venv")
-    }
-
-    pub fn python(&self) -> PathBuf {
-        if cfg!(windows) {
-            self.venv().join("Scripts").join("python.exe")
-        } else {
-            self.venv().join("bin").join("python")
-        }
-    }
-
-    fn helper(&self) -> PathBuf {
-        self.dir.join("laya_helper.py")
-    }
-
-    fn marker(&self) -> PathBuf {
-        self.dir.join("installed.json")
-    }
-
-    fn models(&self) -> PathBuf {
-        self.dir.join("models")
-    }
-
-    /// Set up completely (the last step writes the marker).
+    /// All files there (each is only put in place after its checksum was right).
     pub fn installed(&self) -> bool {
-        self.marker().is_file() && self.python().is_file()
+        let dir = self.model_dir();
+        Manifest::get().files.iter().all(|f| dir.join(&f.name).is_file())
     }
 
-    /// How much room it takes on disk.
+    /// The bytes downloaded so far, and the whole size.
+    pub fn progress(&self) -> (u64, u64) {
+        let manifest = Manifest::get();
+        let dir = self.model_dir();
+        let size = |p: PathBuf| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let done = manifest
+            .files
+            .iter()
+            .map(|f| {
+                let file = dir.join(&f.name);
+                if file.is_file() { f.size } else { size(partial(&file)) }
+            })
+            .sum();
+        (done, manifest.size())
+    }
+
+    /// File Sorter 0.15–0.16's Laya (with its own Python) is there.
+    pub fn had_older(&self) -> bool {
+        self.old.join("installed.json").is_file() || self.old.join("venv").is_dir()
+    }
+
+    /// How much room it takes.
     pub fn size(&self) -> u64 {
-        fn walk(dir: &Path) -> u64 {
-            let Ok(entries) = fs::read_dir(dir) else { return 0 };
-            entries
-                .flatten()
-                .map(|e| match e.file_type() {
-                    Ok(t) if t.is_dir() => walk(&e.path()),
-                    Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
-                    _ => 0,
-                })
-                .sum()
-        }
-        walk(&self.dir)
+        folder_size(&self.root)
     }
 
-    /// Take everything away again.
+    /// Take Laya away again.
     pub fn remove(&self) -> std::io::Result<()> {
         stop();
-        match fs::remove_dir_all(&self.dir) {
+        match fs::remove_dir_all(&self.root) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         }
     }
 
-    /// A command with File Sorter's own folders for uv, Python and the model.
-    fn command(&self, program: &Path) -> Command {
-        #[allow(unused_mut)]
-        let mut command = Command::new(program);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
+    /// Remove what isn't needed any more: other models' folders, and File Sorter 0.15–0.16's
+    /// Laya with its own Python. Returns the bytes freed.
+    fn tidy(&self) -> u64 {
+        let keep = Manifest::get().name;
+        let mut freed = 0;
+        for entry in fs::read_dir(&self.root).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() && entry.file_name() != keep.as_str() {
+                freed += folder_size(&path);
+                let _ = fs::remove_dir_all(&path);
+            }
         }
-        command
-            .env("UV_PYTHON_INSTALL_DIR", self.dir.join("python"))
-            .env("UV_CACHE_DIR", self.dir.join("cache"))
-            .env("UV_NO_CONFIG", "1")
-            // Always its own Python, so a system update can't take it away.
-            .env("UV_PYTHON_PREFERENCE", "only-managed")
-            .env("HF_HOME", self.models())
-            .env("HF_HUB_DISABLE_TELEMETRY", "1")
-            .env("PYTHONUTF8", "1")
-            .env("PYTHONIOENCODING", "utf-8")
-            .env_remove("PYTHONPATH")
-            .env_remove("VIRTUAL_ENV")
-            .stdin(Stdio::null());
-        command
+        // Only if it is that Laya (its marker or its Python environment is there).
+        if self.had_older() {
+            freed += folder_size(&self.old);
+            let _ = fs::remove_dir_all(&self.old);
+        }
+        freed
     }
 }
 
-/// The steps of setting Laya up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Step {
-    /// Fetching uv.
-    Tool,
-    /// A private Python.
-    Python,
-    /// The `laya` package and PyTorch (the biggest part).
-    Packages,
-    /// Laya's multilingual checkpoint.
-    Model,
+fn folder_size(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else { return 0 };
+    entries
+        .flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => folder_size(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map(|m| m.len()).unwrap_or(0),
+            _ => 0,
+        })
+        .sum()
 }
 
-impl Step {
-    pub const ALL: [Step; 4] = [Step::Tool, Step::Python, Step::Packages, Step::Model];
-
-    pub fn number(self) -> usize {
-        Step::ALL.iter().position(|s| *s == self).unwrap_or(0) + 1
-    }
+fn partial(file: &Path) -> PathBuf {
+    file.with_extension("partial")
 }
 
-/// Set Laya up in `place`, telling `progress` each step. What was done before is kept, so
-/// an interrupted setup goes on where it stopped.
-pub fn install(place: &Place, mut progress: impl FnMut(Step)) -> Result<(), String> {
-    fs::create_dir_all(&place.dir).map_err(|e| e.to_string())?;
-    progress(Step::Tool);
-    if !place.uv().is_file() {
-        fetch_uv(place)?;
+/// Download the model (the files still missing; an interrupted download goes on where it
+/// stopped), each file checked against its size and SHA-256. `progress` gets the bytes done
+/// and the whole size now and then.
+pub fn install(place: &Place, mut progress: impl FnMut(u64, u64)) -> Result<(), String> {
+    let manifest = Manifest::get();
+    let dir = place.model_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for asset in &manifest.files {
+        let file = dir.join(&asset.name);
+        if file.is_file() {
+            continue;
+        }
+        let part = partial(&file);
+        let mut child = crate::update::curl()
+            .args(["--max-time", "7200", "--continue-at", "-", "--max-filesize"])
+            .arg(asset.size.to_string())
+            .arg("--output")
+            .arg(&part)
+            .arg(format!("{MODEL_URL}{}", asset.name))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("curl could not be started: {e}"))?;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    let (done, total) = place.progress();
+                    progress(done, total);
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        let fetched = child.wait_with_output().map_err(|e| e.to_string())?;
+        if !fetched.status.success() {
+            return Err(format!("{}: {}", asset.name, String::from_utf8_lossy(&fetched.stderr).trim()));
+        }
+        let size = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        let got = crate::update::sha256_of(&part).map_err(|e| e.to_string())?;
+        if size != asset.size || got != asset.sha256 {
+            let _ = fs::remove_file(&part);
+            return Err(format!("the download of {} is not the published one (SHA-256 {got})", asset.name));
+        }
+        fs::rename(&part, &file).map_err(|e| e.to_string())?;
     }
-    progress(Step::Python);
-    if !place.python().is_file() {
-        let mut venv = place.command(&place.uv());
-        venv.args(["venv", "--python", PYTHON_VERSION]).arg(place.venv());
-        run(venv, "Python")?;
+    let (done, total) = place.progress();
+    progress(done, total);
+    let freed = place.tidy();
+    if freed > 0 {
+        log::info!("Removed the older Laya ({} MB)", freed / 1_000_000);
     }
-    progress(Step::Packages);
-    let mut packages = place.command(&place.uv());
-    packages.args(["pip", "install", "--python"]).arg(place.python()).arg(LAYA_PACKAGE).arg("--torch-backend=cpu");
-    run(packages, "packages")?;
-    // The downloaded packages are installed now; their copies only take room.
-    let _ = fs::remove_dir_all(place.dir.join("cache"));
-    progress(Step::Model);
-    fs::write(place.helper(), HELPER).map_err(|e| e.to_string())?;
-    let mut model = place.command(&place.python());
-    model.arg(place.helper()).arg("--download");
-    let out = run(model, "model")?;
-    if !out.contains("\"ready\": true") {
-        return Err(format!("the model did not answer: {}", tail(&out)));
-    }
-    let marker = json!({ "laya": LAYA_PACKAGE, "uv": UV_VERSION, "at": chrono::Local::now().to_rfc3339() });
-    fs::write(place.marker(), marker.to_string()).map_err(|e| e.to_string())?;
+    log::info!("Laya model {} is set up", manifest.name);
     Ok(())
 }
 
-/// Run a setup command; its output goes to the log. Returns what it printed.
-fn run(mut command: Command, what: &str) -> Result<String, String> {
-    let out = command.output().map_err(|e| format!("{what}: {e}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    for line in stderr.lines().chain(stdout.lines()).filter(|l| !l.trim().is_empty()).take(200) {
-        log::info!("Laya setup ({what}): {line}");
-    }
-    if !out.status.success() {
-        // uv's own «error: …» line says most; the last line says why.
-        let error = stderr.lines().find(|l| l.trim_start().starts_with("error:")).map(str::trim);
-        let why = tail(&stderr);
-        return Err(match error {
-            Some(e) if e != why => format!("{what}: {e} ({})", why.trim()),
-            _ => format!("{what}: {why}"),
-        });
-    }
-    Ok(stdout)
-}
-
-fn tail(text: &str) -> String {
-    text.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("").chars().take(300).collect()
-}
-
-/// Fetch uv from its GitHub release and check it.
-fn fetch_uv(place: &Place) -> Result<(), String> {
-    let (name, sha) = if cfg!(windows) {
-        ("uv-x86_64-pc-windows-msvc.zip", UV_SHA256_WINDOWS)
-    } else {
-        ("uv-x86_64-unknown-linux-gnu.tar.gz", UV_SHA256_LINUX)
-    };
-    let url = format!("https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/{name}");
-    let archive = place.dir.join(name);
-    let fetched = crate::update::curl()
-        .args(["--max-time", "600", "--output"])
-        .arg(&archive)
-        .arg(&url)
-        .output()
-        .map_err(|e| format!("curl could not be started: {e}"))?;
-    if !fetched.status.success() {
-        let _ = fs::remove_file(&archive);
-        return Err(format!("uv: {}", String::from_utf8_lossy(&fetched.stderr).trim()));
-    }
-    let result = (|| {
-        let got = sha256_file(&archive).map_err(|e| e.to_string())?;
-        if got != sha {
-            return Err(format!("the download of uv is not the published one (SHA-256 {got})"));
-        }
-        if cfg!(windows) {
-            let mut zip = zip::ZipArchive::new(fs::File::open(&archive).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-            let mut entry = zip.by_name("uv.exe").map_err(|e| e.to_string())?;
-            let mut out = fs::File::create(place.uv()).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
-        } else {
-            let status = Command::new("tar")
-                .arg("-xzf")
-                .arg(&archive)
-                .arg("-C")
-                .arg(&place.dir)
-                .arg("--strip-components=1")
-                .arg("uv-x86_64-unknown-linux-gnu/uv")
-                .status()
-                .map_err(|e| e.to_string())?;
-            if !status.success() {
-                return Err("uv could not be unpacked".into());
-            }
-        }
-        Ok(())
-    })();
-    let _ = fs::remove_file(&archive);
-    result
-}
-
-fn sha256_file(path: &Path) -> std::io::Result<String> {
-    let mut file = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 256 * 1024];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-// ---------- the helper, while File Sorter needs it ----------
+// ---------- the model, while File Sorter needs it ----------
 
 static PLACE: Mutex<Option<Place>> = Mutex::new(None);
 static ON: AtomicBool = AtomicBool::new(false);
-/// Only the window and `--headless` start the helper (not the right-click window, which
-/// shouldn't wait for a model to load).
+/// Only the window, `--headless` and `--sort-now` load the model (not the right-click
+/// window, which shouldn't wait for it).
 static ALLOWED: AtomicBool = AtomicBool::new(false);
-static HELPER_PROCESS: Mutex<Option<Helper>> = Mutex::new(None);
+/// The model in memory, and when it was last asked.
+static LOADED: Mutex<Option<(Arc<Laya>, Instant)>> = Mutex::new(None);
+#[cfg_attr(test, allow(dead_code))]
 static FAILED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Where Laya is (the state folder), and whether the setting is on.
 pub fn configure(state_dir: &Path, on: bool) {
-    if let Ok(mut place) = PLACE.lock() {
-        *place = Some(Place::new(state_dir));
+    let place = Place::new(state_dir);
+    if place.installed() && place.old.is_dir() {
+        let place = place.clone();
+        std::thread::spawn(move || {
+            let freed = place.tidy();
+            if freed > 0 {
+                log::info!("Removed the older Laya with its own Python ({} MB)", freed / 1_000_000);
+            }
+        });
+    }
+    if let Ok(mut p) = PLACE.lock() {
+        *p = Some(place);
     }
     ON.store(on, Ordering::Relaxed);
     if !on {
@@ -300,7 +261,7 @@ pub fn configure(state_dir: &Path, on: bool) {
     }
 }
 
-/// Let this process use Laya (the window, `--headless`).
+/// Let this process use Laya (the window, `--headless`, `--sort-now`).
 pub fn allow() {
     ALLOWED.store(true, Ordering::Relaxed);
 }
@@ -308,116 +269,53 @@ pub fn allow() {
 /// Set up, switched on, and not saving resources in the background.
 pub fn available() -> bool {
     #[cfg(test)]
-    if !TEST_ON.with(|on| on.get()) {
-        return false;
-    }
-    ALLOWED.load(Ordering::Relaxed)
-        && ON.load(Ordering::Relaxed)
-        && !crate::lean::active()
-        && PLACE.lock().is_ok_and(|p| p.as_ref().is_some_and(Place::installed))
-        && FAILED_AT.lock().map(|f| f.is_none_or(|t| t.elapsed() > RETRY_AFTER)).unwrap_or(true)
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-struct Helper {
-    child: Child,
-    stdin: ChildStdin,
-    lines: Receiver<String>,
-    used: Instant,
-    next_id: u64,
-}
-
-impl Helper {
-    fn start(place: &Place) -> Result<Helper, String> {
-        // Written again at every start, so an update of File Sorter brings its new version.
-        fs::write(place.helper(), HELPER).map_err(|e| e.to_string())?;
-        let mut command = place.command(&place.python());
-        command
-            .arg(place.helper())
-            .env("HF_HUB_OFFLINE", "1")
-            .env("TRANSFORMERS_OFFLINE", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|e| format!("the helper could not be started: {e}"))?;
-        let stdin = child.stdin.take().ok_or("no input")?;
-        let stdout = child.stdout.take().ok_or("no output")?;
-        if let Some(stderr) = child.stderr.take() {
-            std::thread::spawn(move || {
-                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    if !line.trim().is_empty() {
-                        log::debug!("Laya: {line}");
-                    }
-                }
-            });
-        }
-        let (tx, lines) = channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if tx.send(line).is_err() {
-                    return;
-                }
-            }
-        });
-        let mut helper = Helper { child, stdin, lines, used: Instant::now(), next_id: 1 };
-        let deadline = Instant::now() + LOAD_TIME;
-        loop {
-            let wait = deadline.saturating_duration_since(Instant::now());
-            let line = helper.lines.recv_timeout(wait).map_err(|_| {
-                let _ = helper.child.kill();
-                "the model did not load".to_string()
-            })?;
-            if serde_json::from_str::<Value>(&line).is_ok_and(|v| v["ready"] == true) {
-                log::info!("Laya is ready");
-                return Ok(helper);
-            }
-        }
-    }
-
-    fn ask(&mut self, states: &[String], questions: &Value, max_len: Option<usize>) -> Result<Vec<Value>, String> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let request = json!({ "id": id, "states": states, "questions": questions, "max_len": max_len });
-        writeln!(self.stdin, "{request}").map_err(|e| e.to_string())?;
-        self.stdin.flush().map_err(|e| e.to_string())?;
-        let deadline = Instant::now() + ANSWER_TIME;
-        loop {
-            let wait = deadline.saturating_duration_since(Instant::now());
-            let line = self.lines.recv_timeout(wait).map_err(|_| "no answer in time".to_string())?;
-            let Ok(answer) = serde_json::from_str::<Value>(&line) else { continue };
-            if answer["id"] != id {
-                continue;
-            }
-            self.used = Instant::now();
-            if let Some(error) = answer["error"].as_str() {
-                return Err(error.to_string());
-            }
-            return answer["answers"].as_array().cloned().ok_or_else(|| "no answers".to_string());
-        }
-    }
-}
-
-impl Drop for Helper {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// End the helper (its memory goes back to the system).
-pub fn stop() {
-    if let Ok(mut helper) = HELPER_PROCESS.lock()
-        && helper.take().is_some()
+    return tests::FAKE.with(|f| f.get().is_some());
+    #[cfg(not(test))]
     {
-        log::info!("Laya ended");
+        ALLOWED.load(Ordering::Relaxed)
+            && ON.load(Ordering::Relaxed)
+            && !crate::lean::active()
+            && PLACE.lock().is_ok_and(|p| p.as_ref().is_some_and(Place::installed))
+            && FAILED_AT.lock().map(|f| f.is_none_or(|t| t.elapsed() > RETRY_AFTER)).unwrap_or(true)
     }
 }
 
-/// End the helper when it wasn't asked anything for a while, or while saving resources.
+/// Drop the model from memory (switched off, saving resources, or not asked for a while).
+pub fn stop() {
+    if let Ok(mut loaded) = LOADED.lock()
+        && loaded.take().is_some()
+    {
+        log::info!("Laya left memory");
+    }
+}
+
+/// The model, loaded if it isn't yet.
+#[cfg_attr(test, allow(dead_code))]
+fn model() -> Option<Arc<Laya>> {
+    let place = PLACE.lock().ok()?.clone()?;
+    let mut loaded = LOADED.lock().ok()?;
+    if let Some((model, used)) = loaded.as_mut() {
+        *used = Instant::now();
+        return Some(model.clone());
+    }
+    let started = Instant::now();
+    match Laya::load(&place.model_dir()) {
+        Ok(model) => {
+            log::info!("Laya is ready ({:.1} s)", started.elapsed().as_secs_f32());
+            let model = Arc::new(model);
+            *loaded = Some((model.clone(), Instant::now()));
+            watch_idle();
+            Some(model)
+        }
+        Err(e) => {
+            log::info!("Laya could not be loaded: {e}");
+            *FAILED_AT.lock().ok()? = Some(Instant::now());
+            None
+        }
+    }
+}
+
+/// Drop the model when it wasn't asked anything for a while, or while saving resources.
 fn watch_idle() {
     static WATCHING: AtomicBool = AtomicBool::new(false);
     if WATCHING.swap(true, Ordering::Relaxed) {
@@ -426,7 +324,7 @@ fn watch_idle() {
     std::thread::spawn(|| {
         loop {
             std::thread::sleep(Duration::from_secs(30));
-            let idle = HELPER_PROCESS.lock().is_ok_and(|h| h.as_ref().is_some_and(|h| h.used.elapsed() > IDLE));
+            let idle = LOADED.lock().is_ok_and(|l| l.as_ref().is_some_and(|(_, used)| used.elapsed() > IDLE));
             if idle || crate::lean::active() || !ON.load(Ordering::Relaxed) {
                 stop();
             }
@@ -434,105 +332,88 @@ fn watch_idle() {
     });
 }
 
-/// Ask Laya `questions` about each of `states`; the answers per state (`None` when Laya isn't
-/// there or failed – callers then do without).
-pub fn ask(states: &[String], questions: &Value, max_len: Option<usize>) -> Option<Vec<Value>> {
-    if states.is_empty() || !available() {
+/// The probability of each option (`None` when Laya isn't there, failed, or not all options
+/// fit into the question – callers then do without).
+fn probabilities(instructions: &str, options: &[String], state: &str) -> Option<Vec<f32>> {
+    if options.is_empty() || !available() {
         return None;
     }
-    let place = PLACE.lock().ok()?.clone()?;
-    let mut guard = HELPER_PROCESS.lock().ok()?;
-    if guard.is_none() {
-        match Helper::start(&place) {
-            Ok(helper) => {
-                *guard = Some(helper);
-                watch_idle();
-            }
-            Err(e) => {
-                log::info!("Laya could not be used: {e}");
-                *FAILED_AT.lock().ok()? = Some(Instant::now());
-                return None;
-            }
-        }
-    }
-    let helper = guard.as_mut()?;
-    match helper.ask(states, questions, max_len) {
-        Ok(answers) if answers.len() == states.len() => Some(answers),
-        Ok(_) => None,
+    #[cfg(test)]
+    return tests::FAKE.with(|f| f.get()).map(|answer| answer(instructions, options, state));
+    #[cfg(not(test))]
+    match model()?.choose(instructions, options, state) {
+        Ok(p) => p,
         Err(e) => {
-            log::info!("Laya did not answer: {e}");
-            *guard = None;
-            *FAILED_AT.lock().ok()? = Some(Instant::now());
+            log::info!("Laya failed: {e}");
             None
         }
     }
 }
 
-/// The chosen option of a choice answer with its probability, and the probability of the
-/// next most likely one.
-fn choice(answer: &Value) -> Option<(String, f64, f64)> {
-    let probabilities = answer["probabilities"].as_object()?;
-    let mut ranked: Vec<(&String, f64)> = probabilities.iter().filter_map(|(k, v)| Some((k, v.as_f64()?))).collect();
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let (best, p) = ranked.first()?;
-    Some(((*best).clone(), *p, ranked.get(1).map_or(0.0, |r| r.1)))
-}
-
 // ---------- what File Sorter asks ----------
 
-/// The option for «none of the modules».
-const NONE: &str = "none";
-
-/// Asks which of `options` (id, what it is) `text` is about, or none of them (`none`: what
-/// that means here). The id and how sure Laya is, when it is clearly sure: at least `0.6`, and
-/// twice as likely as the next.
-fn pick_one(instructions: &str, options: &[(String, String)], none: &str, text: String) -> Option<(String, f64)> {
-    if options.is_empty() || !available() {
-        return None;
-    }
-    let mut criteria = serde_json::Map::new();
-    for (id, about) in options {
-        criteria.entry(id.clone()).or_insert_with(|| Value::String(about.clone()));
-    }
-    criteria.insert(NONE.into(), Value::String(none.into()));
-    let questions = json!({"pick": {"type": "choice", "instructions": instructions, "criteria": criteria}});
-    let answers = ask(&[text], &questions, None)?;
-    let (id, p, second) = choice(&answers[0]["pick"])?;
-    (id != NONE && p >= 0.6 && p >= 2.0 * second).then_some((id, p))
+/// What the model reads about a file (training rows are made the same way: `laya_rows.rs`).
+pub fn state_for(name: &str, text: &str) -> String {
+    let text: String = text.chars().take(MAX_TEXT_CHARS).collect();
+    format!("File name: {name}\n\n{text}")
 }
 
-/// The start of a document as it is shown to Laya: its name, then its text.
-fn document(name: &str, text: &str) -> String {
-    let body: String = text.chars().take(3000).collect();
-    format!("File name: {name}\n\n{body}")
+/// "Programmieren: Java, OOP" – an answer and what it means, as one option. Laya's own code
+/// renders a criterion `{label: text}` the same way.
+pub fn option(label: &str, keywords: &[String]) -> String {
+    if keywords.is_empty() { label.to_string() } else { format!("{label}: {}", keywords.join(", ")) }
+}
+
+fn option_text(course: &Course) -> String {
+    option(&course.label(), &course.keywords)
+}
+
+/// The best option if the model is clearly sure of it: at least `min_probability`, and
+/// `min_lead` times as likely as the second.
+fn confident(p: &[f32], min_probability: f32, min_lead: f32) -> Option<(usize, u8)> {
+    let mut order: Vec<usize> = (0..p.len()).collect();
+    order.sort_by(|a, b| p[*b].total_cmp(&p[*a]));
+    let (best, second) = (p[*order.first()?], order.get(1).map_or(0.0, |i| p[*i]));
+    (best >= min_probability && best >= min_lead * second).then(|| (order[0], (best * 100.0).round() as u8))
+}
+
+/// The option for «none of these».
+const NONE: &str = "none";
+
+/// Which of `options` (id, what it is) `state` is about, or none of them (`none`: what that
+/// means here): the id and how sure Laya is, when it is clearly sure – at least 60 %, and
+/// twice as likely as the next.
+fn pick_one(
+    instructions: &str,
+    options: &[(String, String)],
+    none: Option<&str>,
+    state: &str,
+) -> Option<(String, f64)> {
+    let mut ids: Vec<&str> = options.iter().map(|(id, _)| id.as_str()).collect();
+    let mut texts: Vec<String> = options.iter().map(|(id, about)| option(id, std::slice::from_ref(about))).collect();
+    if let Some(none) = none {
+        ids.push(NONE);
+        texts.push(option(NONE, &[none.to_string()]));
+    }
+    let p = probabilities(instructions, &texts, state)?;
+    let (i, sure) = confident(&p, 0.6, 2.0)?;
+    (ids[i] != NONE).then(|| (ids[i].to_string(), f64::from(sure) / 100.0))
 }
 
 /// Which module a document belongs to: its label and how sure Laya is, when it is clearly
-/// sure. `allowed` limits the answer to some modules (those the keywords found about equally
-/// likely).
-pub fn module_for(config: &crate::config::Config, name: &str, text: &str, allowed: &[String]) -> Option<(String, f64)> {
-    let options: Vec<(String, String)> = config
-        .courses
-        .iter()
-        .filter(|c| allowed.is_empty() || allowed.contains(&c.label()))
-        .map(|course| {
-            let mut about = format!("the course «{}»", course.name);
-            if !course.subject.is_empty() {
-                about.push_str(&format!(" (study program {})", course.subject));
-            }
-            let words: Vec<&str> = course.keywords.iter().map(String::as_str).take(12).collect();
-            if !words.is_empty() {
-                about.push_str(&format!("; typical words: {}", words.join(", ")));
-            }
-            (course.label(), about)
-        })
-        .collect();
-    pick_one(
-        "This is a document a student downloaded. Which university course is it for?",
-        &options,
-        "none of these courses: other subjects, personal or administrative documents",
-        document(name, text),
-    )
+/// sure (as laya-uni was calibrated: at least 70 %, twice the next). `allowed` limits the
+/// answer to some modules (those the keywords found about equally likely).
+pub fn module_for(config: &Config, name: &str, text: &str, allowed: &[String]) -> Option<(String, f64)> {
+    let courses: Vec<&Course> =
+        config.courses.iter().filter(|c| allowed.is_empty() || allowed.contains(&c.label())).collect();
+    if courses.len() < 2 && allowed.is_empty() {
+        return None;
+    }
+    let options: Vec<String> = courses.iter().map(|c| option_text(c)).collect();
+    let p = probabilities(INSTRUCTIONS, &options, &state_for(name, text))?;
+    let manifest = Manifest::get();
+    let (i, sure) = confident(&p, manifest.min_probability, manifest.min_lead)?;
+    Some((courses[i].label(), f64::from(sure) / 100.0))
 }
 
 /// Which subfolder of a module a document goes in (options: folder name, what goes there),
@@ -541,8 +422,8 @@ pub fn subfolder_for(name: &str, text: &str, options: &[(String, String)]) -> Op
     pick_one(
         "This is a document from a university course. Which folder of the course does it belong in?",
         options,
-        "none of these folders: general course information, or something that fits no folder",
-        document(name, text),
+        Some("none of these folders: general course information, or something that fits no folder"),
+        &state_for(name, text),
     )
 }
 
@@ -558,170 +439,462 @@ pub enum DateKind {
 
 /// For each sentence with a date: what the date is, and how sure Laya is.
 pub fn date_kinds(sentences: &[String]) -> Option<Vec<(DateKind, f64)>> {
-    if sentences.is_empty() {
-        return Some(Vec::new());
-    }
-    let questions = json!({
-        "kind": {
-            "type": "choice",
-            "instructions": "What is the date in this sentence from a university course document?",
-            "criteria": {
-                "due": "a deadline: something must be handed in, submitted, uploaded or registered for by then",
-                "event": "an exam, test, quiz, presentation, excursion or workshop takes place then",
-                "other": "anything else: a lecture, a publication or version date, a holiday, a past event",
-            },
-        }
-    });
-    let answers = ask(sentences, &questions, Some(256))?;
-    let kind = |a: &Value| match choice(&a["kind"]) {
-        Some((k, p, _)) if k == "due" => (DateKind::Due, p),
-        Some((k, p, _)) if k == "event" => (DateKind::Event, p),
-        Some((_, p, _)) => (DateKind::Other, p),
-        None => (DateKind::Other, 0.0),
-    };
-    Some(answers.iter().map(kind).collect())
+    let options = [
+        option(
+            "due",
+            &["a deadline: something must be handed in, submitted, uploaded or registered for by then".into()],
+        ),
+        option("event", &["an exam, test, quiz, presentation, excursion or workshop takes place then".into()]),
+        option("other", &["anything else: a lecture, a publication or version date, a holiday, a past event".into()]),
+    ];
+    let instructions = "What is the date in this sentence from a university course document?";
+    sentences
+        .iter()
+        .map(|sentence| {
+            let p = probabilities(instructions, &options, sentence)?;
+            let (best, sure) = p.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1))?;
+            let kind = [DateKind::Due, DateKind::Event, DateKind::Other][best];
+            Some((kind, f64::from(*sure)))
+        })
+        .collect()
 }
 
 /// For each sentence with a date (known to be a hand-in, or an appointment): which of the
 /// `categories` (id, what such a date is) it is, when Laya is clearly sure.
 pub fn date_categories(sentences: &[String], categories: &[(String, String)]) -> Option<Vec<Option<String>>> {
-    if sentences.is_empty() || categories.is_empty() {
-        return Some(Vec::new());
+    if !available() {
+        return None;
     }
-    let mut criteria = serde_json::Map::new();
-    for (id, about) in categories {
-        criteria.entry(id.clone()).or_insert_with(|| Value::String(about.clone()));
-    }
-    let questions = json!({
-        "category": {
-            "type": "choice",
-            "instructions": "Which kind of date is in this sentence from a university course document?",
-            "criteria": criteria,
-        }
-    });
-    let answers = ask(sentences, &questions, Some(256))?;
-    let sure =
-        |a: &Value| choice(&a["category"]).and_then(|(id, p, second)| (p >= 0.6 && p >= 2.0 * second).then_some(id));
-    Some(answers.iter().map(sure).collect())
+    let instructions = "Which kind of date is in this sentence from a university course document?";
+    Some(sentences.iter().map(|s| pick_one(instructions, categories, None, s).map(|(id, _)| id)).collect())
 }
+
+/// The token ids the question is made of (as the model was trained):
+/// `[CLS] choice question: … [SEP] [MASK] option … [MASK] option … [SEP] state [SEP]`.
+/// Returns the ids and where each option's `[MASK]` is.
+fn build_sequence(
+    encode: impl Fn(&str) -> Vec<u32>,
+    special: &Special,
+    instructions: &str,
+    options: &[String],
+    state: &str,
+    max_len: usize,
+    head_max_len: usize,
+) -> (Vec<u32>, Vec<usize>) {
+    let clean = |s: &str| s.replace("<mask>", " ");
+    let mut head = encode(&format!("choice question: {}", clean(instructions)));
+    let mut opts: Vec<Vec<u32>> = options
+        .iter()
+        .map(|o| {
+            let mut ids = vec![special.mask];
+            ids.extend(encode(&format!(" {}", clean(o))).into_iter().take(MAX_OPTION_TOKENS));
+            ids
+        })
+        .collect();
+    let used = |opts: &[Vec<u32>]| opts.iter().map(Vec::len).sum::<usize>() as isize;
+    let mut budget = head_max_len as isize - used(&opts);
+    if budget < 16 {
+        // Too many or too long options: shrink every option text evenly.
+        let per = 4.max((head_max_len.saturating_sub(16)) / opts.len().max(1));
+        opts.iter_mut().for_each(|o| o.truncate(per));
+        budget = head_max_len as isize - used(&opts);
+    }
+    head.truncate(budget.max(8) as usize);
+    let mut ids = vec![special.cls];
+    ids.extend(head);
+    ids.push(special.sep);
+    let mut markers = Vec::new();
+    for o in opts {
+        markers.push(ids.len());
+        ids.extend(o);
+    }
+    ids.push(special.sep);
+    let room = max_len.saturating_sub(ids.len() + 1);
+    ids.extend(encode(&clean(state)).into_iter().take(room));
+    ids.push(special.sep);
+    ids.truncate(max_len);
+    markers.retain(|m| *m < max_len);
+    (ids, markers)
+}
+
+struct Special {
+    cls: u32,
+    sep: u32,
+    mask: u32,
+}
+
+#[derive(Deserialize)]
+struct AgentConfig {
+    head_layers: usize,
+    max_len: usize,
+    head_max_len: usize,
+    #[serde(default)]
+    temperature: Vec<f32>,
+    #[serde(default)]
+    temperature_by_options: HashMap<String, f32>,
+}
+
+/// The parts of the encoder's `config.json` (a newer layout than candle reads).
+#[derive(Deserialize)]
+struct EncoderConfig {
+    vocab_size: usize,
+    hidden_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    intermediate_size: usize,
+    max_position_embeddings: usize,
+    norm_eps: f64,
+    pad_token_id: u32,
+    global_attn_every_n_layers: usize,
+    local_attention: usize,
+    rope_parameters: HashMap<String, Rope>,
+}
+
+#[derive(Deserialize)]
+struct Rope {
+    rope_theta: f64,
+}
+
+/// One PyTorch `TransformerEncoderLayer` (norm first, ReLU).
+struct HeadLayer {
+    in_proj: Linear,
+    out_proj: Linear,
+    linear1: Linear,
+    linear2: Linear,
+    norm1: LayerNorm,
+    norm2: LayerNorm,
+    heads: usize,
+}
+
+impl HeadLayer {
+    fn load(vb: VarBuilder, d: usize) -> candle_core::Result<Self> {
+        let attn = vb.pp("self_attn");
+        let in_proj = Linear::new(attn.get((3 * d, d), "in_proj_weight")?, Some(attn.get(3 * d, "in_proj_bias")?));
+        Ok(HeadLayer {
+            in_proj,
+            out_proj: candle_nn::linear(d, d, attn.pp("out_proj"))?,
+            linear1: candle_nn::linear(d, 4 * d, vb.pp("linear1"))?,
+            linear2: candle_nn::linear(4 * d, d, vb.pp("linear2"))?,
+            norm1: candle_nn::layer_norm(d, 1e-5, vb.pp("norm1"))?,
+            norm2: candle_nn::layer_norm(d, 1e-5, vb.pp("norm2"))?,
+            heads: (d / 64).max(1),
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+        let (b, len, d) = x.dims3()?;
+        let hd = d / self.heads;
+        let qkv = self
+            .norm1
+            .forward(x)?
+            .apply(&self.in_proj)?
+            .reshape((b, len, 3, self.heads, hd))?
+            .permute((2, 0, 3, 1, 4))?;
+        let (q, k, v) = (qkv.get(0)?.contiguous()?, qkv.get(1)?.contiguous()?, qkv.get(2)?.contiguous()?);
+        let att = (q * (hd as f64).powf(-0.5))?.matmul(&k.t()?)?;
+        let att = candle_nn::ops::softmax_last_dim(&att)?.matmul(&v)?;
+        let att = att.transpose(1, 2)?.reshape((b, len, d))?.apply(&self.out_proj)?;
+        let x = (x + att)?;
+        let ff = self.norm2.forward(&x)?.apply(&self.linear1)?.relu()?.apply(&self.linear2)?;
+        x + ff
+    }
+}
+
+struct Laya {
+    encoder: ModernBert,
+    head: Vec<HeadLayer>,
+    type_emb: Embedding,
+    scorer_norm: LayerNorm,
+    scorer_in: Linear,
+    scorer_out: Linear,
+    tokenizer: tokenizers::Tokenizer,
+    special: Special,
+    config: AgentConfig,
+}
+
+impl Laya {
+    fn load(dir: &Path) -> Result<Laya, String> {
+        let read = |name: &str| fs::read_to_string(dir.join(name)).map_err(|e| format!("{name}: {e}"));
+        let config: AgentConfig = serde_json::from_str(&read("rl_agent_config.json")?).map_err(|e| e.to_string())?;
+        let enc: EncoderConfig = serde_json::from_str(&read("encoder-config.json")?).map_err(|e| e.to_string())?;
+        let theta = |kind: &str| enc.rope_parameters.get(kind).map_or(160_000.0, |r| r.rope_theta);
+        let enc_config = modernbert::Config {
+            vocab_size: enc.vocab_size,
+            hidden_size: enc.hidden_size,
+            num_hidden_layers: enc.num_hidden_layers,
+            num_attention_heads: enc.num_attention_heads,
+            intermediate_size: enc.intermediate_size,
+            max_position_embeddings: enc.max_position_embeddings,
+            layer_norm_eps: enc.norm_eps,
+            pad_token_id: enc.pad_token_id,
+            global_attn_every_n_layers: enc.global_attn_every_n_layers,
+            global_rope_theta: theta("full_attention"),
+            local_attention: enc.local_attention,
+            local_rope_theta: theta("sliding_attention"),
+            classifier_config: None,
+        };
+        let mut tokenizer = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|e| e.to_string())?;
+        // A tokenizer saved by laya's training can still carry the 48-token cut it uses for
+        // option texts; the file's text must not be cut that way.
+        tokenizer.with_truncation(None).map_err(|e| e.to_string())?;
+        tokenizer.with_padding(None);
+        let id = |t: &str| tokenizer.token_to_id(t).ok_or(format!("the tokenizer has no {t}"));
+        let special = Special { cls: id("<bos>")?, sep: id("<eos>")?, mask: id("<mask>")? };
+        // shortcut: F32 needs about 1.3 GB of memory (the file is F16); keep the 256k-token embedding in F16 if that matters.
+        // SAFETY: the file is ours and not changed while it is mapped (only during loading).
+        let vb =
+            unsafe { VarBuilder::from_mmaped_safetensors(&[dir.join("model.safetensors")], DType::F32, &Device::Cpu) }
+                .map_err(|e| e.to_string())?;
+        let d = enc.hidden_size;
+        let build = || -> candle_core::Result<Laya> {
+            // candle names the encoder's weights `model.…`, Laya saved them as `encoder.…`.
+            let encoder_vb = vb.clone().rename_f(|n| n.replacen("model.", "encoder.", 1));
+            let head: candle_core::Result<Vec<HeadLayer>> =
+                (0..config.head_layers).map(|i| HeadLayer::load(vb.pp(format!("head.layers.{i}")), d)).collect();
+            Ok(Laya {
+                encoder: ModernBert::load(encoder_vb, &enc_config)?,
+                head: head?,
+                type_emb: candle_nn::embedding(3, d, vb.pp("type_emb"))?,
+                scorer_norm: candle_nn::layer_norm(d, 1e-5, vb.pp("scorer.0"))?,
+                scorer_in: candle_nn::linear(d, d, vb.pp("scorer.1"))?,
+                scorer_out: candle_nn::linear(d, 1, vb.pp("scorer.3"))?,
+                tokenizer: tokenizer.clone(),
+                special,
+                config,
+            })
+        };
+        build().map_err(|e| e.to_string())
+    }
+
+    fn encode(&self, text: &str) -> Vec<u32> {
+        self.tokenizer.encode(text, false).map(|e| e.get_ids().to_vec()).unwrap_or_default()
+    }
+
+    /// The probability of each option, or None if not all of them fit into the question.
+    fn choose(&self, instructions: &str, options: &[String], state: &str) -> candle_core::Result<Option<Vec<f32>>> {
+        let (ids, markers) = build_sequence(
+            |t| self.encode(t),
+            &self.special,
+            instructions,
+            options,
+            state,
+            self.config.max_len,
+            self.config.head_max_len,
+        );
+        if markers.len() != options.len() {
+            return Ok(None);
+        }
+        let dev = Device::Cpu;
+        let input = Tensor::new(ids.as_slice(), &dev)?.unsqueeze(0)?;
+        let mask = input.ones_like()?;
+        let h = self.encoder.forward(&input, &mask)?;
+        // Question type 0: choice.
+        let mut h = h.broadcast_add(&self.type_emb.embeddings().i(0)?)?;
+        for layer in &self.head {
+            h = layer.forward(&h)?;
+        }
+        let at = Tensor::new(markers.iter().map(|m| *m as u32).collect::<Vec<_>>().as_slice(), &dev)?;
+        let m = h.squeeze(0)?.index_select(&at, 0)?;
+        let m = self.scorer_norm.forward(&m)?.apply(&self.scorer_in)?.gelu_erf()?.apply(&self.scorer_out)?;
+        let logits: Vec<f32> = m.squeeze(D::Minus1)?.to_vec1()?;
+        let k = logits.len();
+        let bucket = match k {
+            ..=2 => "choice:2",
+            3..=5 => "choice:3-5",
+            6..=10 => "choice:6-10",
+            _ => "choice:11+",
+        };
+        let t = self
+            .config
+            .temperature_by_options
+            .get(bucket)
+            .copied()
+            .unwrap_or_else(|| self.config.temperature.first().copied().unwrap_or(1.0));
+        Ok(Some(softmax(&logits, t)))
+    }
+}
+
+fn softmax(logits: &[f32], temperature: f32) -> Vec<f32> {
+    let z: Vec<f32> = logits.iter().map(|l| l / temperature).collect();
+    let max = z.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let e: Vec<f32> = z.iter().map(|v| (v - max).exp()).collect();
+    let sum: f32 = e.iter().sum();
+    e.iter().map(|v| v / sum).collect()
+}
+
+/// Files of other faculties and the module they belong to (for checking the real model).
+pub const REAL_CASES: [([&str; 4], &str, &str, usize); 3] = [
+    (
+        ["Strafrecht AT", "Privatrecht I", "Staatsrecht", "Römisches Recht"],
+        "Fall_7.pdf",
+        "Fall 7: A schlägt B mit einem Stock. Prüfen Sie die Strafbarkeit des A wegen Körperverletzung (§ 223 StGB). Vorsatz, Rechtswidrigkeit, Schuld.",
+        0,
+    ),
+    (
+        ["Anatomie I", "Biochemie", "Physiologie", "Medizinische Psychologie"],
+        "VL05.pdf",
+        "Vorlesung 5: Der Herzzyklus. Systole und Diastole, Druck-Volumen-Diagramm, Herzminutenvolumen, Frank-Starling-Mechanismus.",
+        2,
+    ),
+    (
+        ["Ancient History", "Medieval History", "Modern European History", "Historiography"],
+        "week3_reading.pdf",
+        "The Investiture Controversy: Gregory VII, Henry IV and the road to Canossa (1077). Read the Dictatus Papae before the seminar.",
+        1,
+    ),
+];
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::sorter::tests::test_config;
 
-    /// Laya on for the calling test's thread.
-    pub fn enable_in_this_test() {
-        TEST_ON.with(|on| on.set(true));
+    type Answer = fn(&str, &[String], &str) -> Vec<f32>;
+
+    thread_local! {
+        /// A stand-in for the model on this test's thread (none: Laya isn't there).
+        pub static FAKE: std::cell::Cell<Option<Answer>> = const { std::cell::Cell::new(None) };
     }
 
-    /// A stand-in for the `laya` package (next to the helper, so Python finds it first):
-    /// documents mentioning «Varianz» are Statistik, «due»/«abgabe»/«rendre» sentences are
-    /// deadlines, «Prüfung»/«exam» ones exams.
-    const FAKE_LAYA: &str = r#"
-class Agent:
-    def system_one(self, state, questions, max_len=None):
-        return self.predict_batch([state], questions)[0]
-    def predict_batch(self, states, questions, batch_size=None, max_len=None):
-        out = []
-        for s in states:
-            low = s.lower()
-            answers = {}
-            for qid, q in questions.items():
-                criteria = q.get("criteria", {})
-                keys = list(criteria.keys())
-                def named(k):
-                    # «Name» and typical words of an option the text mentions.
-                    about = criteria[k].lower()
-                    words = [w.strip(" .;,") for w in about.split("typical words:")[-1].split(",")] if "typical words:" in about else []
-                    if "«" in about:
-                        words.append(about.split("«")[1].split("»")[0])
-                    return any(w and len(w) > 2 and w in low for w in words)
-                def leading(marker):
-                    # The option named so, or whose description starts so.
-                    return next((k for k in keys if k == marker or criteria[k].lower().startswith(marker)), None)
-                pick = None
-                if qid == "pick" and "varianz" in low:
-                    pick = next((k for k in keys if "statistik" in k.lower()), None)
-                elif qid == "kind":
-                    due = any(w in low for w in ("abgabe", "due", "rendre"))
-                    event = any(w in low for w in ("prüfung", "exam", "exkursion"))
-                    pick = "due" if due else ("event" if event else "other")
-                elif qid != "pick" or "folder" in q.get("instructions", ""):
-                    pick = next((k for k in keys if k != "none" and named(k)), None)
-                    if pick is None and any(w in low for w in ("abgabe", "due", "rendre", "aufgabe 1")):
-                        pick = leading("exercise") or leading("an exercise")
-                    if pick is None and any(w in low for w in ("prüfung", "exam")):
-                        pick = leading("exam") or leading("an exam")
-                pick = pick or "none"
-                probs = {k: (0.9 if k == pick else 0.1 / max(1, len(keys) - 1)) for k in keys}
-                answers[qid] = {"type": "choice", "choice": pick, "probabilities": probs}
-            out.append({"answers": answers})
-        return out
-def load(*args, **kwargs):
-    return Agent()
-"#;
+    /// Answer with `answer` instead of the model on the calling test's thread.
+    pub fn fake(answer: Answer) {
+        FAKE.with(|f| f.set(Some(answer)));
+    }
 
-    /// A Laya «set up» with the stand-in, using the system's Python.
-    pub fn fake_place(dir: &Path) -> Option<Place> {
-        let python = ["python3", "python"].into_iter().find(|p| Command::new(p).arg("--version").output().is_ok())?;
-        let place = Place::new(dir);
-        let bin = place.python();
-        fs::create_dir_all(bin.parent()?).ok()?;
-        #[cfg(unix)]
-        {
-            let real = String::from_utf8(
-                Command::new("sh").arg("-c").arg(format!("command -v {python}")).output().ok()?.stdout,
-            )
-            .ok()?;
-            std::os::unix::fs::symlink(real.trim(), &bin).ok()?;
+    /// Sure (90 %) of the option the text clearly points to: one whose «name» or typical words
+    /// it mentions, else a hand-in («Abgabe», «rendre», «Aufgabe 1») or an exam/event, a
+    /// module about «Varianz» for Statistik; else «none» if offered, else not sure at all.
+    pub fn stand_in(instructions: &str, options: &[String], state: &str) -> Vec<f32> {
+        let low = state.to_lowercase();
+        let parts: Vec<(String, String)> = options
+            .iter()
+            .map(|o| {
+                let (id, about) = o.split_once(": ").unwrap_or((o, ""));
+                (id.to_lowercase(), about.to_lowercase())
+            })
+            .collect();
+        let named = |about: &str| {
+            let mut words: Vec<&str> = Vec::new();
+            if let Some((_, typical)) = about.split_once("typical words: ") {
+                words.extend(typical.split(", "));
+            }
+            if let Some(name) = about.split('«').nth(1).and_then(|n| n.split('»').next()) {
+                words.push(name);
+            }
+            words.iter().any(|w| w.len() > 2 && low.contains(w))
+        };
+        let leading = |markers: &[&str]| {
+            parts.iter().position(|(id, about)| markers.iter().any(|m| id == m || about.starts_with(m)))
+        };
+        let pick = if instructions == INSTRUCTIONS {
+            low.contains("varianz").then(|| parts.iter().position(|(id, _)| id.contains("statistik"))).flatten()
+        } else {
+            parts.iter().position(|(id, about)| id != NONE && named(about)).or_else(|| {
+                if ["abgabe", "due", "rendre", "aufgabe 1"].iter().any(|w| low.contains(w)) {
+                    leading(&["due", "exercise", "an exercise"])
+                } else if ["prüfung", "exam", "exkursion"].iter().any(|w| low.contains(w)) {
+                    leading(&["event", "exam", "an exam"])
+                } else {
+                    leading(&[NONE, "other"])
+                }
+            })
+        };
+        let n = options.len();
+        match pick {
+            Some(i) => (0..n).map(|k| if k == i { 0.9 } else { 0.1 / (n - 1).max(1) as f32 }).collect(),
+            None => vec![1.0 / n as f32; n],
         }
-        #[cfg(not(unix))]
-        {
-            let _ = python;
-            return None;
-        }
-        fs::create_dir_all(place.dir.join("laya")).ok()?;
-        fs::write(place.dir.join("laya").join("__init__.py"), FAKE_LAYA).ok()?;
-        fs::write(place.marker(), "{}").ok()?;
-        Some(place)
+    }
+
+    const SPECIAL: Special = Special { cls: 1, sep: 2, mask: 4 };
+
+    /// One token per word, numbered by length so they're easy to tell apart.
+    fn words(t: &str) -> Vec<u32> {
+        t.split_whitespace().map(|w| 100 + w.len() as u32).collect()
     }
 
     #[test]
-    fn the_helper_answers_questions_over_its_pipe() {
+    fn question_has_a_marker_before_each_option() {
+        let options = vec!["Analysis".to_string(), "Lineare Algebra: Matrix".to_string()];
+        let (ids, markers) = build_sequence(words, &SPECIAL, INSTRUCTIONS, &options, "File name: Blatt 3", 1024, 256);
+        assert_eq!(markers.len(), 2);
+        assert!(markers.iter().all(|m| ids[*m] == SPECIAL.mask));
+        assert_eq!(ids[0], SPECIAL.cls);
+        // [CLS] "choice question: Which …" (10 words) [SEP] then the first option.
+        assert_eq!(markers[0], 12);
+        assert_eq!(markers[1], 14);
+        assert_eq!(*ids.last().unwrap(), SPECIAL.sep);
+        assert_eq!(ids.len(), 14 + 4 + 1 + 4 + 1);
+    }
+
+    #[test]
+    fn long_options_shrink_and_long_text_is_cut() {
+        let long = "word ".repeat(60);
+        let options: Vec<String> = (0..10).map(|_| long.clone()).collect();
+        let (ids, markers) = build_sequence(words, &SPECIAL, INSTRUCTIONS, &options, &long.repeat(100), 1024, 256);
+        assert_eq!(markers.len(), 10);
+        // Every option shrinks to (256 - 16) / 10 = 24 tokens, marker included.
+        assert_eq!(markers[1] - markers[0], 24);
+        assert_eq!(ids.len(), 1024);
+        assert_eq!(*ids.last().unwrap(), SPECIAL.sep);
+    }
+
+    #[test]
+    fn answers_only_when_clearly_sure() {
+        assert_eq!(confident(&[0.1, 0.8, 0.1], 0.7, 2.0), Some((1, 80)));
+        assert_eq!(confident(&[0.5, 0.3, 0.2], 0.7, 2.0), None);
+        assert_eq!(confident(&[0.72, 0.28], 0.7, 3.0), None);
+        assert_eq!(confident(&[], 0.7, 2.0), None);
+        let p = softmax(&[1.0, 2.0, 3.0], 1.0);
+        assert!((p.iter().sum::<f32>() - 1.0).abs() < 1e-6 && p[2] > p[1]);
+        let manifest = Manifest::get();
+        assert_eq!((manifest.min_probability, manifest.min_lead, manifest.files.len()), (0.7, 2.0, 4));
+    }
+
+    #[test]
+    fn without_the_model_nothing_is_asked() {
         let tmp = tempfile::tempdir().unwrap();
-        let Some(place) = fake_place(tmp.path()) else { return };
-        let mut helper = Helper::start(&place).unwrap();
-        let questions = json!({"kind": {"type": "choice", "instructions": "?",
-            "criteria": {"due": "a", "event": "b", "other": "c"}}});
-        let answers = helper
-            .ask(
-                &["Abgabe bis 3. November".into(), "Prüfung am 20. Januar".into(), "Stand: 1. Oktober".into()],
-                &questions,
-                None,
-            )
-            .unwrap();
-        let picks: Vec<String> = answers.iter().map(|a| choice(&a["kind"]).unwrap().0).collect();
-        assert_eq!(picks, ["due", "event", "other"]);
-        // A bad request gets an error, and the helper goes on.
-        assert!(helper.ask(&["x".into()], &json!({"q": 1}), None).is_err());
-        assert_eq!(helper.ask(&["Abgabe".into()], &questions, None).unwrap().len(), 1);
+        let config = test_config(tmp.path());
+        assert!(!Place::new(tmp.path()).installed());
+        assert_eq!(module_for(&config, "Blatt 3.pdf", "", &[]), None);
+        assert_eq!(date_kinds(&["Abgabe: 3.11.".into()]), None);
     }
 
-    /// With the model there: a document the keywords don't decide is sorted by it, and a
-    /// French deadline the rules don't know is found (one test: the place is shared).
     #[test]
-    fn sorting_and_deadlines_ask_the_model() {
+    fn the_model_is_there_once_its_files_are_and_older_ones_go() {
+        let tmp = tempfile::tempdir().unwrap();
+        let place = Place::new(tmp.path());
+        let dir = place.model_dir();
+        fs::create_dir_all(&dir).unwrap();
+        assert!(!place.installed());
+        for f in Manifest::get().files {
+            fs::write(dir.join(&f.name), "x").unwrap();
+        }
+        assert!(place.installed());
+        assert_eq!(place.progress().0, Manifest::get().size());
+        // An older model and the Laya of File Sorter 0.15 with its Python go; nothing else.
+        fs::create_dir_all(place.root.join("laya-uni-0")).unwrap();
+        fs::write(place.root.join("laya-uni-0").join("model.safetensors"), "old").unwrap();
+        fs::create_dir_all(place.old.join("venv").join("bin")).unwrap();
+        fs::write(place.old.join("venv").join("bin").join("python"), "py").unwrap();
+        fs::create_dir_all(tmp.path().join("notes")).unwrap();
+        assert_eq!(place.tidy(), 5);
+        assert!(place.installed() && !place.old.exists() && !place.root.join("laya-uni-0").exists());
+        assert!(tmp.path().join("notes").exists());
+        place.remove().unwrap();
+        assert!(!place.root.exists());
+    }
+
+    /// With the model there: a document the keywords don't decide is sorted by it, a French
+    /// deadline the rules don't know is found, and a subfolder is chosen by its text.
+    #[test]
+    fn sorting_deadlines_and_subfolders_ask_the_model() {
         use crate::config::{Config, Course};
         use crate::sorter::Outcome;
         let tmp = tempfile::tempdir().unwrap();
-        if fake_place(tmp.path()).is_none() {
-            return;
-        }
-        enable_in_this_test();
-        allow();
-        configure(tmp.path(), true);
+        fake(stand_in);
         // Sorting.
-        let mut cfg = crate::sorter::tests::test_config(tmp.path());
+        let mut cfg = test_config(tmp.path());
         cfg.courses.push(Course::new("Statistik", &["stat101"]));
         let file = cfg.watch_path().join("kapitel4.txt");
         fs::write(&file, "Varianzanalyse und Regression: Schätzung der Parameter.").unwrap();
@@ -757,13 +930,28 @@ def load(*args, **kwargs):
         let picked = subfolder_for("scan_0042.pdf", "Blatt 4. Aufgabe 1: Zeigen Sie …", &options);
         assert_eq!(picked.map(|p| p.0).as_deref(), Some("Übungen"));
         assert_eq!(subfolder_for("info.pdf", "Willkommen im Kurs", &options), None);
-        stop();
     }
 
+    /// Downloads the model (about 680 MB, into FILE_SORTER_LAYA_DIR or a temporary folder) and
+    /// asks it about files of faculties other than computer science. (The heart-cycle lecture
+    /// leans to Anatomie at 39 %: not sure enough to sort, which is what this checks.)
     #[test]
-    fn choices_need_a_clear_winner() {
-        let answer = json!({"probabilities": {"a": 0.7, "b": 0.2, "c": 0.1}});
-        assert_eq!(choice(&answer), Some(("a".into(), 0.7, 0.2)));
-        assert_eq!(Step::Packages.number(), 3);
+    #[ignore]
+    fn downloads_and_picks_obvious_modules_of_any_faculty() {
+        let root = std::env::var_os("FILE_SORTER_LAYA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("file-sorter-laya-uni"));
+        let place = Place::new(&root);
+        install(&place, |_, _| {}).unwrap();
+        let model = Laya::load(&place.model_dir()).unwrap();
+        let manifest = Manifest::get();
+        for (modules, name, text, expected) in REAL_CASES {
+            let options: Vec<String> = modules.iter().map(|m| m.to_string()).collect();
+            let p = model.choose(INSTRUCTIONS, &options, &state_for(name, text)).unwrap().unwrap();
+            println!("{name}: {p:?}");
+            // Right, or unsure (then the keywords decide) – never sure of the wrong module.
+            let sure = confident(&p, manifest.min_probability, manifest.min_lead);
+            assert!(sure.is_none_or(|(best, _)| best == expected), "{name}: {p:?}");
+        }
     }
 }

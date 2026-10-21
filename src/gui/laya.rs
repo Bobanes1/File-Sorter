@@ -1,4 +1,4 @@
-//! The AI model Laya in the window: setting it up (in the background, step by step), the
+//! The AI model Laya in the window: downloading it (in the background, with progress), the
 //! row in the settings, and asking once whether to set it up.
 
 use std::sync::mpsc::{Receiver, channel};
@@ -11,17 +11,20 @@ use super::dialogs::{actions, dialog_frame};
 use super::settings::setting_row;
 use super::{App, Note};
 use crate::fx::{self, ButtonStyle};
-use crate::laya::{Place, Step};
+use crate::laya::Place;
 
 enum SetupMessage {
-    Step(Step),
+    /// Bytes downloaded so far, and the whole size.
+    Progress(u64, u64),
     Done(Result<(), String>),
 }
 
 #[derive(Default)]
 pub(super) struct LayaState {
     running: Option<Receiver<SetupMessage>>,
-    step: Option<Step>,
+    progress: Option<(u64, u64)>,
+    /// The download of the newer model was started for those who had the older Laya.
+    replaced: bool,
     error: Option<String>,
     /// Asking once whether to set it up (after an update, for those who had the setup before).
     offer: bool,
@@ -49,19 +52,19 @@ impl App {
         std::thread::spawn(move || {
             let progress = {
                 let (tx, ctx) = (tx.clone(), ctx.clone());
-                move |step: Step| {
-                    log::info!("Setting up Laya: step {} of 4 ({step:?})", step.number());
-                    let _ = tx.send(SetupMessage::Step(step));
+                move |done, total| {
+                    let _ = tx.send(SetupMessage::Progress(done, total));
                     ctx.request_repaint();
                 }
             };
+            log::info!("Downloading Laya");
             let result = crate::laya::install(&place, progress);
             let _ = tx.send(SetupMessage::Done(result));
             ctx.request_repaint();
         });
         self.laya.running = Some(rx);
         self.laya.error = None;
-        self.laya.step = None;
+        self.laya.progress = None;
     }
 
     pub(super) fn laya_logic(&mut self) {
@@ -73,14 +76,24 @@ impl App {
             }
             self.settings_changed();
         }
+        // Had the older Laya (with its own Python): the newer model comes by itself, and the
+        // older one is removed once it is there.
+        if !self.laya.replaced
+            && self.config.features.laya
+            && self.laya_place().is_some_and(|p| p.had_older() && !p.installed())
+        {
+            self.laya.replaced = true;
+            log::info!("Replacing the older Laya with laya-uni");
+            self.start_laya_setup();
+        }
         let Some(rx) = &self.laya.running else { return };
         let messages: Vec<SetupMessage> = rx.try_iter().collect();
         for message in messages {
             match message {
-                SetupMessage::Step(step) => self.laya.step = Some(step),
+                SetupMessage::Progress(done, total) => self.laya.progress = Some((done, total)),
                 SetupMessage::Done(result) => {
                     self.laya.running = None;
-                    self.laya.step = None;
+                    self.laya.progress = None;
                     self.laya.size = None;
                     match result {
                         Ok(()) => {
@@ -134,8 +147,15 @@ impl App {
         ui.horizontal(|ui| {
             ui.add_space(40.0);
             if running {
-                let step = self.laya.step.unwrap_or(Step::Tool);
-                ui.label(RichText::new(lang.laya_step(step)).small().color(p.primary));
+                let (done, total) = self.laya.progress.unwrap_or((0, 0));
+                ui.vertical(|ui| {
+                    // Sliding until the first bytes arrive, then how far it is.
+                    let fraction = (done > 0 && total > 0).then(|| done as f32 / total as f32);
+                    fx::progress_bar(ui, Id::new("laya-download"), fraction);
+                    ui.add_space(2.0);
+                    let text = lang.laya_download_progress(done / 1_000_000, total / 1_000_000);
+                    ui.label(RichText::new(text).small().color(p.primary));
+                });
             } else if installed {
                 let size = match self.laya.size {
                     Some((size, at)) if at.elapsed() < Duration::from_secs(60) => size,

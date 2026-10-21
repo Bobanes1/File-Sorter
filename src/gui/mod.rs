@@ -983,6 +983,7 @@ impl App {
         if want {
             crate::ocr::forget_cache();
             crate::classifier::forget();
+            crate::laya::stop();
             self.study_forget_results();
             crate::lean::trim_memory();
             log::info!("Saving resources in the background");

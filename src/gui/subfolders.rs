@@ -1,7 +1,7 @@
 //! Subfolders in the window: the subfolders of the selected module in the overview (how
-//! many files each holds, the words learned for it), creating them, moving the files already
-//! in a module into them (with a preview first and undo afterwards), learning from the files
-//! already in them, and the list all modules share.
+//! many files each holds), creating them, moving the files already in a module into them
+//! (with a preview first and undo afterwards, and by themselves every few minutes), and the
+//! list all modules share.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -12,15 +12,10 @@ use egui_phosphor::regular as icon;
 
 use super::dialogs::{actions, dialog_frame};
 use super::{App, Note};
-use crate::config::{LearnedFolder, Subfolder};
+use crate::config::{Config, Subfolder};
 use crate::fx::{self, ButtonStyle};
 use crate::i18n::Lang;
-use crate::matcher::normalise;
 use crate::resort::{self, Planned, Report};
-use crate::subfolder_learn;
-
-/// How often subfolder words are learned by themselves (when that is switched on).
-const LEARN_EVERY: f64 = 30.0 * 60.0;
 /// How often the module folders are looked through for files to put into subfolders.
 const AUTO_EVERY: f64 = 5.0 * 60.0;
 /// How long the file counts of a module's subfolders are kept before they are read again.
@@ -34,7 +29,6 @@ pub(super) enum SubfolderAction {
     CreateFor(usize),
     /// Sort the files of one module (or all) into their subfolders.
     Resort(Option<usize>),
-    Learn,
     OpenList,
 }
 
@@ -53,10 +47,6 @@ pub(super) struct ResortState {
     planning: Option<Receiver<Vec<Planned>>>,
     preview: Option<Vec<Planned>>,
     applying: Option<Receiver<Report>>,
-    /// Learning subfolder words; `true` when it started by itself.
-    learning: Option<(Receiver<Vec<LearnedFolder>>, bool)>,
-    /// When to learn by itself next.
-    next_learn: Option<f64>,
     /// The shared list is open.
     list_open: bool,
     counts: Option<Counts>,
@@ -72,59 +62,24 @@ pub(super) struct ResortState {
     first_offer: bool,
 }
 
-/// A learned word with a «×» that takes it out. Returns true when that was clicked.
-fn word_chip(ui: &mut egui::Ui, lang: Lang, word: &str) -> bool {
-    let p = fx::pal(ui);
-    let mut remove = false;
-    egui::Frame::new().fill(p.secondary_container).corner_radius(8).inner_margin(Margin::symmetric(8, 2)).show(
-        ui,
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(RichText::new(word).small().color(p.on_secondary_container));
-            let x = ui.add(
-                egui::Label::new(RichText::new(icon::X).small().color(p.on_secondary_container))
-                    .sense(egui::Sense::click()),
-            );
-            if x.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(lang.remove_word_hint()).clicked() {
-                remove = true;
+/// Document files in `dir` and one level below.
+fn files_in(dir: &std::path::Path, config: &Config) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut count = 0;
+    for path in entries.flatten().map(|e| e.path()) {
+        if path.is_dir() {
+            if let Ok(inner) = std::fs::read_dir(&path) {
+                count += inner.flatten().filter(|e| crate::sorter::is_candidate(&e.path(), config)).count();
             }
-        },
-    );
-    remove
-}
-
-fn has_learned(learned: &[LearnedFolder], folder: &str) -> bool {
-    learned.iter().any(|l| normalise(&l.name) == normalise(folder) && !l.words.is_empty())
-}
-
-/// The learned words of `folder` as chips; returns a word to take out.
-fn learned_chips(ui: &mut egui::Ui, lang: Lang, learned: &[LearnedFolder], folder: &str) -> Option<String> {
-    let words = learned.iter().find(|l| normalise(&l.name) == normalise(folder)).map(|l| l.words.clone())?;
-    if words.is_empty() {
-        return None;
-    }
-    let mut remove = None;
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-        ui.label(RichText::new(lang.learned_words()).small().color(fx::pal(ui).on_surface_variant));
-        for word in &words {
-            if word_chip(ui, lang, word) {
-                remove = Some(word.clone());
-            }
+        } else if crate::sorter::is_candidate(&path, config) {
+            count += 1;
         }
-    });
-    remove
+    }
+    count
 }
 
-/// The editable list of subfolders: name, own words, learned words, delete; «+ Subfolder»
-/// and «Defaults».
-fn subfolder_list_ui(
-    ui: &mut egui::Ui,
-    lang: Lang,
-    list: &mut Vec<Subfolder>,
-    learned: &mut [LearnedFolder],
-    changed: &mut bool,
-) {
+/// The editable list of subfolders: name, own words, delete; «+ Subfolder» and «Defaults».
+fn subfolder_list_ui(ui: &mut egui::Ui, lang: Lang, list: &mut Vec<Subfolder>, changed: &mut bool) {
     let p = fx::pal(ui);
     let mut remove = None;
     ui.add(egui::Label::new(RichText::new(lang.subfolder_list_hint()).small().color(p.on_surface_variant)).wrap());
@@ -148,15 +103,6 @@ fn subfolder_list_ui(
                 remove = Some(i);
             }
         });
-        if has_learned(learned, &folder.name) {
-            ui.horizontal(|ui| {
-                ui.add_space(26.0);
-                if let Some(word) = learned_chips(ui, lang, learned, &folder.name) {
-                    subfolder_learn::remove_word(learned, &folder.name, &word);
-                    *changed = true;
-                }
-            });
-        }
     }
     if let Some(i) = remove {
         list.remove(i);
@@ -203,7 +149,6 @@ impl App {
                 });
                 self.resort.planning = Some(rx);
             }
-            SubfolderAction::Learn => self.start_learning(false),
             SubfolderAction::OpenList => self.resort.list_open = true,
         }
     }
@@ -216,32 +161,12 @@ impl App {
         self.after_folder_change();
     }
 
-    /// Folders were made or files moved: count again, and learn soon if that happens by itself.
+    /// Folders were made or files moved: count again.
     fn after_folder_change(&mut self) {
         self.resort.counts = None;
-        if self.config.features.subfolder_auto_learn {
-            self.resort.next_learn = Some(self.now() + 5.0);
-        }
     }
 
-    /// Learn subfolder words from the files in the subfolders, on a background thread.
-    fn start_learning(&mut self, by_itself: bool) {
-        if self.resort.learning.is_some() {
-            return;
-        }
-        let (tx, rx) = channel();
-        let (config, ctx) = (self.config.clone(), self.ctx.clone());
-        let index = self.study_indexer().map(|i| i.index.clone());
-        std::thread::spawn(move || {
-            let starts =
-                index.and_then(|i| i.read().ok().map(|i| i.starts(subfolder_learn::TEXT_WORDS))).unwrap_or_default();
-            let _ = tx.send(subfolder_learn::learn(&config, &starts));
-            ctx.request_repaint();
-        });
-        self.resort.learning = Some((rx, by_itself));
-    }
-
-    /// Take in a finished plan, move or learning; learn by itself when it's time.
+    /// Take in a finished plan or move; look for files to sort in when it's time.
     pub(super) fn resort_logic(&mut self) {
         if let Some(rx) = &self.resort.planning
             && let Ok(planned) = rx.try_recv()
@@ -259,26 +184,7 @@ impl App {
             self.resort.applying = None;
             self.after_resort(report);
         }
-        if let Some((rx, by_itself)) = &self.resort.learning
-            && let Ok(learned) = rx.try_recv()
-        {
-            let by_itself = *by_itself;
-            self.resort.learning = None;
-            self.after_learning(learned, by_itself);
-        }
         self.auto_resort_logic();
-        let features = &self.config.features;
-        let now = self.now();
-        if features.subfolders && features.subfolder_auto_learn && !self.config.courses.is_empty() && !self.lean {
-            // The first time a little after the start, when the index is loaded.
-            let next = *self.resort.next_learn.get_or_insert(now + 20.0);
-            if now >= next && self.resort.learning.is_none() {
-                self.resort.next_learn = Some(now + LEARN_EVERY);
-                self.start_learning(true);
-            }
-        } else {
-            self.resort.next_learn = None;
-        }
     }
 
     /// Every few minutes: the files lying directly in a module folder that fit a subfolder go
@@ -306,12 +212,7 @@ impl App {
             || self.resort.applying.is_some()
             || self.resort.preview.is_some()
             || self.resort.auto.is_some();
-        if !features.subfolders
-            || !features.subfolder_auto_resort
-            || self.config.courses.is_empty()
-            || self.lean
-            || busy
-        {
+        if !features.subfolders || self.config.courses.is_empty() || busy {
             return;
         }
         let now = self.now();
@@ -348,36 +249,6 @@ impl App {
             ctx.request_repaint();
         });
         self.resort.applying = Some(rx);
-    }
-
-    fn after_learning(&mut self, learned: Vec<LearnedFolder>, by_itself: bool) {
-        let before = self.config.features.subfolder_learned.clone();
-        let added = subfolder_learn::added_words(&before, &learned);
-        // By itself: quietly, unless there is something new.
-        if by_itself && added.is_empty() {
-            if learned != before {
-                self.config.features.subfolder_learned = learned;
-                self.save_quietly();
-            }
-            return;
-        }
-        let folders: std::collections::BTreeSet<&str> = added.iter().map(|(f, _)| f.as_str()).collect();
-        let title = self.lang.folder_words_learned(added.len(), folders.len());
-        let details = folders
-            .iter()
-            .map(|f| {
-                let words: Vec<&str> = added.iter().filter(|(g, _)| g == f).map(|(_, w)| w.as_str()).collect();
-                format!("{f}: {}", words.join(", "))
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.config.features.subfolder_learned = learned;
-        self.save_quietly();
-        if added.is_empty() {
-            self.note(Note::Folders { title, details });
-        } else {
-            self.note(Note::FolderWords { title, details, before, undone: false });
-        }
     }
 
     fn after_resort(&mut self, report: Report) {
@@ -441,7 +312,7 @@ impl App {
                 .into_iter()
                 .map(|name| {
                     let dir = folder.join(&name);
-                    let count = dir.is_dir().then(|| subfolder_learn::files_in(&dir, config).len());
+                    let count = dir.is_dir().then(|| files_in(&dir, config));
                     (name, count)
                 })
                 .collect();
@@ -478,10 +349,8 @@ impl App {
         let counts = self.module_counts(index);
         let (folders, loose) = (counts.folders.clone(), counts.loose);
         let module = self.config.course_folder(&self.config.courses[index]);
-        let mut remove_word: Option<(String, String)> = None;
         let mut open = None;
         let busy = self.resort_busy();
-        let learning = self.resort.learning.is_some();
         let missing = folders.iter().any(|(_, c)| c.is_none());
         let mut action = SubfolderAction::None;
         ui.horizontal_wrapped(|ui| {
@@ -498,22 +367,16 @@ impl App {
             if resort.inner.on_hover_text(lang.resort_here_hint()).clicked() {
                 action = SubfolderAction::Resort(Some(index));
             }
-            let learn =
-                ui.add_enabled_ui(!learning, |ui| fx::button(ui, ButtonStyle::Text, icon::BRAIN, lang.learn_folders()));
-            if learn.inner.on_hover_text(lang.learn_folders_hint()).clicked() {
-                action = SubfolderAction::Learn;
-            }
             if fx::icon_button(ui, icon::LIST_BULLETS).on_hover_text(lang.edit_list()).clicked() {
                 action = SubfolderAction::OpenList;
             }
-            if busy || learning {
+            if busy {
                 ui.add(egui::Spinner::new());
             }
         });
         ui.label(RichText::new(lang.loose_files(loose)).small().color(p.on_surface_variant));
         ui.add_space(4.0);
-        // The subfolders as small tiles in two columns: name, files, learned words.
-        let learned = self.config.features.subfolder_learned.clone();
+        // The subfolders as small tiles in two columns: name and files.
         egui::ScrollArea::vertical().id_salt("module-subfolders").max_height(190.0).auto_shrink([false, true]).show(
             ui,
             |ui| {
@@ -549,33 +412,25 @@ impl App {
                                     ui.label(RichText::new(info).small().color(p.on_surface_variant));
                                 });
                             });
-                            if let Some(word) = learned_chips(ui, lang, &learned, name) {
-                                remove_word = Some((name.clone(), word));
-                            }
                         });
                         ui.add_space(2.0);
                     }
                 });
             },
         );
-        if let Some((folder, word)) = remove_word {
-            subfolder_learn::remove_word(&mut self.config.features.subfolder_learned, &folder, &word);
-            self.settings_changed();
-        }
         if let Some(dir) = open {
             crate::desktop::open(&dir);
         }
         self.subfolder_action(action);
     }
 
-    /// The list all modules share, with the words learned for each folder.
+    /// The list all modules share.
     pub(super) fn subfolder_list_dialog(&mut self, ctx: &egui::Context) {
         if !self.resort.list_open {
             return;
         }
         let lang = self.lang;
         let busy = self.resort_busy();
-        let learning = self.resort.learning.is_some();
         let mut changed = false;
         let mut action = SubfolderAction::None;
         let mut close = false;
@@ -592,13 +447,7 @@ impl App {
             });
             ui.add_space(8.0);
             egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
-                subfolder_list_ui(
-                    ui,
-                    lang,
-                    &mut features.subfolder_list,
-                    &mut features.subfolder_learned,
-                    &mut changed,
-                );
+                subfolder_list_ui(ui, lang, &mut features.subfolder_list, &mut changed);
             });
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
@@ -612,13 +461,7 @@ impl App {
                 if resort.inner.on_hover_text(lang.resort_existing_hint()).clicked() {
                     action = SubfolderAction::Resort(None);
                 }
-                let learn = ui.add_enabled_ui(!learning, |ui| {
-                    fx::button(ui, ButtonStyle::Text, icon::BRAIN, lang.learn_folders())
-                });
-                if learn.inner.on_hover_text(lang.learn_folders_hint()).clicked() {
-                    action = SubfolderAction::Learn;
-                }
-                if busy || learning {
+                if busy {
                     ui.add(egui::Spinner::new());
                 }
             });

@@ -13,7 +13,6 @@ use crate::config::{Config, ExistingScope, FileAction};
 use crate::extract::extract_text;
 use crate::ledger::{COPIED_LIST, CopyLedger, KEPT_LIST, KeptFiles};
 use crate::matcher::{Decision, Match, Reason};
-use crate::origin;
 use crate::unzip::Extracted;
 
 /// Partial downloads written by browsers before the file is complete.
@@ -550,9 +549,14 @@ pub fn sort_chosen(paths: &[PathBuf], config: &Config) -> Vec<SortResult> {
 
 fn sort_any_file(path: &Path, config: &Config, patience: Duration, target: Target) -> SortResult {
     let mut result = sort_any_file_unrecorded(path, config, patience, target);
-    if result.sorted()
-        && let Some(dir) = &config.state_dir
+    let Some(dir) = &config.state_dir else { return result };
+    // Asked again after a restart, until it is sorted.
+    if matches!(result.outcome, Outcome::Left(LeftReason::NoMatch | LeftReason::Unsure { .. }))
+        && let Err(e) = crate::history::record_asked(dir, &result)
     {
+        log::info!("Could not note {} in the history: {e}", result.file_name());
+    }
+    if result.sorted() {
         // Earlier entries of an older version follow it into the versions folder (before this
         // entry is written, which keeps the name it freed): undoing them must find that file,
         // not the new one now under its old name.
@@ -569,32 +573,18 @@ fn sort_any_file(path: &Path, config: &Config, patience: Duration, target: Targe
 
 #[cfg(test)]
 pub(crate) fn choose_course_for_test(path: &Path, config: &Config) -> Result<Match, LeftReason> {
-    choose_course(path, config, None, &mut None)
+    choose_course(path, config, &extract_text(path))
 }
 
-/// The module for `path` and why, or why it stays: no module fits, or several fit about
-/// equally well. The text read from the file (if it was read) is left in `text`.
-fn choose_course(
-    path: &Path,
-    config: &Config,
-    origin: Option<&origin::Source>,
-    text: &mut Option<String>,
-) -> Result<Match, LeftReason> {
-    // A ZIP file's list of files is like a name, so it is always read.
-    let zip = suffix(path) == ".zip";
-    let features = &config.features;
-    // With Laya on, it alone decides (the rules only when it can't be asked: not there,
-    // failed, fewer than two modules, or saving resources).
-    if features.laya && crate::laya::available() {
-        if text.is_none() && (config.read_file_contents || zip) {
-            *text = Some(if zip && !config.read_file_contents {
-                crate::extract::zip_names(path)
-            } else {
-                extract_text(path)
-            });
-        }
+/// The module for `path` and why, or why it stays where it is: no module fits, or two or
+/// three fit about equally well (then the user is asked). `text` is the start of its text.
+///
+/// With Laya on, it alone decides; the keywords only while it can't be asked (not set up yet,
+/// failed, or fewer than two modules).
+fn choose_course(path: &Path, config: &Config, text: &str) -> Result<Match, LeftReason> {
+    if config.features.laya && crate::laya::available() {
         use crate::laya::ModuleChoice;
-        match crate::laya::module_of(config, &file_name(path), text.as_deref().unwrap_or("")) {
+        match crate::laya::module_of(config, &file_name(path), text) {
             Some(ModuleChoice::Sure(label, p)) => {
                 if let Some(course) = config.courses.iter().position(|c| c.label() == label) {
                     return Ok(Match { course, score: 0, reason: Reason::Ai((p * 100.0).round() as u8) });
@@ -602,61 +592,60 @@ fn choose_course(
             }
             Some(ModuleChoice::Between(candidates)) => return Err(LeftReason::Unsure { candidates }),
             Some(ModuleChoice::Nothing) => return Err(LeftReason::NoMatch),
-            None => {}
+            None => log::info!("Laya couldn't be asked about {}: the keywords decide", file_name(path)),
         }
     }
-    let read = |p: &Path| {
-        if let Some(t) = text.as_ref() {
-            return t.clone();
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    match crate::matcher::decide(&stem, text, &config.courses) {
+        Decision::Clear(m) => Ok(m),
+        Decision::Unsure(close) => {
+            Err(LeftReason::Unsure { candidates: close.into_iter().map(|i| config.courses[i].label()).collect() })
         }
-        let t = if zip && !config.read_file_contents { crate::extract::zip_names(p) } else { extract_text(p) };
-        *text = Some(t.clone());
-        t
-    };
-    let margin = if features.ask_when_unsure { crate::matcher::UNSURE_MARGIN } else { 0 };
-    let candidates = match crate::matcher::decide(path, &config.courses, config.read_file_contents || zip, margin, read)
+        Decision::Nothing => Err(LeftReason::NoMatch),
+    }
+}
+
+/// The module chosen for a file a moment ago, with its text, while the file and what decides
+/// are unchanged: a file open in another program is tried again every few seconds, and isn't
+/// read and asked about again each time.
+struct Chosen {
+    /// The file, its size and modification time, and what decided (modules, Laya).
+    key: (PathBuf, u64, Option<SystemTime>, u64),
+    result: Result<Match, LeftReason>,
+    text: String,
+}
+static CHOSEN: std::sync::Mutex<Vec<Chosen>> = std::sync::Mutex::new(Vec::new());
+const CHOSEN_KEPT: usize = 8;
+
+fn choose_course_once(path: &Path, config: &Config) -> (Result<Match, LeftReason>, String) {
+    use std::hash::{Hash, Hasher};
+    let meta = fs::metadata(path).ok();
+    let mut deciding = std::collections::hash_map::DefaultHasher::new();
+    for course in &config.courses {
+        (course.label(), &course.keywords).hash(&mut deciding);
+    }
+    (config.features.laya && crate::laya::available()).hash(&mut deciding);
+    let key = (
+        path.to_path_buf(),
+        meta.as_ref().map_or(0, |m| m.len()),
+        meta.and_then(|m| m.modified().ok()),
+        deciding.finish(),
+    );
+    if let Ok(chosen) = CHOSEN.lock()
+        && let Some(c) = chosen.iter().find(|c| c.key == key)
     {
-        Decision::Clear(m) => return Ok(m),
-        Decision::Unsure(c) => c,
-        Decision::Nothing => Vec::new(),
-    };
-    let labels: Vec<String> = candidates.iter().map(|(i, _)| config.courses[*i].label()).collect();
-    // The modules' other files: only among the candidates when there are some.
-    if features.classifier {
-        let allowed = (labels.len() >= 2).then_some(labels.as_slice());
-        if let Some((label, words)) = crate::classifier::guess(config, path, text.as_deref(), allowed)
-            && let Some(course) = config.courses.iter().position(|c| c.label() == label)
-        {
-            return Ok(Match { course, score: 0, reason: Reason::Learned(words) });
+        return (c.result.clone(), c.text.clone());
+    }
+    let text = extract_text(path);
+    let result = choose_course(path, config, &text);
+    if let Ok(mut chosen) = CHOSEN.lock() {
+        chosen.retain(|c| c.key.0 != path);
+        if chosen.len() >= CHOSEN_KEPT {
+            chosen.remove(0);
         }
+        chosen.push(Chosen { key, result: result.clone(), text: text.clone() });
     }
-    // A tie: the module whose lesson was running when the file came (only between the
-    // modules in question – during a lesson one may well work on something else).
-    if features.timetable_hint && labels.len() >= 2 {
-        let came = fs::metadata(path)
-            .and_then(|m| m.modified())
-            .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local())
-            .unwrap_or_else(|_| chrono::Local::now().naive_local());
-        let running: Vec<String> =
-            crate::timetable::running_modules(config, came).into_iter().filter(|m| labels.contains(m)).collect();
-        if let [label] = running.as_slice()
-            && let Some(course) = config.courses.iter().position(|c| c.label() == *label)
-        {
-            return Ok(Match { course, score: 0, reason: Reason::Timetable(label.clone()) });
-        }
-    }
-    // Files from the same course page go together.
-    if let Some(source) = origin
-        && let Some(course) = origin::lookup(config, source)
-        && (labels.is_empty() || labels.contains(&config.courses[course].label()))
-    {
-        return Ok(Match { course, score: 0, reason: Reason::Origin(source.host.clone()) });
-    }
-    // Several about equally likely (without asking: only an exact tie gets here).
-    if labels.len() >= 2 && features.ask_when_unsure {
-        return Err(LeftReason::Unsure { candidates: labels.into_iter().take(3).collect() });
-    }
-    Err(LeftReason::NoMatch)
+    (result, text)
 }
 
 fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration, target: Target) -> SortResult {
@@ -674,25 +663,15 @@ fn sort_any_file_unrecorded(path: &Path, config: &Config, patience: Duration, ta
     {
         return SortResult::left(path, LeftReason::AlreadyCopied { course: earlier.course, copy: earlier.copy });
     }
-    // Read before the file moves (the note stays with the file, but only on the same drive).
-    let origin = if config.features.origin { origin::source_of(path) } else { None };
-    let mut text = None;
-    let m = match target {
-        Target::Course(i) if i < config.courses.len() => Match { course: i, score: 0, reason: Reason::Chosen },
+    let (m, text) = match target {
+        Target::Course(i) if i < config.courses.len() => (Match { course: i, score: 0, reason: Reason::Chosen }, None),
         Target::Course(_) => return SortResult::left(path, LeftReason::Error("this module no longer exists".into())),
-        Target::Auto => match choose_course(path, config, origin.as_ref(), &mut text) {
-            Ok(m) => m,
-            Err(reason) => return SortResult::left(path, reason),
+        Target::Auto => match choose_course_once(path, config) {
+            (Ok(m), text) => (m, Some(text)),
+            (Err(reason), _) => return SortResult::left(path, reason),
         },
     };
-    let result = place_file(path, config, patience, m, copying, &mut ledger, text);
-    if let Some(source) = &origin
-        && let Outcome::Moved { course, reason, .. } | Outcome::Copied { course, reason, .. } = &result.outcome
-        && !matches!(reason, Reason::Origin(_))
-    {
-        origin::remember(config, source, course, *reason == Reason::Chosen);
-    }
-    result
+    place_file(path, config, patience, m, copying, &mut ledger, text)
 }
 
 /// The folder for `path` inside its module: a subfolder for lectures, exercises, … if
@@ -705,6 +684,9 @@ fn destination_folder(config: &Config, course_folder: &Path, path: &Path, text: 
 }
 
 /// The subfolder of `course_folder` that `path` belongs in, if subfolders are on and one fits.
+///
+/// With Laya on, it alone decides (not sure: the module's folder itself); the rules only
+/// while it can't be asked.
 pub(crate) fn subfolder_for(
     config: &Config,
     course_folder: &Path,
@@ -715,20 +697,23 @@ pub(crate) fn subfolder_for(
     if !features.subfolders {
         return None;
     }
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let existing = categories::existing_subfolders(course_folder, &features.versions_folder);
-    let read_text =
-        || (config.read_file_contents && suffix(path) != ".zip").then(|| text.unwrap_or_else(|| extract_text(path)));
-    // With Laya on, it alone decides; not sure: the module's folder itself.
-    let name = if features.laya && crate::laya::available() {
-        let text = read_text().unwrap_or_default();
+    let mut text = text;
+    if features.laya && crate::laya::available() {
+        let read = text.get_or_insert_with(|| extract_text(path));
         let options = categories::subfolder_options(&features.subfolder_list, &existing);
-        let (folder, p) = crate::laya::subfolder_of(&file_name(path), &text, &options)?;
-        log::info!("Laya put {} into the subfolder «{folder}» ({:.0} % sure)", file_name(path), p * 100.0);
-        folder
-    } else {
-        categories::pick_subfolder(&stem, &features.subfolder_list, &features.subfolder_learned, &existing, read_text)?
-    };
+        match crate::laya::subfolder_of(&file_name(path), read, &options) {
+            Some(Some((folder, p))) => {
+                log::info!("Laya put {} into the subfolder «{folder}» ({:.0} % sure)", file_name(path), p * 100.0);
+                return Some(categories::safe_folder_name(&folder)).filter(|n| !n.is_empty());
+            }
+            Some(None) => return None,
+            None => {}
+        }
+    }
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let read_text = || (suffix(path) != ".zip").then(|| text.unwrap_or_else(|| extract_text(path)));
+    let name = categories::pick_subfolder(&stem, &features.subfolder_list, &existing, read_text)?;
     Some(categories::safe_folder_name(&name)).filter(|n| !n.is_empty())
 }
 
@@ -752,17 +737,18 @@ fn place_file(
     {
         return SortResult::left(path, LeftReason::AlreadyInFolder { course: label });
     }
-    let mut folder = destination_folder(config, &course_folder, path, text.clone());
-    if let Err(e) = fs::create_dir_all(&folder) {
-        return SortResult::left(path, LeftReason::Error(format!("cannot create {}: {e}", folder.display())));
-    }
-
-    // Leave files alone while another program still has them open.
+    // Leave files alone while another program still has them open (before the subfolder is
+    // chosen: that is done once it can move).
     match retry_while_in_use(patience, || ensure_not_open_elsewhere(path)) {
         Ok(()) => {}
         Err(e) if in_use(&e) => return SortResult::left(path, LeftReason::InUse { course: label }),
         Err(e) if e.kind() == io::ErrorKind::NotFound => return SortResult::left(path, LeftReason::Gone),
         Err(e) => return SortResult::left(path, LeftReason::Error(e.to_string())),
+    }
+
+    let mut folder = destination_folder(config, &course_folder, path, text.clone());
+    if let Err(e) = fs::create_dir_all(&folder) {
+        return SortResult::left(path, LeftReason::Error(format!("cannot create {}: {e}", folder.display())));
     }
 
     // The very same file is already there (downloaded twice, or copied in again):
@@ -789,12 +775,8 @@ fn place_file(
         let versions_name = if versions_name.is_empty() { "Ältere Versionen".to_string() } else { versions_name };
         // By name, checked against the title pages (and by title page when the name says nothing).
         let start = |p: &Path| crate::extract::first_pages(p, 1);
-        let own = if crate::lean::active() { String::new() } else { text.clone().unwrap_or_else(|| start(path)) };
-        let others = if crate::lean::active() {
-            crate::versions::other_versions(&folder, path)
-        } else {
-            crate::versions::versions_by_content(&folder, path, &own, start)
-        };
+        let own = text.clone().unwrap_or_else(|| start(path));
+        let others = crate::versions::versions_by_content(&folder, path, &own, start);
         if others.iter().any(|other| crate::versions::is_older(path, other)) {
             // The file that arrives is the older one ("v1" while "v2" is there).
             folder = folder.join(&versions_name);
@@ -1004,6 +986,8 @@ pub(crate) mod tests {
                 Course::new("Linear Algebra", &["linear algebra", "matrix", "LA1"]),
                 Course::new("Statistics", &["statistics", "probability", "stats"]),
             ],
+            // Tests of subfolders switch them on.
+            features: crate::config::Features { subfolders: false, ..Default::default() },
             ..Config::default()
         }
     }
@@ -1048,37 +1032,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn origin_decides_when_name_and_content_do_not() {
+    fn close_calls_are_asked_about_and_asked_again_after_a_restart() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = test_config(tmp.path());
-        cfg.state_dir = Some(tmp.path().join("state"));
-        let source = origin::Source { key: "moodle.uni.ch/course/4711".into(), host: "moodle.uni.ch".into() };
-        let file = cfg.watch_path().join("Blatt3.pdf");
-        make_pdf(&file, "nothing");
-        assert_eq!(
-            choose_course(&file, &cfg, Some(&source), &mut None),
-            Err(LeftReason::NoMatch),
-            "nothing learned yet"
-        );
-        origin::remember(&cfg, &source, "Statistics", true);
-        let m = choose_course(&file, &cfg, Some(&source), &mut None).unwrap();
-        assert_eq!((m.course, m.reason), (2, Reason::Origin("moodle.uni.ch".into())));
-        // A clear name still wins.
-        let named = cfg.watch_path().join("prog1_Blatt3.pdf");
-        make_pdf(&named, "x");
-        assert_eq!(choose_course(&named, &cfg, Some(&source), &mut None).unwrap().course, 0);
-    }
-
-    #[test]
-    fn close_calls_are_asked_about_and_the_learned_model_decides_ties() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut cfg = test_config(tmp.path());
-        cfg.state_dir = Some(tmp.path().join("state"));
-        cfg.read_file_contents = false;
+        let state = tmp.path().join("state");
+        cfg.state_dir = Some(state.clone());
         // «python» (Programming) and «matrix» (Linear Algebra): equally likely.
         let file = cfg.watch_path().join("python matrix.pdf");
         make_pdf(&file, "x");
-        let unsure = choose_course(&file, &cfg, None, &mut None);
+        let unsure = choose_course_for_test(&file, &cfg);
         assert_eq!(
             unsure,
             Err(LeftReason::Unsure { candidates: vec![cfg.courses[0].label(), cfg.courses[1].label()] })
@@ -1086,105 +1048,25 @@ pub(crate) mod tests {
         let result = sort_file(&file, &cfg);
         assert!(matches!(result.outcome, Outcome::Left(LeftReason::Unsure { .. })), "stays where it is");
         assert!(file.is_file());
-        // Asking switched off: an exact tie still stays, but no question.
-        cfg.features.ask_when_unsure = false;
-        assert_eq!(choose_course(&file, &cfg, None, &mut None), Err(LeftReason::NoMatch));
-        cfg.features.ask_when_unsure = true;
-        // The modules' own files: Linear Algebra has many files about matrices and python.
-        let la = cfg.course_folder(&cfg.courses[1]);
-        let prog = cfg.course_folder(&cfg.courses[0]);
-        fs::create_dir_all(&la).unwrap();
-        fs::create_dir_all(&prog).unwrap();
-        for i in 0..6 {
-            make_pdf(&la.join(format!("Numerik python matrix {i}.pdf")), "x");
-            make_pdf(&prog.join(format!("Schleifen Objekte {i}.pdf")), "x");
-        }
-        let model = crate::classifier::Model::train(&cfg, &std::collections::HashMap::new());
-        model.save(&cfg.state_file(crate::classifier::MODEL_FILE).unwrap()).unwrap();
-        let m = choose_course(&file, &cfg, None, &mut None).unwrap();
-        assert_eq!(m.course, 1);
-        assert!(matches!(m.reason, Reason::Learned(_)));
+        let asked: Vec<String> = crate::history::still_asked(&state, 14).iter().map(|e| e.result.file_name()).collect();
+        assert_eq!(asked, ["python matrix.pdf"]);
+        // Put into a module by hand: no longer asked.
+        assert!(sort_into(&file, 1, &cfg).sorted());
+        assert!(crate::history::still_asked(&state, 14).is_empty());
     }
 
     #[test]
-    fn the_timetable_only_settles_ties() {
+    fn the_text_decides_when_the_name_says_nothing() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut cfg = test_config(tmp.path());
-        cfg.state_dir = Some(tmp.path().join("state"));
-        fs::create_dir_all(cfg.state_dir.as_ref().unwrap()).unwrap();
-        cfg.read_file_contents = false;
-        cfg.features.classifier = false;
-        // Linear Algebra runs right now (all day, every day of this week).
-        let today = chrono::Local::now().date_naive();
-        let mut table = crate::timetable::Timetable::default();
-        for offset in 0..7 {
-            let date = today + chrono::Duration::days(offset);
-            table.lessons.push(crate::timetable::Lesson {
-                module: cfg.courses[1].label(),
-                weekday: chrono::Datelike::weekday(&date).num_days_from_monday(),
-                start: "00:00".into(),
-                end: "23:59".into(),
-                from: crate::timetable::day_text(date),
-                until: crate::timetable::day_text(date),
-                every: 1,
-                ..Default::default()
-            });
-        }
-        table.save(&cfg.state_file(crate::timetable::TIMETABLE_FILE).unwrap()).unwrap();
-        // A tie between Programming and Linear Algebra: the running lesson decides.
-        let tie = cfg.watch_path().join("python matrix.pdf");
-        make_pdf(&tie, "x");
-        let m = choose_course(&tie, &cfg, None, &mut None).unwrap();
-        assert_eq!((m.course, m.reason), (1, Reason::Timetable(cfg.courses[1].label())));
-        // A clear match for another module wins; a file nothing fits stays.
-        let clear = cfg.watch_path().join("prog1_Blatt.pdf");
-        make_pdf(&clear, "x");
-        assert_eq!(choose_course(&clear, &cfg, None, &mut None).unwrap().course, 0);
-        let none = cfg.watch_path().join("Ferienfotos.pdf");
-        make_pdf(&none, "x");
-        assert_eq!(choose_course(&none, &cfg, None, &mut None), Err(LeftReason::NoMatch));
-        // Switched off: asked again.
-        cfg.features.timetable_hint = false;
-        assert!(matches!(choose_course(&tie, &cfg, None, &mut None), Err(LeftReason::Unsure { .. })));
-    }
-
-    /// The browser's note on where a download came from (only Windows keeps it).
-    #[cfg(windows)]
-    #[test]
-    fn files_from_the_same_course_page_go_together() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut cfg = test_config(tmp.path());
-        cfg.state_dir = Some(tmp.path().join("state"));
-        let mark = |path: &Path| {
-            let mut stream = path.as_os_str().to_os_string();
-            stream.push(":Zone.Identifier");
-            fs::write(
-                stream,
-                "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://moodle.uni.ch/course/view.php?id=4711\r\n\
-                               HostUrl=https://moodle.uni.ch/pluginfile.php/9/x.pdf\r\n",
-            )
-            .unwrap();
-        };
-        let first = cfg.watch_path().join("stats_intro.pdf");
-        make_pdf(&first, "x");
-        mark(&first);
-        assert_eq!(sort_file(&first, &cfg).course(), Some("Statistics"));
-        let second = cfg.watch_path().join("Blatt3.pdf");
-        make_pdf(&second, "nothing");
-        mark(&second);
-        let result = sort_file(&second, &cfg);
-        assert!(
-            matches!(&result.outcome, Outcome::Moved { course, reason: Reason::Origin(host), .. }
-            if course == "Statistics" && host == "moodle.uni.ch"),
-            "{}",
-            result.describe()
-        );
-        // Switched off: left alone.
-        cfg.features.origin = false;
-        let third = cfg.watch_path().join("Blatt4.pdf");
-        make_pdf(&third, "nothing");
-        mark(&third);
-        assert_eq!(sort_file(&third, &cfg).outcome, Outcome::Left(LeftReason::NoMatch));
+        let cfg = test_config(tmp.path());
+        let file = cfg.watch_path().join("Blatt3.pdf");
+        make_pdf(&file, "Statistics: probability exercises");
+        let m = choose_course_for_test(&file, &cfg).unwrap();
+        assert_eq!(m.course, 2);
+        assert!(matches!(m.reason, Reason::Content(_)));
+        let nothing = cfg.watch_path().join("Ferienfotos.pdf");
+        make_pdf(&nothing, "Strand und Sonne");
+        assert_eq!(choose_course_for_test(&nothing, &cfg), Err(LeftReason::NoMatch));
     }
 
     #[test]
@@ -1378,6 +1260,7 @@ pub(crate) mod tests {
             watch_folder: downloads.to_string_lossy().into(),
             destination_root: studium.to_string_lossy().into(),
             courses: crate::config::scan_study_folder(&studium, false, &[]),
+            features: crate::config::Features { subfolders: false, ..Default::default() },
             ..Config::default()
         };
         let sort = |name: &str, text: &str| {

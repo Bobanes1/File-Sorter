@@ -68,13 +68,6 @@ const ZIP_DOCUMENTS: usize = 3;
 const ZIP_DOCUMENT_BYTES: u64 = 20 * 1024 * 1024;
 const ZIP_NAMES: usize = 200;
 
-/// The names of the files in a ZIP file.
-pub fn zip_names(path: &Path) -> String {
-    let Ok(file) = fs::File::open(path) else { return String::new() };
-    let Ok(zip) = zip::ZipArchive::new(file) else { return String::new() };
-    zip.file_names().take(ZIP_NAMES).filter_map(|n| n.ok()).collect::<Vec<_>>().join("\n")
-}
-
 /// What a ZIP file says about itself: the names of the files in it, then the text of the
 /// first few documents.
 pub fn zip_text(path: &Path) -> String {
@@ -254,9 +247,7 @@ fn pdf_text(data: &[u8]) -> Option<String> {
         }
     }
     let pages = doc.get_pages().len() as u32;
-    // Saving resources in the background: the first page only.
-    let max = if crate::lean::active() { 1 } else { MAX_PAGES };
-    for page in 1..=pages.min(max) {
+    for page in 1..=pages.min(MAX_PAGES) {
         let mut output = pdf_extract::PlainTextOutput::new(&mut text);
         // A page that fails to parse shouldn't hide the text of the others.
         let _ = pdf_extract::output_doc_page(&doc, &mut output, page);

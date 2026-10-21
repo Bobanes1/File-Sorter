@@ -467,15 +467,6 @@ impl Lang {
     }
 
     // ---------- background and tray ----------
-    pub fn lean_background(self) -> &'static str {
-        self.pick("Save resources in the background", "Im Hintergrund Ressourcen sparen")
-    }
-    pub fn lean_background_hint(self) -> &'static str {
-        self.pick(
-            "Less memory and computing while the window is closed or minimised; in return files are read a little less thoroughly (name and first page, no text recognition). With the window open, everything runs in full.",
-            "Weniger Arbeitsspeicher und Rechenzeit, solange das Fenster geschlossen oder minimiert ist; dafür werden Dateien etwas weniger gründlich erkannt (Name und erste Seite, keine Texterkennung). Mit offenem Fenster läuft alles wieder voll.",
-        )
-    }
     pub fn background(self) -> &'static str {
         self.pick("Keep running in the background", "Im Hintergrund weiterlaufen")
     }
@@ -638,12 +629,6 @@ impl Lang {
         self.pick(
             "No timetable yet. Import the calendar from your university portal (.ics file or link), or add lessons by hand with «+ Lesson».",
             "Noch kein Stundenplan. Importiere den Kalender aus dem Portal deiner Hochschule (.ics-Datei oder Link) oder trage Lektionen mit «+ Lektion» von Hand ein.",
-        )
-    }
-    pub fn timetable_sorting_note(self) -> &'static str {
-        self.pick(
-            "When sorting, the timetable only settles a tie: if two modules fit a file equally well, the one whose lesson was running wins – never against what the file says.",
-            "Beim Sortieren entscheidet der Stundenplan nur bei Gleichstand: Passen zwei Module gleich gut, gewinnt das, dessen Lektion gerade lief – nie gegen den Inhalt der Datei.",
         )
     }
     pub fn weekday_short(self, day: u32) -> &'static str {
@@ -962,8 +947,8 @@ impl Lang {
     }
     pub fn laya_hint(self) -> &'static str {
         self.pick(
-            "Laya, a language model fine-tuned on course files of all faculties (laya-uni, by Nils Briggen), reads documents in many languages. On: Laya alone sorts every file – module and subfolder – instead of the keywords and rules; when it isn't sure, the file stays (Activity asks when two modules are close). It also finds deadlines in any sentence. A one-time download of about 680 MB; it runs only on this computer, needs about 1.4 GB of memory while in use and gives it back when not needed.",
-            "Laya, ein auf Kursdateien aller Fakultäten trainiertes Sprachmodell (laya-uni, von Nils Briggen), liest Dokumente in vielen Sprachen. An: Laya allein sortiert jede Datei – Modul und Unterordner – statt der Stichwörter und Regeln; ist es nicht sicher, bleibt die Datei liegen (die Aktivität fragt, wenn zwei Module knapp sind). Es findet auch Termine in jedem Satz. Einmaliger Download von etwa 680 MB; es läuft nur auf diesem Computer, braucht beim Arbeiten etwa 1,4 GB Arbeitsspeicher und gibt ihn danach wieder frei.",
+            "Laya, a language model fine-tuned on course files of all faculties (laya-uni, by Nils Briggen), reads documents in many languages. On: Laya decides every file's module and subfolder; when it isn't sure, the file stays and Activity asks. Without it (not downloaded, or off) your modules' keywords decide. It also finds deadlines in any sentence. A one-time download of about 680 MB; it runs only on this computer, needs about 1.4 GB of memory while in use and gives it back when not needed.",
+            "Laya, ein auf Kursdateien aller Fakultäten trainiertes Sprachmodell (laya-uni, von Nils Briggen), liest Dokumente in vielen Sprachen. An: Laya entscheidet Modul und Unterordner jeder Datei; ist es nicht sicher, bleibt die Datei liegen und die Aktivität fragt. Ohne Laya (nicht heruntergeladen oder aus) entscheiden die Stichwörter deiner Module. Es findet auch Termine in jedem Satz. Einmaliger Download von etwa 680 MB; es läuft nur auf diesem Computer, braucht beim Arbeiten etwa 1,4 GB Arbeitsspeicher und gibt ihn danach wieder frei.",
         )
     }
     pub fn laya_download(self) -> &'static str {
@@ -1309,15 +1294,6 @@ impl Lang {
             "Der Studienordner liegt schon im Ordner der Google-Drive-App, die ihn synchronisiert.",
         )
     }
-    pub fn auto_results_window(self) -> &'static str {
-        self.pick("Results window for automatic sorting", "Ergebnisfenster beim automatischen Sortieren")
-    }
-    pub fn auto_results_window_hint(self) -> &'static str {
-        self.pick(
-            "When files are sorted while File Sorter is minimised, in the notification area or behind other windows: show them bottom right, with «Undo».",
-            "Wenn Dateien sortiert werden, während File Sorter minimiert, im Infobereich oder hinter anderen Fenstern ist: unten rechts anzeigen, mit «Rückgängig».",
-        )
-    }
     pub fn flat_modules(self) -> &'static str {
         self.pick("Modules directly in the study folder", "Module direkt im Studienordner")
     }
@@ -1564,82 +1540,9 @@ impl Lang {
             "Eine Kopie kommt in den Modulordner, das Original bleibt, wo es war. Jede Datei wird nur einmal kopiert.",
         )
     }
-    pub fn read_contents(self) -> &'static str {
-        self.pick("Read file contents", "Dateiinhalt lesen")
-    }
-    pub fn read_contents_hint(self) -> &'static str {
-        self.pick(
-            "If the file name isn't enough, read the text of PDFs, slides and Word files.",
-            "Wenn der Dateiname nicht reicht, den Text von PDFs, Folien und Word-Dateien lesen.",
-        )
-    }
-    pub fn sort_existing_on_start(self) -> &'static str {
-        self.pick("Include files already there", "Vorhandene Dateien mitsortieren")
-    }
     // ---------- features ----------
-    pub fn features(self) -> &'static str {
-        self.pick("Features", "Funktionen")
-    }
-    pub fn feature_learn(self) -> &'static str {
-        self.pick("Learn from assigning", "Aus Zuordnungen lernen")
-    }
-    pub fn feature_learn_hint(self) -> &'static str {
-        self.pick(
-            "When you assign a file to a module by hand, words from its name become keywords of that module.",
-            "Ordnest du eine Datei von Hand einem Modul zu, werden Wörter aus ihrem Namen zu Stichwörtern des Moduls.",
-        )
-    }
-    pub fn feature_origin(self) -> &'static str {
-        self.pick("Download source", "Download-Herkunft")
-    }
-    pub fn feature_origin_hint(self) -> &'static str {
-        self.pick(
-            "Remember which Moodle, ILIAS or OLAT course a file came from and sort the next one from there the same way.",
-            "Merken, aus welchem Moodle-, ILIAS- oder OLAT-Kurs eine Datei kam, und weitere von dort gleich einsortieren.",
-        )
-    }
-    pub fn feature_classifier(self) -> &'static str {
-        self.pick("Learn the modules from their files", "Module aus ihren Dateien lernen")
-    }
-    pub fn feature_classifier_hint(self) -> &'static str {
-        self.pick(
-            "When the keywords don't decide, compare a file with the files already in each module and sort it only if one is clearly more alike.",
-            "Wenn die Stichwörter nicht entscheiden, eine Datei mit den Dateien vergleichen, die schon in den Modulen liegen, und nur einsortieren, wenn eines klar ähnlicher ist.",
-        )
-    }
     pub fn laya_download_progress(self, done_mb: u64, total_mb: u64) -> String {
         self.fmt(format!("{done_mb} of {total_mb} MB"), format!("{done_mb} von {total_mb} MB"))
-    }
-    pub fn feature_ask_unsure(self) -> &'static str {
-        self.pick("Ask when unsure", "Bei Unsicherheit nachfragen")
-    }
-    pub fn feature_ask_unsure_hint(self) -> &'static str {
-        self.pick(
-            "When two modules fit about equally well, the file stays and Activity asks which one is right.",
-            "Passen zwei Module etwa gleich gut, bleibt die Datei liegen und die Aktivität fragt, welches stimmt.",
-        )
-    }
-    pub fn feature_ocr(self) -> &'static str {
-        self.pick("Recognise text in scans", "Texterkennung für Scans")
-    }
-    pub fn feature_ocr_hint(self) -> &'static str {
-        if cfg!(windows) {
-            self.pick(
-                "Scanned PDFs and photos of pages are read with the text recognition built into Windows, so they can be sorted, searched and their deadlines found.",
-                "Eingescannte PDFs und Fotos von Seiten werden mit der in Windows eingebauten Texterkennung gelesen – so werden sie sortiert, gefunden und ihre Termine erkannt.",
-            )
-        } else {
-            self.pick(
-                "Scanned PDFs and photos of pages are read with tesseract, so they can be sorted, searched and their deadlines found.",
-                "Eingescannte PDFs und Fotos von Seiten werden mit tesseract gelesen – so werden sie sortiert, gefunden und ihre Termine erkannt.",
-            )
-        }
-    }
-    pub fn feature_ocr_missing(self) -> &'static str {
-        self.pick(
-            "Not installed: sudo apt install tesseract-ocr tesseract-ocr-deu poppler-utils (then restart File Sorter).",
-            "Nicht installiert: sudo apt install tesseract-ocr tesseract-ocr-deu poppler-utils (danach File Sorter neu starten).",
-        )
     }
     pub fn feature_reminders(self) -> &'static str {
         self.pick("Reminders", "Erinnerungen")
@@ -1658,9 +1561,6 @@ impl Lang {
             Lead::Hours3 => self.pick("3 hours before", "3 Stunden vorher"),
             Lead::Hour => self.pick("1 hour before", "1 Stunde vorher"),
         }
-    }
-    pub fn feature_timetable_hint(self) -> &'static str {
-        self.pick("Use the timetable for ties", "Stundenplan bei Gleichstand beachten")
     }
     pub fn feature_subfolders(self) -> &'static str {
         self.pick("Subfolders", "Unterordner")
@@ -1715,15 +1615,6 @@ impl Lang {
     }
     pub fn no_subfolder_fit(self) -> &'static str {
         self.pick("no subfolder fit", "kein Unterordner passte")
-    }
-    pub fn feature_auto_resort(self) -> &'static str {
-        self.pick("Sort leftover files into subfolders", "Liegengebliebene Dateien einsortieren")
-    }
-    pub fn feature_auto_resort_hint(self) -> &'static str {
-        self.pick(
-            "Files lying directly in a module folder (copied in by hand, synced, or sorted before) go into their subfolder by themselves, a few minutes after they came – with «Undo» in Activity; a file put back stays.",
-            "Dateien, die direkt in einem Modulordner liegen (von Hand hineinkopiert, synchronisiert oder früher sortiert), kommen ein paar Minuten danach von selbst in ihren Unterordner – mit «Rückgängig» in der Aktivität; eine zurückgelegte Datei bleibt.",
-        )
     }
     pub fn auto_resort_offer_title(self) -> &'static str {
         self.pick("Sort files into subfolders?", "Dateien in Unterordner einsortieren?")
@@ -1834,50 +1725,11 @@ impl Lang {
             "Die Dateien, die direkt in diesem Modulordner liegen, in ihre Unterordner verschieben (zuerst Vorschau, rückgängig machbar)",
         )
     }
-    pub fn learn_folders(self) -> &'static str {
-        self.pick("Learn from files", "Aus Dateien lernen")
-    }
-    pub fn learn_folders_hint(self) -> &'static str {
-        self.pick(
-            "Look at the files already in the subfolders of all modules and learn which words in a name mean which subfolder",
-            "Die Dateien, die schon in den Unterordnern aller Module liegen, ansehen und lernen, welche Wörter im Namen zu welchem Unterordner gehören",
-        )
-    }
     pub fn edit_list(self) -> &'static str {
         self.pick("Edit list…", "Liste bearbeiten…")
     }
-    pub fn learned_words(self) -> &'static str {
-        self.pick("Learned:", "Gelernt:")
-    }
-    pub fn remove_word_hint(self) -> &'static str {
-        self.pick("Remove – it isn't learned again", "Entfernen – wird nicht wieder gelernt")
-    }
-    pub fn folder_words_learned(self, words: usize, folders: usize) -> String {
-        match (words, folders) {
-            (0, _) => self.pick("No new subfolder words learned", "Keine neuen Wörter für Unterordner gelernt").into(),
-            (1, _) => self.pick("1 word learned for a subfolder", "1 Wort für einen Unterordner gelernt").into(),
-            (w, 1) => self
-                .fmt(format!("{w} words learned for a subfolder"), format!("{w} Wörter für einen Unterordner gelernt")),
-            (w, f) => self.fmt(
-                format!("{w} words learned for {f} subfolders"),
-                format!("{w} Wörter für {f} Unterordner gelernt"),
-            ),
-        }
-    }
-    pub fn folder_words_undone(self) -> &'static str {
-        self.pick("Learned subfolder words taken back", "Gelernte Unterordner-Wörter zurückgenommen")
-    }
     pub fn subfolder_list_title(self) -> &'static str {
         self.pick("Subfolders of all modules", "Unterordner aller Module")
-    }
-    pub fn feature_auto_learn(self) -> &'static str {
-        self.pick("Learn from existing files by itself", "Automatisch aus vorhandenen Dateien lernen")
-    }
-    pub fn feature_auto_learn_hint(self) -> &'static str {
-        self.pick(
-            "Every 30 minutes and after sorting in, learn from the files in the subfolders which words belong where. Otherwise only on «Learn from files».",
-            "Alle 30 Minuten und nach dem Einsortieren aus den Dateien in den Unterordnern lernen, welche Wörter wohin gehören. Sonst nur mit «Aus Dateien lernen».",
-        )
     }
     pub fn subfolders_managed_in_overview(self) -> &'static str {
         self.pick(
@@ -1918,32 +1770,8 @@ impl Lang {
             "Kommt eine neue Version einer Datei («Skript v2»), die alte in «Ältere Versionen» verschieben.",
         )
     }
-    pub fn feature_search(self) -> &'static str {
-        self.pick("Search in files", "Suche in Dateien")
-    }
-    pub fn feature_search_hint(self) -> &'static str {
-        self.pick(
-            "Search the text of all PDFs, slides and documents in the study folder (Ctrl+F).",
-            "Den Text aller PDFs, Folien und Dokumente im Studienordner durchsuchen (Ctrl+F).",
-        )
-    }
     pub fn feature_deadlines(self) -> &'static str {
         self.pick("Deadlines & appointments", "Abgaben & Termine")
-    }
-    pub fn feature_deadlines_hint(self) -> &'static str {
-        self.pick(
-            "Find hand-ins, exams and other dates in your documents and show what is coming up.",
-            "Abgaben, Prüfungen und andere Termine in deinen Dokumenten erkennen und anzeigen, was ansteht.",
-        )
-    }
-    pub fn feature_weekly(self) -> &'static str {
-        self.pick("New this week", "Neu diese Woche")
-    }
-    pub fn feature_weekly_hint(self) -> &'static str {
-        self.pick(
-            "Show which files arrived in each module in the last 7 days.",
-            "Anzeigen, welche Dateien in den letzten 7 Tagen in welchem Modul dazugekommen sind.",
-        )
     }
     pub fn feature_update(self) -> &'static str {
         self.pick("Updates", "Aktualisierungen")
@@ -1959,18 +1787,6 @@ impl Lang {
     }
     pub fn update_auto(self) -> &'static str {
         self.pick("Install automatically", "Automatisch installieren")
-    }
-    pub fn none(self) -> &'static str {
-        self.pick("None", "Keine")
-    }
-    pub fn all(self) -> &'static str {
-        self.pick("All", "Alle")
-    }
-    pub fn sort_existing_on_start_hint(self) -> &'static str {
-        self.pick(
-            "When watching starts, also sort the files already in the folder: none, only recent ones, or all.",
-            "Beim Start der Überwachung auch Dateien sortieren, die schon im Ordner liegen: keine, nur neue oder alle.",
-        )
     }
     pub fn file_types(self) -> &'static str {
         self.pick("File types", "Dateitypen")
@@ -2006,15 +1822,6 @@ impl Lang {
             "File Sorter öffnet sich minimiert in der Taskleiste und überwacht sofort.",
         )
     }
-    pub fn watch_on_open(self) -> &'static str {
-        self.pick("Start watching right away", "Überwachung sofort starten")
-    }
-    pub fn watch_on_open_hint(self) -> &'static str {
-        self.pick(
-            "Begin watching as soon as the window opens.",
-            "Gleich beim Öffnen des Fensters mit dem Überwachen beginnen.",
-        )
-    }
 
     pub fn right_click(self) -> &'static str {
         self.pick("Right-click menu", "Rechtsklick-Menü")
@@ -2040,8 +1847,8 @@ impl Lang {
     }
     pub fn results_window_hint(self) -> &'static str {
         self.pick(
-            "After sorting from the right-click menu, briefly show where the files went.",
-            "Nach dem Sortieren per Rechtsklick kurz zeigen, wohin die Dateien gekommen sind.",
+            "After sorting from the right-click menu, and when files are sorted while File Sorter isn't in front, briefly show where they went.",
+            "Nach dem Sortieren per Rechtsklick, und wenn sortiert wird, während File Sorter nicht im Vordergrund ist, kurz zeigen, wohin die Dateien gekommen sind.",
         )
     }
 

@@ -7,7 +7,6 @@
 
 mod archive;
 mod categories;
-mod classifier;
 mod cloud;
 mod common_words;
 mod config;
@@ -23,7 +22,6 @@ mod index;
 mod keywords;
 mod laya;
 mod laya_rows;
-mod lean;
 mod ledger;
 #[cfg(target_os = "linux")]
 mod linux_menu;
@@ -31,12 +29,10 @@ mod logger;
 mod matcher;
 mod notes;
 mod ocr;
-mod origin;
 mod quicksort;
 mod reminders;
 mod resort;
 mod sorter;
-mod subfolder_learn;
 mod timetable;
 mod tray;
 mod undo;
@@ -314,7 +310,7 @@ fn main() -> ExitCode {
     let _cloud = headless_cloud_copy(&config);
     // Files lying in module folders go into their subfolders (once offered in the window).
     let features = &config.features;
-    if features.subfolders && features.subfolder_auto_resort && config.auto_resort_offered {
+    if features.subfolders && config.auto_resort_offered {
         let config = config.clone();
         std::thread::spawn(move || {
             let mut seen = resort::Seen::new();
@@ -463,7 +459,7 @@ fn laya_command(args: &Args) -> ExitCode {
             // Laya sorting alone: each into its folder, and the course information into none.
             let raw =
                 laya::subfolder_probabilities("scan_0042.pdf", text, &subfolders).map(rounded).unwrap_or_default();
-            let got = laya::subfolder_of("scan_0042.pdf", text, &subfolders).map(|(f, _)| f);
+            let got = laya::subfolder_of("scan_0042.pdf", text, &subfolders).flatten().map(|(f, _)| f);
             let right = got.as_deref() == expected;
             let note = if right { "" } else { "  ✗" };
             log::info!("Laya: a document for {expected:?} → {got:?} [{raw}]{note}");

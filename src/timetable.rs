@@ -337,14 +337,8 @@ fn join_weekly(mut singles: Vec<Event>) -> Vec<Lesson> {
 
 /// Which module a calendar entry is about, by the modules' keywords (only a clear one).
 pub fn guess_module(config: &Config, title: &str) -> Option<String> {
-    let weights = crate::matcher::Weights::new(&config.courses);
-    let mut scores: Vec<(usize, usize)> =
-        (0..config.courses.len()).map(|i| (weights.score_name(title, i).0, i)).filter(|(s, _)| *s > 0).collect();
-    scores.sort_by_key(|s| std::cmp::Reverse(s.0));
-    match scores.as_slice() {
-        [(best, i), rest @ ..] if rest.first().is_none_or(|(second, _)| second < best) => {
-            Some(config.courses[*i].label())
-        }
+    match crate::matcher::decide(title, "", &config.courses) {
+        crate::matcher::Decision::Clear(m) => Some(config.courses[m.course].label()),
         _ => None,
     }
 }

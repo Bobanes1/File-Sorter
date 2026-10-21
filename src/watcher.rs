@@ -13,7 +13,7 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::config::{Config, ExistingScope};
 use crate::sorter::{
-    LeftReason, Outcome, SortResult, TEMP_SUFFIXES, file_name, in_scope, is_candidate, sort_existing, sort_file,
+    LeftReason, Outcome, SortResult, TEMP_SUFFIXES, file_name, is_candidate, sort_existing, sort_file,
 };
 
 pub const STABLE_FOR: Duration = Duration::from_secs(2);
@@ -21,6 +21,16 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_WAIT: Duration = Duration::from_secs(600);
 pub const RESCAN_INTERVAL: Duration = Duration::from_secs(10);
 const DETECT_DELAY: Duration = Duration::from_secs(1);
+/// Until when File Sorter last watched (next to the settings): downloads that came after that,
+/// while it wasn't running, are sorted when it starts again.
+pub const WATCHED_UNTIL: &str = "watched-until.txt";
+/// How often that is written while watching.
+const STAMP_EVERY: Duration = Duration::from_secs(60);
+/// Downloads older than this aren't sorted at the start, however long File Sorter was away.
+const AWAY_AT_MOST: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// A browser's temporary file that hasn't changed for this long belongs to a download that
+/// was given up: it no longer holds back the finished file next to it.
+const STALE_TEMP: Duration = Duration::from_secs(10 * 60);
 
 /// What the watcher reports back to the GUI (or the log in headless mode).
 #[derive(Debug, Clone)]
@@ -69,11 +79,39 @@ pub type Sink = Arc<dyn Fn(WatchEvent) + Send + Sync>;
 /// True while a browser is still writing `path` under a temporary name.
 ///
 /// Firefox creates an empty placeholder `x.pdf` and downloads into `x.pdf.part`;
-/// Chrome and Edge download into `x.pdf.crdownload`.
+/// Chrome and Edge download into `x.pdf.crdownload`. One left over from a download that was
+/// given up long ago doesn't count.
 pub fn has_temp_sibling(path: &Path) -> bool {
     let name = file_name(path);
     let Some(dir) = path.parent() else { return false };
-    TEMP_SUFFIXES.iter().any(|suffix| dir.join(format!("{name}{suffix}")).exists())
+    let fresh = |temp: PathBuf| {
+        fs::metadata(temp)
+            .is_ok_and(|m| m.modified().ok().and_then(|t| t.elapsed().ok()).is_none_or(|age| age < STALE_TEMP))
+    };
+    TEMP_SUFFIXES.iter().any(|suffix| fresh(dir.join(format!("{name}{suffix}"))))
+}
+
+/// When File Sorter last watched, if it ever did with these settings.
+fn watched_until(config: &Config) -> Option<SystemTime> {
+    let text = fs::read_to_string(config.state_file(WATCHED_UNTIL)?).ok()?;
+    Some(SystemTime::UNIX_EPOCH + Duration::from_secs(text.trim().parse().ok()?))
+}
+
+/// Note that File Sorter is watching now.
+fn note_watching(config: &Config) {
+    let Some(file) = config.state_file(WATCHED_UNTIL) else { return };
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if let Err(e) = fs::write(&file, now.to_string()) {
+        log::info!("Could not write {}: {e}", file.display());
+    }
+}
+
+/// Whether `path` was downloaded (or changed) at `since` or later. Windows sets the creation
+/// time to the moment of the download, while browsers may keep the server's modification
+/// time, so the newer of the two counts.
+fn arrived_since(path: &Path, since: SystemTime) -> bool {
+    let Ok(meta) = fs::metadata(path) else { return false };
+    [meta.modified().ok(), meta.created().ok()].into_iter().flatten().max().is_some_and(|t| t >= since)
 }
 
 /// Wait until the download is finished and the file can be opened.
@@ -210,14 +248,16 @@ impl FolderWatcher {
             }
         }
         *self.inner.folder.write().unwrap() = Some(folder.clone());
-        // Files that are already there and not to be sorted now are left alone until they change.
-        let scope = config.sort_existing_on_start.scope();
-        let snapshot = candidates(&folder, &config)
-            .into_iter()
-            .filter(|p| scope.is_none_or(|scope| !in_scope(p, scope)))
-            .map(|p| (file_name(&p), signature(&p)))
-            .collect();
-        *self.inner.ignore.lock().unwrap() = snapshot;
+        // Downloads that came while File Sorter wasn't running are sorted now (from a little
+        // before it stopped); the files that were there before are left alone until they change.
+        let since = watched_until(&config).map(|until| {
+            let before = until.checked_sub(Duration::from_secs(120)).unwrap_or(until);
+            SystemTime::now().checked_sub(AWAY_AT_MOST).map_or(before, |limit| before.max(limit))
+        });
+        let (came, there): (Vec<PathBuf>, Vec<PathBuf>) =
+            candidates(&folder, &config).into_iter().partition(|p| since.is_some_and(|since| arrived_since(p, since)));
+        *self.inner.ignore.lock().unwrap() = there.iter().map(|p| (file_name(p), signature(p))).collect();
+        note_watching(&config);
 
         let inner = Arc::clone(&self.inner);
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -238,13 +278,19 @@ impl FolderWatcher {
             .name("file-sorter-rescan".into())
             .spawn(move || rescan_loop(inner, generation))
             .map_err(|e| StartError::Other(e.to_string()))?;
-        if let Some(scope) = scope {
-            self.sort_existing_async(scope);
+        if !came.is_empty() {
+            log::info!("{} file(s) came while File Sorter wasn't running", came.len());
+        }
+        for path in came {
+            enqueue(&self.inner, path);
         }
         Ok(())
     }
 
     pub fn stop(&mut self) {
+        if self.running() {
+            note_watching(&self.inner.config.read().unwrap());
+        }
         self.inner.running.store(false, Ordering::SeqCst);
         self.watcher = None; // dropping the notify watcher stops the events
         self.lock = None; // closing the file releases the lock
@@ -323,12 +369,17 @@ fn rescan(inner: &Arc<Inner>) {
 fn rescan_loop(inner: Arc<Inner>, generation: u64) {
     let step = Duration::from_millis(100);
     let mut waited = Duration::ZERO;
+    let mut noted = Instant::now();
     while inner.running.load(Ordering::SeqCst) && inner.generation.load(Ordering::SeqCst) == generation {
         thread::sleep(step);
         waited += step;
         if waited >= inner.rescan_interval {
             waited = Duration::ZERO;
             rescan(&inner);
+        }
+        if noted.elapsed() >= STAMP_EVERY {
+            noted = Instant::now();
+            note_watching(&inner.config.read().unwrap());
         }
     }
 }
@@ -590,11 +641,45 @@ mod tests {
     }
 
     #[test]
-    fn sort_existing_on_start() {
-        let mut h = Harness::new(|c| c.sort_existing_on_start = crate::config::OnStart::All);
-        make_pdf(&h.downloads().join("stats_old.pdf"), "x");
-        h.watcher.start().unwrap();
-        assert!(wait_for(|| h.uni().join("Statistics").join("stats_old.pdf").exists()));
+    fn downloads_from_while_it_was_away_are_sorted_at_the_start() {
+        let mut h = Harness::new(|_| {});
+        let state = h._tmp.path().join("state");
+        fs::create_dir_all(&state).unwrap();
+        h.cfg.state_dir = Some(state.clone());
+        let started = |h: &mut Harness| {
+            let sink: Sink = Arc::new(|_| {});
+            h.watcher = FolderWatcher::with_timing(h.cfg.clone(), sink, Duration::from_millis(300), RESCAN_INTERVAL);
+            h.watcher.start().unwrap();
+        };
+        // Never watched before: what is there stays.
+        make_pdf(&h.downloads().join("stats_before.pdf"), "x");
+        started(&mut h);
+        h.watcher.stop();
+        assert!(state.join(WATCHED_UNTIL).exists());
+        // Watched until a moment (here: a little ahead, as file times can't be set back on
+        // every system): only what came after it is sorted, not the file that was there.
+        let until = SystemTime::now() + Duration::from_secs(200);
+        let secs = until.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        fs::write(state.join(WATCHED_UNTIL), secs.to_string()).unwrap();
+        let new = h.downloads().join("stats_new.pdf");
+        make_pdf(&new, "x");
+        fs::File::options().write(true).open(&new).unwrap().set_modified(until + Duration::from_secs(60)).unwrap();
+        started(&mut h);
+        assert!(wait_for(|| h.uni().join("Statistics").join("stats_new.pdf").exists()));
+        assert!(h.downloads().join("stats_before.pdf").exists());
+    }
+
+    #[test]
+    fn a_temp_file_left_from_long_ago_holds_nothing_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.pdf");
+        fs::write(&file, "x").unwrap();
+        let temp = tmp.path().join("a.pdf.crdownload");
+        fs::write(&temp, "").unwrap();
+        assert!(has_temp_sibling(&file));
+        let old = SystemTime::now() - STALE_TEMP - Duration::from_secs(60);
+        fs::File::options().write(true).open(&temp).unwrap().set_modified(old).unwrap();
+        assert!(!has_temp_sibling(&file));
     }
 
     #[test]

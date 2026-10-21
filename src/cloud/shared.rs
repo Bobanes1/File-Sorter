@@ -47,7 +47,13 @@ pub struct Shared {
     pub based_on: i64,
     pub courses: Vec<Course>,
     pub extensions: Vec<String>,
+    /// Always true: versions before 0.19 had a switch for reading files and need it here.
+    #[serde(default = "always")]
     pub read_file_contents: bool,
+}
+
+fn always() -> bool {
+    true
 }
 
 impl Shared {
@@ -59,18 +65,17 @@ impl Shared {
             based_on: 0,
             courses: shared_courses(&config.courses),
             extensions: shared_extensions(&config.extensions),
-            read_file_contents: config.read_file_contents,
+            read_file_contents: true,
         }
     }
 
-    /// Same modules (in any order), keywords, file types and content reading as `config`.
+    /// Same modules (in any order), keywords and file types as `config`.
     pub fn matches(&self, config: &Config) -> bool {
-        self.same_as(&config.courses, &config.extensions, config.read_file_contents)
+        self.same_as(&config.courses, &config.extensions)
     }
 
-    fn same_as(&self, courses: &[Course], extensions: &[String], read_file_contents: bool) -> bool {
-        self.read_file_contents == read_file_contents
-            && comparable_courses(&self.courses) == comparable_courses(courses)
+    fn same_as(&self, courses: &[Course], extensions: &[String]) -> bool {
+        comparable_courses(&self.courses) == comparable_courses(courses)
             && comparable_extensions(&self.extensions) == comparable_extensions(extensions)
     }
 
@@ -132,7 +137,6 @@ impl Shared {
 
         config.courses = courses;
         config.extensions = shared_extensions(&self.extensions);
-        config.read_file_contents = self.read_file_contents;
         true
     }
 }
@@ -344,11 +348,7 @@ pub fn decide(
     // Their clock may differ from ours: this only settles a module both changed.
     let ours_newer = local_changed_at.is_some_and(|at| at > remote.updated_at);
     let merged = merge(base, config, remote, ours_newer);
-    if merged.same_as(&remote.courses, &remote.extensions, remote.read_file_contents) {
-        Step::Apply(remote.clone())
-    } else {
-        Step::Merge(merged)
-    }
+    if merged.same_as(&remote.courses, &remote.extensions) { Step::Apply(remote.clone()) } else { Step::Merge(merged) }
 }
 
 /// Our changes and theirs since `base`, module by module (`None`: unknown, so nothing is
@@ -390,13 +390,7 @@ fn merge(base: Option<&Shared>, ours: &Config, theirs: &Shared, ours_newer: bool
     } else {
         merge_words(base_ext, &ours_ext, &theirs.extensions)
     };
-    let read_file_contents = match base {
-        Some(base) if base.read_file_contents != ours.read_file_contents => ours.read_file_contents,
-        Some(_) => theirs.read_file_contents,
-        None if ours_newer => ours.read_file_contents,
-        None => theirs.read_file_contents,
-    };
-    Shared { courses, extensions, read_file_contents, ..theirs.clone() }
+    Shared { courses, extensions, read_file_contents: true, ..theirs.clone() }
 }
 
 /// Each module under its key; a second module with the same key gets the next number.
@@ -524,7 +518,6 @@ mod tests {
         let shared = check(&format!("\u{feff}{{\"version\": 1, {body}}}")).expect("byte-order mark");
         assert_eq!(shared.courses, vec![course("Mathe", "Statistik", &["stats"], ""), course("", "Algo", &[], "")]);
         assert_eq!(shared.extensions, vec![".pdf"]);
-        assert!(!shared.read_file_contents);
         assert!(check(&format!("{{\"version\": 0, {body}}}")).is_some(), "older formats are read");
 
         assert_eq!(check(&format!("{{\"version\": 2, {body}}}")), None, "newer format");
@@ -618,7 +611,6 @@ mod tests {
         }));
         assert!(differs(|c| c.courses.push(course("", "Statistik", &[], ""))));
         assert!(differs(|c| c.extensions.push(".zip".into())));
-        assert!(differs(|c| c.read_file_contents = false));
     }
 
     #[test]
@@ -629,7 +621,6 @@ mod tests {
             course("Physik", " ", &[], ""),
         ]);
         remote_config.extensions = vec![".pdf".into(), ".zip".into()];
-        remote_config.read_file_contents = false;
         // Not cleaned, as if made by hand: applying must still drop their folders and nameless modules.
         let remote = Shared { courses: remote_config.courses.clone(), ..Shared::from_config(&remote_config, 3, "PC") };
 
@@ -645,7 +636,6 @@ mod tests {
             "the custom folder here stays, theirs and the nameless module don't come along"
         );
         assert_eq!(local.extensions, vec![".pdf", ".zip"]);
-        assert!(!local.read_file_contents);
         assert!(remote.matches(&local));
         assert!(!remote.apply_to(&mut local), "nothing left to change");
 

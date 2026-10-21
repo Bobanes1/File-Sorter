@@ -146,17 +146,6 @@ impl Index {
         self.docs.len()
     }
 
-    /// The first `words` words of every document with text, by path.
-    pub fn starts(&self, words: usize) -> std::collections::HashMap<PathBuf, String> {
-        self.docs
-            .iter()
-            .filter_map(|d| {
-                let first = d.pages.first()?;
-                Some((d.path.clone(), first.split_whitespace().take(words).collect::<Vec<_>>().join(" ")))
-            })
-            .collect()
-    }
-
     /// Documents with text changed after `since` (nanoseconds since 1970) that `skip` doesn't
     /// rule out, at most `limit`: path, size, modification time (seconds) and the text of
     /// their first `pages` pages.
@@ -567,9 +556,6 @@ enum Job {
     Refresh,
     /// The system reported a change in the study folder.
     Changed,
-    /// Stop watching and reading until `Resume` (saving resources in the background).
-    Pause,
-    Resume,
 }
 
 /// The search index, kept up to date by a background thread.
@@ -599,12 +585,6 @@ impl Indexer {
 
     pub fn refresh(&self) {
         let _ = self.tx.send(Job::Refresh);
-    }
-
-    /// Stop reading and watching (in the background, to save resources), or start again
-    /// (and catch up on what changed meanwhile).
-    pub fn pause(&self, paused: bool) {
-        let _ = self.tx.send(if paused { Job::Pause } else { Job::Resume });
     }
 
     /// True while files are being read.
@@ -641,33 +621,11 @@ fn run(
 ) {
     let mut root: Option<(PathBuf, Vec<String>)> = None;
     let mut watcher: Option<notify::RecommendedWatcher> = None;
-    let mut paused = false;
-    // Something changed while paused: read when resumed.
-    let mut missed = false;
     loop {
-        let mut take = |job: Job, root: &mut Option<(PathBuf, Vec<String>)>, paused: &mut bool| match job {
+        let mut take = |job: Job, root: &mut Option<(PathBuf, Vec<String>)>| match job {
             Job::Root(new, extensions) => {
-                watcher = if *paused { None } else { watch(&new, tx.clone()) };
+                watcher = watch(&new, tx.clone());
                 *root = Some((new, extensions));
-            }
-            Job::Pause => {
-                *paused = true;
-                watcher = None;
-                // The texts are on disk: free them (also what a pass just finished put back).
-                *index.write().unwrap() = Index::default();
-                crate::lean::trim_memory();
-            }
-            Job::Resume => {
-                *paused = false;
-                if let Some((folder, _)) = root.as_ref() {
-                    watcher = watch(folder, tx.clone());
-                }
-                // Dropped from memory while paused: back from disk (only changes are read then).
-                if index.read().is_ok_and(|i| i.docs.is_empty())
-                    && let Some(file) = &file
-                {
-                    *index.write().unwrap() = Index::load(file);
-                }
             }
             Job::Refresh | Job::Changed => {}
         };
@@ -677,23 +635,14 @@ fn run(
             Err(RecvTimeoutError::Disconnected) => return,
         };
         let changed = matches!(first, Some(Job::Changed));
-        let resumed = matches!(first, Some(Job::Resume));
         if let Some(job) = first {
-            take(job, &mut root, &mut paused);
+            take(job, &mut root);
         }
         // Several requests in a row need only one pass; after a change, wait until it settles.
         let wait = if changed { SETTLE } else { Duration::ZERO };
         while let Ok(job) = rx.recv_timeout(wait) {
-            take(job, &mut root, &mut paused);
+            take(job, &mut root);
         }
-        if paused {
-            missed = true;
-            continue;
-        }
-        if resumed && !missed {
-            continue;
-        }
-        missed = false;
         let Some((folder, extensions)) = &root else { continue };
         if !folder.is_dir() {
             continue;
@@ -725,7 +674,29 @@ fn run(
         busy.store(false, std::sync::atomic::Ordering::Relaxed);
         repaint();
         // The copies made for this pass are gone: give their memory back.
-        crate::lean::trim_memory();
+        trim_memory();
+    }
+}
+
+/// Give memory that is no longer used back to the system right away (Windows keeps it in
+/// the process's working set otherwise, where Task Manager still counts it).
+fn trim_memory() {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapCompact};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+        HeapCompact(GetProcessHeap(), 0);
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        // SAFETY: glibc's malloc_trim only hands free memory back to the system.
+        unsafe {
+            malloc_trim(0);
+        }
     }
 }
 
@@ -862,10 +833,9 @@ mod tests {
         assert_eq!(marks.iter().map(|m| &text[m.clone()]).collect::<Vec<_>>(), ["Äpfel", "Obst"]);
     }
 
-    /// Paused (saving resources): the texts leave memory; resumed: back from disk, and what
-    /// changed meanwhile is read.
+    /// New files are read on a refresh, and the index is saved for the next start.
     #[test]
-    fn pausing_frees_the_texts_and_resuming_brings_them_back() {
+    fn new_files_are_read_and_kept_for_the_next_start() {
         let tmp = tempfile::tempdir().unwrap();
         let (state, root) = (tmp.path().join("state"), tmp.path().join("Studium"));
         fs::create_dir_all(&state).unwrap();
@@ -883,14 +853,14 @@ mod tests {
         };
         indexer.set_root(root.clone(), vec![".pdf".into()]);
         assert!(wait_for(&|i| i.len() == 1 && state.join(INDEX_FILE).exists()));
-        indexer.pause(true);
-        assert!(wait_for(&|i| i.len() == 0), "dropped while paused");
         make_pdf(&root.join("Prog/vl2.pdf"), "Rekursion");
-        std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(indexer.index.read().unwrap().len(), 0, "nothing read while paused");
-        indexer.pause(false);
-        assert!(wait_for(&|i| i.len() == 2), "back from disk, and the new file read");
+        indexer.refresh();
+        assert!(wait_for(&|i| i.len() == 2), "the new file read");
         assert_eq!(indexer.index.read().unwrap().search("rekursion", 5).len(), 2);
+        // Saved: read back from disk by the next start.
+        drop(indexer);
+        let again = Indexer::start(Some(state.clone()), || {});
+        assert_eq!(again.index.read().unwrap().len(), 2);
     }
 
     /// A scan indexed by 0.12 (no text) is read again once recognition is there, and found.

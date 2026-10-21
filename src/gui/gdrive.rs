@@ -12,9 +12,8 @@ use crate::cloud::gdrive::{self, Job, Place, Report, SignIn, Summary, Worker};
 use crate::cloud::{CloudMode, Provider};
 use crate::fx::{self, ButtonStyle};
 
-/// Between syncs (in the background while saving resources: less often).
+/// Between syncs.
 const EVERY: Duration = Duration::from_secs(15 * 60);
-const EVERY_LEAN: Duration = Duration::from_secs(60 * 60);
 /// After sorting, wait this long for more before syncing.
 const AFTER_SORT: Duration = Duration::from_secs(30);
 
@@ -89,7 +88,7 @@ impl App {
             worker.send(Job::Sync { local, folder, first });
         }
         self.gdrive.sorted_at = None;
-        self.gdrive.next = Some(Instant::now() + if self.lean { EVERY_LEAN } else { EVERY });
+        self.gdrive.next = Some(Instant::now() + EVERY);
     }
 
     fn start_drive_sign_in(&mut self) {

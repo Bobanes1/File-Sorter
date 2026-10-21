@@ -138,7 +138,7 @@ impl App {
                 Err(e) => self.semester.error = Some(e),
             }
         }
-        if self.semester.fetching.is_none() && !self.lean {
+        if self.semester.fetching.is_none() {
             let now = chrono::Utc::now().timestamp();
             if let Some(url) =
                 self.semester.table.subscriptions.iter().find(|s| now - s.read > REFRESH_LINK).map(|s| s.url.clone())
@@ -317,7 +317,6 @@ impl App {
             let text = RichText::new(lang.subscribed(links.len())).small().color(p.outline);
             ui.label(text).on_hover_text(links.join("\n"));
         }
-        ui.label(RichText::new(lang.timetable_sorting_note()).small().color(p.outline));
     }
 
     fn week_grid(&mut self, ui: &mut egui::Ui, week: NaiveDate, today: NaiveDate) {

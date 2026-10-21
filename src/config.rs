@@ -240,16 +240,9 @@ impl Course {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// While the window is closed or minimised: use less memory and reading.
-    pub lean_background: bool,
     pub watch_folder: String,
     pub destination_root: String,
     pub extensions: Vec<String>,
-    pub read_file_contents: bool,
-    /// Sort the files already in the watched folder when watching starts: none, only the
-    /// ones from the last days, or all.
-    #[serde(deserialize_with = "on_start_or_bool")]
-    pub sort_existing_on_start: OnStart,
     /// "Sort existing files" in the window: the last 24 hours, the last 7 days or everything.
     /// (0.9 saved `sort_existing_recent`: true for 7 days, false for all.)
     #[serde(alias = "sort_existing_recent", deserialize_with = "range_or_bool")]
@@ -265,15 +258,11 @@ pub struct Config {
     pub theme: ThemeChoice,
     /// Flying files, sliding cards and the pulsing status dot.
     pub animations: bool,
-    /// Start watching as soon as the window opens.
-    pub watch_on_open: bool,
     /// Start File Sorter (minimised, watching) when logging in.
     pub autostart: bool,
-    /// Show the small results window after sorting from the right-click menu.
+    /// Show the small results window after sorting from the right-click menu, and when files
+    /// are sorted by themselves while the window isn't in front.
     pub results_window: bool,
-    /// Show it also when files are sorted by themselves (watching, sorting existing files)
-    /// while the window isn't in front.
-    pub auto_results_window: bool,
     /// Modules directly in the study folder (`Studium/Statistik`), without a folder per
     /// study program (`Studium/Informatik/Statistik`).
     pub flat_modules: bool,
@@ -352,49 +341,6 @@ fn range_or_bool<'de, D: Deserializer<'de>>(d: D) -> Result<SortRange, D::Error>
     })
 }
 
-/// Which files already in the watched folder are sorted when watching starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OnStart {
-    /// Only new downloads.
-    #[default]
-    Off,
-    /// Files from the last 24 hours too.
-    Day,
-    /// Files from the last 7 days too (saved as "recent", as in 0.9).
-    #[serde(rename = "recent")]
-    Week,
-    /// Everything that is there.
-    All,
-}
-
-impl OnStart {
-    /// What to sort when watching starts, if anything.
-    pub fn scope(self) -> Option<ExistingScope> {
-        match self {
-            OnStart::Off => None,
-            OnStart::Day => Some(SortRange::Day.scope()),
-            OnStart::Week => Some(SortRange::Week.scope()),
-            OnStart::All => Some(ExistingScope::All),
-        }
-    }
-}
-
-/// Versions before 0.9 saved `true` / `false` here.
-fn on_start_or_bool<'de, D: Deserializer<'de>>(d: D) -> Result<OnStart, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Either {
-        Old(bool),
-        New(OnStart),
-    }
-    Ok(match Option::<Either>::deserialize(d)? {
-        Some(Either::Old(true)) => OnStart::All,
-        Some(Either::Old(false)) | None => OnStart::Off,
-        Some(Either::New(choice)) => choice,
-    })
-}
-
 /// Which of the files already in the watched folder to sort.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExistingScope {
@@ -416,20 +362,10 @@ pub enum UpdateMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Features {
-    /// "Assign" a file to a module by hand, and learn keywords from it.
-    pub learn: bool,
-    /// Use the web page a file was downloaded from (Moodle course, …) to find its module.
-    pub origin: bool,
     /// Sort into subfolders inside the module (Vorlesung, Übungen, …).
     pub subfolders: bool,
     /// The subfolders every module has, and the words that send a file into each.
     pub subfolder_list: Vec<Subfolder>,
-    /// Words learned from the files already in the subfolders, per subfolder.
-    pub subfolder_learned: Vec<LearnedFolder>,
-    /// Learn them by itself now and then (else only on «Learn»).
-    pub subfolder_auto_learn: bool,
-    /// Files lying directly in a module folder go into their subfolder by themselves.
-    pub subfolder_auto_resort: bool,
     /// 0.9/0.10 saved only the names of the four built-in subfolders here.
     #[serde(skip_serializing, rename = "subfolder_names")]
     pub old_subfolder_names: Option<[String; 4]>,
@@ -439,28 +375,14 @@ pub struct Features {
     pub versions: bool,
     /// Name of that folder (inside the module or subfolder).
     pub versions_folder: String,
-    /// Search the text of all documents in the study folder.
-    pub search: bool,
-    /// Find submission deadlines in exercise sheets.
-    pub deadlines: bool,
-    /// "New this week" on the overview.
-    pub weekly: bool,
     /// Look for new versions of File Sorter.
     pub update_check: bool,
     pub update_install: UpdateMode,
-    /// When two modules fit about equally well, leave the file and ask.
-    pub ask_when_unsure: bool,
-    /// Learn the modules from the files already in them, for files the keywords don't decide.
-    pub classifier: bool,
     /// Use the AI model Laya (once it is set up): it alone decides each file's module and
     /// subfolder, and it finds deadlines and exams in any language.
     pub laya: bool,
-    /// Recognise the text of scanned PDFs and pictures.
-    pub ocr: bool,
     /// Remind of deadlines and exams with a system notification.
     pub reminders: bool,
-    /// Between modules that fit equally well, prefer the one whose lesson is running.
-    pub timetable_hint: bool,
     /// When before a deadline.
     pub reminder_leads: Vec<crate::reminders::Lead>,
     /// What deadlines and appointments are put into («Übung», «Prüfung», …).
@@ -474,28 +396,16 @@ pub struct Features {
 impl Default for Features {
     fn default() -> Self {
         Features {
-            learn: true,
-            origin: true,
-            subfolders: false,
+            subfolders: true,
             subfolder_list: Subfolder::defaults(),
-            subfolder_learned: Vec::new(),
-            subfolder_auto_learn: false,
-            subfolder_auto_resort: true,
             old_subfolder_names: None,
             unzip: false,
             versions: false,
             versions_folder: "Ältere Versionen".to_string(),
-            search: true,
-            deadlines: true,
-            weekly: true,
             update_check: true,
             update_install: UpdateMode::Ask,
-            ask_when_unsure: true,
-            classifier: true,
             laya: true,
-            ocr: true,
             reminders: true,
-            timetable_hint: true,
             reminder_leads: crate::reminders::default_leads(),
             deadline_categories: crate::deadlines::Category::defaults(),
             grade_scale: GradeScale::Swiss,
@@ -515,18 +425,6 @@ pub struct Subfolder {
     /// exams), which come with their own words in German and English.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builtin: Option<Category>,
-}
-
-/// Words that the files in a subfolder have in their names, learned from them ("vl" for
-/// «Vorlesung», "musterlosung" for «Lösungen»), and the ones the user took out.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct LearnedFolder {
-    pub name: String,
-    pub words: Vec<String>,
-    /// Taken out by the user: not learned again.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub removed: Vec<String>,
 }
 
 impl Subfolder {
@@ -556,12 +454,9 @@ pub enum ThemeChoice {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            lean_background: false,
             watch_folder: home().join("Downloads").to_string_lossy().into_owned(),
             destination_root: home().join("University").to_string_lossy().into_owned(),
             extensions: DEFAULT_EXTENSIONS.iter().map(|e| e.to_string()).collect(),
-            read_file_contents: true,
-            sort_existing_on_start: OnStart::Off,
             sort_existing_range: SortRange::Week,
             courses: Vec::new(),
             language: None,
@@ -569,10 +464,8 @@ impl Default for Config {
             action: FileAction::Move,
             theme: ThemeChoice::System,
             animations: true,
-            watch_on_open: false,
             autostart: false,
             results_window: true,
-            auto_results_window: true,
             flat_modules: false,
             background: false,
             cloud: CloudSettings::default(),
@@ -663,7 +556,6 @@ pub fn load_config(path: &Path) -> io::Result<Config> {
     };
     config.state_dir = Some(config_path_dir(path));
     crate::ocr::set_cache_dir(&config_path_dir(path));
-    crate::ocr::set_enabled(config.features.ocr);
     crate::laya::configure(&config_path_dir(path), config.features.laya);
     Ok(config)
 }
@@ -895,17 +787,16 @@ mod tests {
     }
 
     #[test]
-    fn old_on_start_switch_and_missing_features_still_read() {
+    fn old_switches_and_missing_features_still_read() {
         let read = |json: &str| serde_json::from_str::<Config>(json).unwrap();
-        assert_eq!(read(r#"{"sort_existing_on_start": true}"#).sort_existing_on_start, OnStart::All);
-        assert_eq!(read(r#"{"sort_existing_on_start": false}"#).sort_existing_on_start, OnStart::Off);
-        assert_eq!(read(r#"{"sort_existing_on_start": "recent"}"#).sort_existing_on_start, OnStart::Week);
-        assert_eq!(read(r#"{"sort_existing_on_start": "day"}"#).sort_existing_on_start, OnStart::Day);
+        // Switches of earlier versions are read and left out.
+        let old = r#"{"sort_existing_on_start": true, "read_file_contents": false, "lean_background": true,
+                       "features": {"classifier": true, "origin": false, "subfolder_learned": [], "ocr": false}}"#;
+        assert_eq!(read(old).features, Features::default());
         assert_eq!(read(r#"{"sort_existing_recent": false}"#).sort_existing_range, SortRange::All);
         assert_eq!(read(r#"{"sort_existing_recent": true}"#).sort_existing_range, SortRange::Week);
         assert_eq!(read(r#"{"sort_existing_range": "day"}"#).existing_scope(), ExistingScope::LastHours(24));
         let old = read("{}");
-        assert_eq!(old.sort_existing_on_start, OnStart::Off);
         assert_eq!(old.features, Features::default());
         assert_eq!(old.existing_scope(), ExistingScope::LastHours(7 * 24));
         // 0.9/0.10 had only the four names; they carry over, words can be added now.
@@ -917,7 +808,7 @@ mod tests {
         assert!(!serde_json::to_string(&named).unwrap().contains("subfolder_names"));
         assert_eq!(read("{}").features.subfolder_list, Subfolder::defaults());
         let partial = read(r#"{"features": {"unzip": true}}"#).features;
-        assert!(partial.unzip && partial.learn && !partial.subfolders);
+        assert!(partial.unzip && partial.subfolders && partial.laya);
     }
 
     #[test]
@@ -1080,7 +971,6 @@ mod tests {
         assert_eq!(cfg.courses[0].subject, "");
         assert_eq!(cfg.courses[0].keywords, vec!["stats"]);
         assert_eq!(cfg.extensions, vec![".pdf", ".pptx"]);
-        assert!(cfg.read_file_contents);
         assert_eq!(cfg.watch_path(), home().join("Downloads"));
     }
 }

@@ -4,7 +4,7 @@ use eframe::egui::{self, Align, Layout, Margin, RichText, Sense, Stroke, vec2};
 use egui_phosphor::regular as icon;
 
 use super::{App, known_types, section_title};
-use crate::config::{DEFAULT_EXTENSIONS, FileAction, OnStart, SortRange, ThemeChoice};
+use crate::config::{DEFAULT_EXTENSIONS, FileAction, ThemeChoice};
 use crate::fx::{self, ButtonStyle};
 use crate::i18n::Lang;
 
@@ -133,6 +133,8 @@ impl App {
 
                 section_title(ui, lang.sorting());
                 fx::card(ui, |ui| {
+                    changed |= self.sorting_extras_ui(ui);
+                    divider(ui);
                     ui.label(RichText::new(lang.file_action()).small().color(p.on_surface_variant));
                     for (action, title, hint, id) in [
                         (FileAction::Move, lang.action_move(), lang.action_move_hint(), "action-move"),
@@ -144,81 +146,45 @@ impl App {
                         }
                     }
                     divider(ui);
-                    setting_row(
-                        ui,
-                        icon::FILE_MAGNIFYING_GLASS,
-                        lang.read_contents(),
-                        lang.read_contents_hint(),
-                        |ui| {
-                            changed |= fx::toggle(ui, &mut self.config.read_file_contents).changed();
-                        },
-                    );
-                    divider(ui);
-                    setting_row(
-                        ui,
-                        icon::BROOM,
-                        lang.sort_existing_on_start(),
-                        lang.sort_existing_on_start_hint(),
-                        |ui| {
-                            let options = [
-                                (OnStart::Off, lang.none().to_string()),
-                                (OnStart::Day, lang.range_short(SortRange::Day).to_string()),
-                                (OnStart::Week, lang.range_short(SortRange::Week).to_string()),
-                                (OnStart::All, lang.all().to_string()),
-                            ];
-                            changed |=
-                                fx::segmented(ui, "sort-on-start", &mut self.config.sort_existing_on_start, &options);
-                        },
-                    );
+                    setting_row(ui, icon::APP_WINDOW, lang.results_window(), lang.results_window_hint(), |ui| {
+                        changed |= fx::toggle(ui, &mut self.config.results_window).changed();
+                    });
                     divider(ui);
                     changed |= self.flat_setting_ui(ui);
-                    divider(ui);
-                    setting_row(
-                        ui,
-                        icon::APP_WINDOW,
-                        lang.auto_results_window(),
-                        lang.auto_results_window_hint(),
-                        |ui| {
-                            changed |= fx::toggle(ui, &mut self.config.auto_results_window).changed();
-                        },
-                    );
                     divider(ui);
                     changed |= self.file_types_ui(ui);
                 });
                 ui.add_space(16.0);
 
-                section_title(ui, lang.features());
+                section_title(ui, lang.feature_deadlines());
                 fx::card(ui, |ui| {
-                    changed |= self.features_ui(ui);
+                    changed |= self.deadline_settings_ui(ui);
                 });
                 ui.add_space(16.0);
 
-                section_title(ui, lang.startup());
-                fx::card(ui, |ui| {
-                    if crate::desktop::autostart_supported() {
-                        setting_row(ui, icon::POWER, lang.autostart(), lang.autostart_hint(), |ui| {
-                            if fx::toggle(ui, &mut self.config.autostart).changed() {
-                                crate::desktop::apply_autostart_setting(self.config.autostart);
-                                changed = true;
+                // Nothing to start on systems without autostart and tray.
+                if crate::desktop::autostart_supported() || crate::tray::supported() {
+                    section_title(ui, lang.startup());
+                    fx::card(ui, |ui| {
+                        if crate::desktop::autostart_supported() {
+                            setting_row(ui, icon::POWER, lang.autostart(), lang.autostart_hint(), |ui| {
+                                if fx::toggle(ui, &mut self.config.autostart).changed() {
+                                    crate::desktop::apply_autostart_setting(self.config.autostart);
+                                    changed = true;
+                                }
+                            });
+                        }
+                        if crate::tray::supported() {
+                            if crate::desktop::autostart_supported() {
+                                divider(ui);
                             }
-                        });
-                        divider(ui);
-                    }
-                    setting_row(ui, icon::PLAY_CIRCLE, lang.watch_on_open(), lang.watch_on_open_hint(), |ui| {
-                        changed |= fx::toggle(ui, &mut self.config.watch_on_open).changed();
+                            setting_row(ui, icon::TRAY, lang.background(), lang.background_hint(), |ui| {
+                                changed |= fx::toggle(ui, &mut self.config.background).changed();
+                            });
+                        }
                     });
-                    if crate::tray::supported() {
-                        divider(ui);
-                        setting_row(ui, icon::TRAY, lang.background(), lang.background_hint(), |ui| {
-                            changed |= fx::toggle(ui, &mut self.config.background).changed();
-                        });
-                    }
-                    divider(ui);
-                    setting_row(ui, icon::LEAF, lang.lean_background(), lang.lean_background_hint(), |ui| {
-                        changed |= fx::toggle(ui, &mut self.config.lean_background).changed();
-                    });
-                });
-                ui.add_space(16.0);
+                    ui.add_space(16.0);
+                }
 
                 self.cloud_settings_ui(ui);
 
@@ -241,16 +207,15 @@ impl App {
                                 }
                             },
                         );
-                        divider(ui);
-                        setting_row(ui, icon::APP_WINDOW, lang.results_window(), lang.results_window_hint(), |ui| {
-                            changed |= fx::toggle(ui, &mut self.config.results_window).changed();
-                        });
                     });
                     ui.add_space(16.0);
                 }
 
                 section_title(ui, lang.about());
                 fx::card(ui, |ui| {
+                    changed |= self.update_setting_ui(ui);
+                    divider(ui);
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         let (logo, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
                         fx::avatar(

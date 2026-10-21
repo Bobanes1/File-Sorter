@@ -254,20 +254,19 @@ pub fn configure(state_dir: &Path, on: bool) {
     }
 }
 
-/// Set up, switched on, and not saving resources in the background.
+/// Set up, switched on, and not failed a moment ago.
 pub fn available() -> bool {
     #[cfg(test)]
     return tests::FAKE.with(|f| f.get().is_some());
     #[cfg(not(test))]
     {
         ON.load(Ordering::Relaxed)
-            && !crate::lean::active()
             && PLACE.lock().is_ok_and(|p| p.as_ref().is_some_and(Place::installed))
             && FAILED_AT.lock().map(|f| f.is_none_or(|t| t.elapsed() > RETRY_AFTER)).unwrap_or(true)
     }
 }
 
-/// Drop the model from memory (switched off, saving resources, or not asked for a while).
+/// Drop the model from memory (switched off, or not asked for a while).
 pub fn stop() {
     if let Ok(mut loaded) = LOADED.lock()
         && loaded.take().is_some()
@@ -302,7 +301,7 @@ fn model() -> Option<Arc<Laya>> {
     }
 }
 
-/// Drop the model when it wasn't asked anything for a while, or while saving resources.
+/// Drop the model when it wasn't asked anything for a while, or was switched off.
 fn watch_idle() {
     static WATCHING: AtomicBool = AtomicBool::new(false);
     if WATCHING.swap(true, Ordering::Relaxed) {
@@ -312,7 +311,7 @@ fn watch_idle() {
         loop {
             std::thread::sleep(Duration::from_secs(30));
             let idle = LOADED.lock().is_ok_and(|l| l.as_ref().is_some_and(|(_, used)| used.elapsed() > IDLE));
-            if idle || crate::lean::active() || !ON.load(Ordering::Relaxed) {
+            if idle || !ON.load(Ordering::Relaxed) {
                 stop();
             }
         }
@@ -325,8 +324,9 @@ fn probabilities(instructions: &str, options: &[String], state: &str) -> Option<
     if options.is_empty() || !available() {
         return None;
     }
+    // (A stand-in that answers nothing: the model failed.)
     #[cfg(test)]
-    return tests::FAKE.with(|f| f.get()).map(|answer| answer(instructions, options, state));
+    return tests::FAKE.with(|f| f.get()).map(|answer| answer(instructions, options, state)).filter(|p| !p.is_empty());
     #[cfg(not(test))]
     match model()?.choose(instructions, options, state) {
         Ok(p) => p,
@@ -462,12 +462,16 @@ pub fn module_probabilities(config: &Config, name: &str, text: &str) -> Option<V
 const SUBFOLDER_QUESTION: &str = "Which folder of the university module does this file belong to?";
 
 /// Which subfolder of a module a document goes in, when Laya sorts on its own (options:
-/// folder name, the words that say it); not sure: the module's folder itself.
-pub fn subfolder_of(name: &str, text: &str, options: &[(String, String)]) -> Option<(String, f64)> {
+/// folder name, the words that say it): the folder and how sure, or `Some(None)` when it isn't
+/// sure (then the module's folder itself). `None` when it can't be asked (the model isn't
+/// there or failed, or there are fewer than two folders).
+pub fn subfolder_of(name: &str, text: &str, options: &[(String, String)]) -> Option<Option<(String, f64)>> {
     if options.len() < 2 {
         return None;
     }
-    pick_one(SUBFOLDER_QUESTION, options, None, &state_for(name, text), ALONE)
+    let answers = ask_options(SUBFOLDER_QUESTION, options, None, &state_for(name, text))?;
+    let p: Vec<f32> = answers.iter().map(|(_, p)| *p).collect();
+    Some(confident(&p, ALONE).map(|(i, sure)| (answers[i].0.clone(), f64::from(sure) / 100.0)))
 }
 
 /// How likely each subfolder is.
@@ -981,8 +985,9 @@ pub mod tests {
             ("Übungen".to_string(), "übungsblatt, aufgabe".to_string()),
         ];
         let picked = subfolder_of("scan_0042.pdf", "Blatt 4. Aufgabe 1: Zeigen Sie …", &options);
-        assert_eq!(picked.map(|p| p.0).as_deref(), Some("Übungen"));
-        assert_eq!(subfolder_of("info.pdf", "Willkommen im Kurs", &options), None);
+        assert_eq!(picked.flatten().map(|p| p.0).as_deref(), Some("Übungen"));
+        assert_eq!(subfolder_of("info.pdf", "Willkommen im Kurs", &options), Some(None));
+        assert_eq!(subfolder_of("info.pdf", "Willkommen im Kurs", &options[..1]), None, "one folder: not asked");
     }
 
     /// With Laya on, it alone decides module and subfolder; without it, the keywords and rules.
@@ -1022,6 +1027,24 @@ pub mod tests {
         let info = cfg.watch_path().join("info_3.txt");
         fs::write(&info, "Willkommen im Kurs.").unwrap();
         assert_eq!(crate::sorter::subfolder_for(&cfg, tmp.path(), &info, None), None);
+    }
+
+    /// When Laya can't answer (the model failed), the keywords and rules sort, module and
+    /// subfolder alike, rather than leaving every file where it is.
+    #[test]
+    fn when_laya_fails_the_keywords_sort() {
+        fake(|_, _, _| Vec::new());
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(tmp.path());
+        cfg.features.subfolders = true;
+        cfg.features.laya = true;
+        let file = cfg.watch_path().join("prog1_Loesung_Blatt3.txt");
+        fs::write(&file, "Musterlösung").unwrap();
+        let m = crate::sorter::choose_course_for_test(&file, &cfg).unwrap();
+        assert_eq!(cfg.courses[m.course].name, "Programming Course");
+        assert!(matches!(m.reason, crate::matcher::Reason::FileName(_)));
+        let folder = crate::sorter::subfolder_for(&cfg, tmp.path(), &file, None);
+        assert_eq!(folder.as_deref(), Some("Lösungen"));
     }
 
     /// Between two modules Laya asks; when nothing stands out, nothing is asked.

@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
@@ -21,14 +20,8 @@ pub const EMPTY_PAGE: usize = 25;
 /// Cached files, at most (the oldest go first).
 const MAX_CACHED: usize = 3000;
 
-static ENABLED: AtomicBool = AtomicBool::new(true);
 static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
-
-/// Switch recognition on or off (the setting, and saving resources in the background).
-pub fn set_enabled(on: bool) {
-    ENABLED.store(on, Ordering::Relaxed);
-}
 
 pub fn enabled() -> bool {
     // In tests only where a test asks for it (tiny test PDFs would all be recognised).
@@ -36,7 +29,7 @@ pub fn enabled() -> bool {
     if !TEST_ON.with(|on| on.get()) {
         return false;
     }
-    ENABLED.load(Ordering::Relaxed) && !crate::lean::active() && available() != Engine::Missing
+    available() != Engine::Missing
 }
 
 #[cfg(test)]
@@ -119,11 +112,6 @@ impl Cache {
             log::info!("Could not save the recognised text: {e}");
         }
     }
-}
-
-/// Drop the cache from memory (it stays on disk).
-pub fn forget_cache() {
-    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// A fingerprint of a file's content: its size, start and end.
@@ -388,7 +376,7 @@ fn recognise_pdf(path: &Path, pages: &[u32]) -> HashMap<u32, String> {
     let dir = std::env::temp_dir().join(format!(
         "file-sorter-ocr-{}-{}",
         std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     if fs::create_dir_all(&dir).is_err() {
         return out;

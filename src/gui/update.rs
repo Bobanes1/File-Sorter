@@ -89,8 +89,7 @@ impl App {
             None => now > FIRST_CHECK_AFTER,
             Some(t) => now - t > CHECK_EVERY,
         };
-        if self.config.features.update_check && due && !self.lean && self.update.rx.is_none() && !self.update.installing
-        {
+        if self.config.features.update_check && due && self.update.rx.is_none() && !self.update.installing {
             self.update.last_check = Some(now);
             let (tx, rx) = channel();
             let ctx = self.ctx.clone();

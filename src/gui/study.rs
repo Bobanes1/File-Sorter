@@ -197,11 +197,8 @@ pub(super) struct Study {
     week_shown: Option<u64>,
     /// Entries added after this (Unix seconds) are marked new during this visit.
     new_since: i64,
-    /// When the module model (learned from the modules' files) is built next.
-    model_at: f64,
     /// When reminders are checked next.
     remind_at: f64,
-    training: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Study {
@@ -234,9 +231,7 @@ impl Study {
             checked: None,
             week_shown: None,
             new_since: 0,
-            model_at: 30.0,
             remind_at: 5.0,
-            training: Default::default(),
         }
     }
 
@@ -264,9 +259,8 @@ fn place(path: &Path, root: &Path) -> String {
 impl App {
     /// Every frame: keep the index pointed at the study folder, take in found deadlines.
     pub(super) fn study_logic(&mut self) {
-        let features = &self.config.features;
         // The index also serves the deadlines: every document in the study folder is looked through.
-        if (features.search || features.deadlines) && !self.config.destination_root.trim().is_empty() {
+        if !self.config.destination_root.trim().is_empty() {
             let wanted = (self.study_root(), self.config.extensions.clone());
             if self.study.indexer.is_none() {
                 let ctx = self.ctx.clone();
@@ -279,7 +273,7 @@ impl App {
                 self.study.indexed = Some(wanted);
             }
         }
-        if self.config.features.deadlines && self.now() - self.study.scanned_at > 20.0 {
+        if self.now() - self.study.scanned_at > 20.0 {
             // The AI model is there now: everything is read again once, with it.
             if self.config.features.laya && crate::laya::available() && self.study.deadlines.read_again_with_ai() {
                 log::info!("Laya is there: reading the documents again for deadlines");
@@ -298,7 +292,6 @@ impl App {
         if changed {
             self.save_deadlines();
         }
-        self.train_model();
         self.remind();
         // Search as you type, once the index answers.
         if self.study.query != self.study.searched || self.study.filter != self.study.searched_filter {
@@ -306,16 +299,10 @@ impl App {
         }
     }
 
-    /// Drop search results (saving resources in the background).
-    pub(super) fn study_forget_results(&mut self) {
-        self.study.hits = Vec::new();
-        self.study.searched.clear();
-    }
-
     /// Remind of deadlines that come close (checked every minute, also in the background).
     fn remind(&mut self) {
         let features = &self.config.features;
-        if !features.deadlines || !features.reminders {
+        if !features.reminders {
             return;
         }
         let now = self.now();
@@ -345,37 +332,6 @@ impl App {
             crate::reminders::notify(&title, &body);
             self.note(super::Note::Reminder { title, details: body });
         }
-    }
-
-    /// Now and then (and a little after the start): learn the modules from their files again,
-    /// for files the keywords don't decide.
-    fn train_model(&mut self) {
-        use std::sync::atomic::Ordering;
-        let now = self.now();
-        if !self.config.features.classifier
-            || self.lean
-            || self.config.courses.is_empty()
-            || now < self.study.model_at
-            || self.study.training.load(Ordering::Relaxed)
-            || self.study.indexer.as_ref().is_some_and(|i| i.busy())
-        {
-            return;
-        }
-        self.study.model_at = now + 60.0 * 60.0;
-        let Some(file) = self.config.state_file(crate::classifier::MODEL_FILE) else { return };
-        let config = self.config.clone();
-        let index = self.study.indexer.as_ref().map(|i| i.index.clone());
-        let flag = self.study.training.clone();
-        flag.store(true, Ordering::Relaxed);
-        std::thread::spawn(move || {
-            let starts =
-                index.and_then(|i| i.read().ok().map(|i| i.starts(crate::classifier::TEXT_WORDS))).unwrap_or_default();
-            let model = crate::classifier::Model::train(&config, &starts);
-            if let Err(e) = model.save(&file) {
-                log::info!("Could not save the module model: {e}");
-            }
-            flag.store(false, Ordering::Relaxed);
-        });
     }
 
     fn run_search(&mut self) {
@@ -445,9 +401,7 @@ impl App {
             indexer.refresh();
         }
         self.study.week_read = f64::NEG_INFINITY;
-        if self.config.features.deadlines {
-            self.scan_for_deadlines(destination.clone(), course.clone());
-        }
+        self.scan_for_deadlines(destination.clone(), course.clone());
     }
 
     /// Read `file` on a background thread and look for deadlines in it.
@@ -562,10 +516,6 @@ impl App {
 
     /// The search field in the top bar (Ctrl+F).
     pub(super) fn search_field(&mut self, ui: &mut egui::Ui) {
-        if !self.config.features.search {
-            self.study.query.clear();
-            return;
-        }
         let p = fx::pal(ui);
         let lang = self.lang;
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
@@ -812,15 +762,7 @@ impl App {
         self.study.indexer.as_ref()
     }
 
-    pub(super) fn week_tab_visible(&self) -> bool {
-        self.config.features.deadlines || self.config.features.weekly
-    }
-
     pub(super) fn week_ui(&mut self, ui: &mut egui::Ui) {
-        if !self.week_tab_visible() {
-            self.tab = Tab::Overview;
-            return;
-        }
         if self.now() - self.study.week_read > 30.0 {
             self.read_week();
         }
@@ -840,13 +782,9 @@ impl App {
                 ui.add_space(margin);
                 ui.vertical(|ui| {
                     ui.set_width(width);
-                    if self.config.features.deadlines {
-                        self.deadlines_ui(ui);
-                        ui.add_space(16.0);
-                    }
-                    if self.config.features.weekly {
-                        self.weekly_ui(ui);
-                    }
+                    self.deadlines_ui(ui);
+                    ui.add_space(16.0);
+                    self.weekly_ui(ui);
                     ui.add_space(24.0);
                 });
             });

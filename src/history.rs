@@ -3,7 +3,9 @@
 //! One JSON object per line, only ever appended to (several File Sorter processes may
 //! write at the same time: the window and right-click sorting). Undoing a sort adds an
 //! "undone" line for it; moving the study folder (into the cloud, or back) adds a
-//! "relocated" line, so earlier entries can still be undone from the new place.
+//! "relocated" line, so earlier entries can still be undone from the new place. A file that
+//! stayed in the downloads folder because no module fit, or two did, adds an "asked" line:
+//! the window asks about it again after a restart, until it is sorted.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -30,6 +32,11 @@ enum Line {
     },
     Undone {
         id: u64,
+    },
+    /// Stayed where it was: no module fit, or several did (the user decides).
+    Asked {
+        time: i64,
+        result: SortResult,
     },
     /// The study folder moved from `from` to `to`; `renamed` files got another name there.
     Relocated {
@@ -102,6 +109,11 @@ pub fn record(dir: &Path, result: &SortResult) -> io::Result<u64> {
     Ok(id)
 }
 
+/// Note a file that stayed where it was because no module fit, or several did.
+pub fn record_asked(dir: &Path, result: &SortResult) -> io::Result<()> {
+    append(dir, &Line::Asked { time: Local::now().timestamp(), result: result.clone() })
+}
+
 /// Mark a sorted file as undone.
 pub fn record_undo(dir: &Path, id: u64) -> io::Result<()> {
     append(dir, &Line::Undone { id })
@@ -135,6 +147,7 @@ pub fn recent(dir: &Path, limit: usize) -> Vec<Entry> {
                 entries.push(Entry { time, result, undone: false });
             }
             Ok(Line::Undone { id }) => undone.push(id),
+            Ok(Line::Asked { .. }) => {}
             Ok(Line::Relocated { from, to, renamed }) => {
                 for entry in &mut entries {
                     for path in entry.result.study_paths_mut() {
@@ -152,6 +165,29 @@ pub fn recent(dir: &Path, limit: usize) -> Vec<Entry> {
     }
     let skip = entries.len().saturating_sub(limit);
     entries.split_off(skip)
+}
+
+/// The files asked about (no module fit, or several did) in the last `days` days that are
+/// still where they were and haven't been sorted since: the newest entry for each, oldest first.
+pub fn still_asked(dir: &Path, days: i64) -> Vec<Entry> {
+    let Ok(text) = fs::read_to_string(dir.join(HISTORY_FILE)) else { return Vec::new() };
+    let since = Local::now().timestamp() - days * 24 * 60 * 60;
+    let mut asked: Vec<Entry> = Vec::new();
+    for line in text.lines() {
+        match serde_json::from_str::<Line>(line) {
+            Ok(Line::Asked { time, result }) => {
+                asked.retain(|e| e.result.source != result.source);
+                if time >= since {
+                    let time = Local.timestamp_opt(time, 0).single().unwrap_or_else(Local::now);
+                    asked.push(Entry { time, result, undone: false });
+                }
+            }
+            Ok(Line::Sorted { result, .. }) => asked.retain(|e| e.result.source != result.source),
+            _ => {}
+        }
+    }
+    asked.retain(|e| e.result.source.is_file());
+    asked
 }
 
 #[cfg(test)]
@@ -191,6 +227,31 @@ mod tests {
         assert_eq!(entries[1].result.outcome, moved("b.pdf").outcome);
         assert_eq!(recent(tmp.path(), 1).len(), 1);
         assert_eq!(recent(tmp.path(), 1)[0].result.file_name(), "b.pdf");
+    }
+
+    #[test]
+    fn files_asked_about_stay_until_sorted_or_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let downloads = tmp.path().join("dl");
+        fs::create_dir_all(&downloads).unwrap();
+        let asked = |name: &str| {
+            let source = downloads.join(name);
+            fs::write(&source, name).unwrap();
+            let reason = crate::sorter::LeftReason::Unsure { candidates: vec!["A".into(), "B".into()] };
+            SortResult::new(source, Outcome::Left(reason))
+        };
+        for name in ["a.pdf", "b.pdf", "gone.pdf", "a.pdf"] {
+            record_asked(&state, &asked(name)).unwrap();
+        }
+        fs::remove_file(downloads.join("gone.pdf")).unwrap();
+        // b.pdf was sorted since.
+        let mut sorted = moved("b.pdf");
+        sorted.source = downloads.join("b.pdf");
+        record(&state, &sorted).unwrap();
+        let still: Vec<String> = still_asked(&state, 14).iter().map(|e| e.result.file_name()).collect();
+        assert_eq!(still, ["a.pdf"], "once each, only those still there and not sorted");
+        assert_eq!(recent(&state, 10).len(), 1, "asked files are no sorted entries");
     }
 
     #[test]

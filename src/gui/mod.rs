@@ -54,6 +54,8 @@ const GLOW_SECS: f64 = 1.8;
 const MAX_CARDS: usize = 200;
 /// Entries from earlier sessions shown at start.
 const HISTORY_CARDS: usize = 60;
+/// Files asked about (no module fit, or two did) in this many days come back at start.
+const ASKED_DAYS: i64 = 14;
 
 /// Open the window. `autostart`: opened at sign-in, so start minimised (or in the
 /// notification area) and watching.
@@ -192,10 +194,6 @@ pub(crate) struct App {
     study: study::Study,
     semester: semester::Semester,
     notes: crate::notes::Notes,
-    /// Saving resources right now (window hidden, and asked for in the settings).
-    lean: bool,
-    /// Whether the search index was told to pause (it may start after saving began).
-    index_paused: bool,
     /// Finishing a semester (archive).
     archive: archive::ArchiveState,
     flatten: flatten::FlattenState,
@@ -295,8 +293,6 @@ impl App {
             study,
             semester,
             notes,
-            lean: false,
-            index_paused: false,
             archive: archive::ArchiveState::default(),
             flatten: flatten::FlattenState::default(),
             gdrive: gdrive::DriveState::default(),
@@ -311,9 +307,7 @@ impl App {
         };
         app.saved_config = app.config.clone();
         app.load_history();
-        if app.config.features.deadlines
-            && app.config.state_file(crate::deadlines::DEADLINES_FILE).is_some_and(|f| !f.exists())
-        {
+        if app.config.state_file(crate::deadlines::DEADLINES_FILE).is_some_and(|f| !f.exists()) {
             app.scan_recent_for_deadlines();
         }
         if let Some(error) = unreadable {
@@ -342,9 +336,16 @@ impl App {
             }
             ctx.request_repaint();
         });
-        // Started here rather than on the first frame, which a minimised window may not get soon.
-        if autostart || app.config.watch_on_open {
+        // Watching starts by itself once the folders and modules are set up. Started here
+        // rather than on the first frame, which a minimised window may not get soon.
+        if autostart || app.wizard.is_none() && !app.config.courses.is_empty() && app.config.watch_path().is_dir() {
             app.toggle_watching();
+            // Another File Sorter (`--headless`) watches already: nothing to tell when it
+            // wasn't asked for.
+            if !autostart && matches!(app.error, Some(ErrorBox::CouldNotStart(StartError::AlreadyRunning))) {
+                log::info!("Another File Sorter is watching already");
+                app.error = None;
+            }
         }
         app
     }
@@ -382,7 +383,11 @@ impl App {
     /// The previous sessions' sorted files, so they can still be undone.
     fn load_history(&mut self) {
         let Some(dir) = self.config.state_dir.clone() else { return };
-        for entry in crate::history::recent(&dir, HISTORY_CARDS) {
+        // The files still waiting for the user's answer come back too.
+        let mut entries = crate::history::recent(&dir, HISTORY_CARDS);
+        entries.extend(crate::history::still_asked(&dir, ASKED_DAYS));
+        entries.sort_by_key(|e| e.time);
+        for entry in entries {
             let name = entry.result.file_name();
             let state = if entry.undone {
                 FileState::Undone { back: entry.result.source }
@@ -393,12 +398,17 @@ impl App {
         }
     }
 
-    /// The newest entry for `name` that is still in progress (waiting, or retrying a locked file).
+    /// The newest entry for `name` that is still in progress (waiting, retrying a locked file,
+    /// or waiting for the user to pick its module): a new look at the file updates it.
     fn open_file_card(&mut self, name: &str) -> Option<&mut Card> {
         self.cards.iter_mut().rev().find(|c| match &c.kind {
             CardKind::File { name: n, state: FileState::Waiting } => n == name,
             CardKind::File { name: n, state: FileState::Done(r) } => {
-                n == name && matches!(r.outcome, Outcome::Left(LeftReason::InUse { .. }))
+                n == name
+                    && matches!(
+                        r.outcome,
+                        Outcome::Left(LeftReason::InUse { .. } | LeftReason::NoMatch | LeftReason::Unsure { .. })
+                    )
             }
             _ => false,
         })
@@ -438,7 +448,7 @@ impl App {
                     }
                     return;
                 }
-                if self.config.auto_results_window && !self.in_front && popup_worthy(&result) {
+                if self.config.results_window && !self.in_front && popup_worthy(&result) {
                     self.for_popup.push(result.clone());
                 }
                 let course = match &result.outcome {
@@ -520,7 +530,6 @@ impl App {
             Learned(String, Vec<String>),
             Resorted(Vec<(PathBuf, PathBuf)>),
             Flattened(Vec<crate::flatten::Done>),
-            FolderWords(Vec<crate::config::LearnedFolder>),
         }
         let taken = self.cards.iter_mut().find(|c| c.key == key).and_then(|card| match &mut card.kind {
             CardKind::Note(Note::Learned { module, words, undone: undone @ false }) => {
@@ -535,20 +544,12 @@ impl App {
                 *undone = true;
                 Some(Taken::Flattened(done.clone()))
             }
-            CardKind::Note(Note::FolderWords { before, undone: undone @ false, .. }) => {
-                *undone = true;
-                Some(Taken::FolderWords(before.clone()))
-            }
             _ => None,
         });
         match taken {
             Some(Taken::Learned(module, words)) => self.forget_keywords(&module, &words),
             Some(Taken::Resorted(moved)) => self.undo_resort(moved),
             Some(Taken::Flattened(done)) => self.undo_flatten(done),
-            Some(Taken::FolderWords(before)) => {
-                self.config.features.subfolder_learned = before;
-                self.save_quietly();
-            }
             None => self.start_undo(key),
         }
     }
@@ -614,9 +615,7 @@ impl App {
             can_undo: true,
             shown: now,
         });
-        if self.config.features.learn
-            && let Some(i) = self.config.courses.iter().position(|c| c.label() == course)
-        {
+        if let Some(i) = self.config.courses.iter().position(|c| c.label() == course) {
             let words = crate::keywords::learn_from_name(&self.config, i, &new.source);
             if !words.is_empty() {
                 self.config.courses[i].keywords.extend(words.iter().cloned());
@@ -734,7 +733,6 @@ impl App {
         if self.study_relabel(old, new) {
             self.save_deadlines();
         }
-        crate::origin::relabel(&self.config, old, new);
     }
 
     /// The modules in the study folder, read as the chosen layout says.
@@ -962,36 +960,6 @@ impl App {
     }
 
     /// Keep watching in the notification area when the window is closed.
-    /// While the window is hidden and the user asked for it: drop what can be read again
-    /// later and read files less thoroughly; everything back when the window shows.
-    fn lean_logic(&mut self, ctx: &egui::Context) {
-        let minimised = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
-        let hidden = self.in_tray() || minimised || std::env::var_os("FILE_SORTER_TEST_HIDDEN").is_some();
-        let want = self.config.lean_background && hidden;
-        // The search index pauses (and frees its texts) with it, also one started later.
-        if let Some(indexer) = self.study_indexer()
-            && self.index_paused != want
-        {
-            indexer.pause(want);
-            self.index_paused = want;
-        }
-        if want == self.lean {
-            return;
-        }
-        self.lean = want;
-        crate::lean::set(want);
-        if want {
-            crate::ocr::forget_cache();
-            crate::classifier::forget();
-            crate::laya::stop();
-            self.study_forget_results();
-            crate::lean::trim_memory();
-            log::info!("Saving resources in the background");
-        } else {
-            log::info!("Back to full strength");
-        }
-    }
-
     fn background_active(&self) -> bool {
         self.config.background && tray::supported()
     }
@@ -1134,13 +1102,13 @@ impl App {
         let lang = self.lang;
         let mut open_rect = None;
         // Right to left: Settings is drawn first.
-        let mut tabs = vec![(Tab::Settings, icon::GEAR_SIX, lang.tab_settings())];
-        tabs.push((Tab::Grades, icon::EXAM, lang.tab_grades()));
-        tabs.push((Tab::Semester, icon::CALENDAR_DOTS, lang.tab_semester()));
-        if self.week_tab_visible() {
-            tabs.push((Tab::Week, icon::CALENDAR_CHECK, lang.tab_week()));
-        }
-        tabs.push((Tab::Overview, icon::SQUARES_FOUR, lang.tab_overview()));
+        let tabs = [
+            (Tab::Settings, icon::GEAR_SIX, lang.tab_settings()),
+            (Tab::Grades, icon::EXAM, lang.tab_grades()),
+            (Tab::Semester, icon::CALENDAR_DOTS, lang.tab_semester()),
+            (Tab::Week, icon::CALENDAR_CHECK, lang.tab_week()),
+            (Tab::Overview, icon::SQUARES_FOUR, lang.tab_overview()),
+        ];
         for (tab, glyph, text) in tabs {
             let open = self.tab == tab && !self.study.searching();
             let color = if open { p.primary } else { p.on_surface_variant };
@@ -1170,7 +1138,6 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.window_logic(ctx, frame);
-        self.lean_logic(ctx);
         self.cloud_logic();
         self.study_logic();
         self.archive_logic();

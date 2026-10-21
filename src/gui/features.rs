@@ -1,5 +1,6 @@
-//! The «Features» section of the settings: one switch per feature, with its own options
-//! indented underneath while it is on.
+//! Parts of the settings with their own options indented underneath while they are on: what
+//! comes with sorting (Laya, subfolders, ZIP files, older versions), deadlines (reminders,
+//! categories) and updates.
 
 use eframe::egui::{self, Id, Margin, RichText};
 use egui_phosphor::regular as icon;
@@ -13,25 +14,12 @@ use crate::fx::ButtonStyle;
 use crate::i18n::Lang;
 
 impl App {
-    /// Returns true if a setting changed.
-    pub(super) fn features_ui(&mut self, ui: &mut egui::Ui) -> bool {
+    /// Laya, subfolders, ZIP files and older versions, in «Sorting». Returns true if one changed.
+    pub(super) fn sorting_extras_ui(&mut self, ui: &mut egui::Ui) -> bool {
         let lang = self.lang;
         let mut changed = self.laya_setting_ui(ui);
         divider(ui);
         let f = &mut self.config.features;
-        changed |= switch(ui, icon::BRAIN, lang.feature_learn(), lang.feature_learn_hint(), &mut f.learn);
-        divider(ui);
-        let (title, hint) = (lang.feature_classifier(), lang.feature_classifier_hint());
-        changed |= switch(ui, icon::GRAPH, title, hint, &mut f.classifier);
-        divider(ui);
-        let (title, hint) = (lang.feature_ask_unsure(), lang.feature_ask_unsure_hint());
-        changed |= switch(ui, icon::SEAL_QUESTION, title, hint, &mut f.ask_when_unsure);
-        divider(ui);
-        let (title, hint) = (lang.feature_timetable_hint(), lang.timetable_sorting_note());
-        changed |= switch(ui, icon::CHALKBOARD_TEACHER, title, hint, &mut f.timetable_hint);
-        divider(ui);
-        changed |= switch(ui, icon::GLOBE, lang.feature_origin(), lang.feature_origin_hint(), &mut f.origin);
-        divider(ui);
         let (title, hint) = (lang.feature_subfolders(), lang.feature_subfolders_hint());
         changed |= switch(ui, icon::TREE_STRUCTURE, title, hint, &mut f.subfolders);
         if f.subfolders {
@@ -40,25 +28,7 @@ impl App {
                 ui.add_space(40.0);
                 ui.label(RichText::new(lang.subfolders_managed_in_overview()).small().color(fx::pal(ui).primary));
             });
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add_space(40.0);
-                ui.vertical(|ui| {
-                    let (title, hint) = (lang.feature_auto_resort(), lang.feature_auto_resort_hint());
-                    changed |= switch(ui, icon::ARROW_BEND_DOWN_RIGHT, title, hint, &mut f.subfolder_auto_resort);
-                    let (title, hint) = (lang.feature_auto_learn(), lang.feature_auto_learn_hint());
-                    changed |= switch(ui, icon::BRAIN, title, hint, &mut f.subfolder_auto_learn);
-                });
-            });
-        }
-        divider(ui);
-        let ocr_hint = match crate::ocr::available() {
-            crate::ocr::Engine::Missing => lang.feature_ocr_missing(),
-            _ => lang.feature_ocr_hint(),
-        };
-        if switch(ui, icon::SCAN, lang.feature_ocr(), ocr_hint, &mut f.ocr) {
-            crate::ocr::set_enabled(f.ocr);
-            changed = true;
+            ui.add_space(8.0);
         }
         divider(ui);
         changed |= switch(ui, icon::FILE_ZIP, lang.feature_unzip(), lang.feature_unzip_hint(), &mut f.unzip);
@@ -76,48 +46,48 @@ impl App {
             });
             ui.add_space(8.0);
         }
-        divider(ui);
-        changed |= switch(ui, icon::MAGNIFYING_GLASS, lang.feature_search(), lang.feature_search_hint(), &mut f.search);
-        divider(ui);
-        let (title, hint) = (lang.feature_deadlines(), lang.feature_deadlines_hint());
-        changed |= switch(ui, icon::CALENDAR_CHECK, title, hint, &mut f.deadlines);
-        if f.deadlines {
-            ui.horizontal(|ui| {
+        changed
+    }
+
+    /// Reminders and categories, in «Deadlines & appointments». Returns true if one changed.
+    pub(super) fn deadline_settings_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        let lang = self.lang;
+        let f = &mut self.config.features;
+        let (title, hint) = (lang.feature_reminders(), lang.feature_reminders_hint());
+        let mut changed = switch(ui, icon::BELL_RINGING, title, hint, &mut f.reminders);
+        if f.reminders {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(40.0);
-                ui.vertical(|ui| {
-                    let (title, hint) = (lang.feature_reminders(), lang.feature_reminders_hint());
-                    changed |= switch(ui, icon::BELL_RINGING, title, hint, &mut f.reminders);
-                });
-            });
-            if f.reminders {
-                ui.horizontal_wrapped(|ui| {
-                    ui.add_space(80.0);
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    for lead in crate::reminders::Lead::ALL {
-                        let on = f.reminder_leads.contains(&lead);
-                        if fx::chip(ui, on, lang.lead(lead)).clicked() {
-                            if on {
-                                f.reminder_leads.retain(|l| *l != lead);
-                            } else {
-                                f.reminder_leads.push(lead);
-                            }
-                            changed = true;
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                for lead in crate::reminders::Lead::ALL {
+                    let on = f.reminder_leads.contains(&lead);
+                    if fx::chip(ui, on, lang.lead(lead)).clicked() {
+                        if on {
+                            f.reminder_leads.retain(|l| *l != lead);
+                        } else {
+                            f.reminder_leads.push(lead);
                         }
+                        changed = true;
                     }
-                });
-                ui.add_space(8.0);
-            }
-            ui.horizontal(|ui| {
-                ui.add_space(40.0);
-                ui.vertical(|ui| changed |= categories_ui(ui, lang, &mut f.deadline_categories));
+                }
             });
             ui.add_space(8.0);
         }
         divider(ui);
-        changed |= switch(ui, icon::CALENDAR_DOTS, lang.feature_weekly(), lang.feature_weekly_hint(), &mut f.weekly);
-        divider(ui);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.vertical(|ui| changed |= categories_ui(ui, lang, &mut f.deadline_categories));
+        });
+        ui.add_space(4.0);
+        changed
+    }
+
+    /// Looking for updates, and whether they install by themselves. Returns true if changed.
+    pub(super) fn update_setting_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        let lang = self.lang;
+        let f = &mut self.config.features;
         let (title, hint) = (lang.feature_update(), lang.feature_update_hint());
-        changed |= switch(ui, icon::ARROW_CIRCLE_UP, title, hint, &mut f.update_check);
+        let mut changed = switch(ui, icon::ARROW_CIRCLE_UP, title, hint, &mut f.update_check);
         if f.update_check {
             ui.horizontal(|ui| {
                 ui.add_space(40.0);

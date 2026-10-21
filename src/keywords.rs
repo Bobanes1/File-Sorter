@@ -733,7 +733,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("INF101_Blatt5.pdf");
         make_pdf(&file, "x");
-        let m = match_file(&file, &t.config.courses, false, |_| String::new()).unwrap();
+        let m = match_file(&file, &t.config.courses, |_| String::new()).unwrap();
         assert_eq!(m.course, 0);
     }
 

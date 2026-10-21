@@ -70,8 +70,8 @@ jobs:
           $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--config", "`"$root\config.json`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
           Get-Content "$root\file-sorter.log"
-          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\week1.pptx")) { throw "PPTX was not sorted" }
-          if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\vorlesung4.pdf")) { throw "PDF was not sorted" }
+          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\Vorlesung\week1.pptx")) { throw "PPTX was not sorted" }
+          if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\Vorlesung\vorlesung4.pdf")) { throw "PDF was not sorted" }
           Write-Host "exe sorted both files correctly"
 
       - name: Smoke-test sorting only the last 7 days
@@ -92,7 +92,7 @@ jobs:
           $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--days", "7", "--config", "`"$root\config.json`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
           Get-Content "$root\file-sorter.log"
-          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\new_week.pptx")) { throw "the new file was not sorted" }
+          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\Vorlesung\new_week.pptx")) { throw "the new file was not sorted" }
           if (-not (Test-Path "$root\Downloads\old_week.pptx")) { throw "the 30 days old file was sorted too" }
           # The last 24 hours: a file from two days ago stays too.
           Copy-Item tests\fixtures\programming.pptx "$root\Downloads\today.pptx"
@@ -102,7 +102,7 @@ jobs:
           (Get-Item "$root\Downloads\two_days.pptx").LastWriteTime = $two
           $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--hours", "24", "--config", "`"$root\config.json`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
-          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\today.pptx")) { throw "today's file was not sorted" }
+          if (-not (Test-Path "$root\Studium\Informatik\Programmierung 1\Vorlesung\today.pptx")) { throw "today's file was not sorted" }
           if (-not (Test-Path "$root\Downloads\two_days.pptx")) { throw "the two days old file was sorted with --hours 24" }
           Write-Host "only the recent files were sorted"
 
@@ -146,7 +146,7 @@ jobs:
           } | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
           $p = Start-Process dist\FileSorter.exe -ArgumentList "--sort-now", "--config", "`"$root\config.json`"" -Wait -PassThru
           Get-Content "$root\file-sorter.log" -Tail 5
-          if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\scan_0042.pdf")) { throw "the scan was not sorted by its text" }
+          if (-not (Test-Path "$root\Studium\Mathematik\Analysis I\Übungen\scan_0042.pdf")) { throw "the scan was not sorted by its text" }
           Write-Host "the scanned PDF was read and sorted"
 
       - name: Test the AI model Laya (download laya-uni, then ask it)
@@ -263,7 +263,7 @@ jobs:
           foreach ($proc in $procs) { if ($proc.ExitCode -ne 0) { throw "a sort process exited with $($proc.ExitCode)" } }
           Write-Host "windows open at the same time: $mostWindows"
           if ($mostWindows -ne 1) { throw "expected exactly one results window for the whole selection, saw $mostWindows" }
-          foreach ($f in @("Informatik\Programmierung 1\week2.pptx", "Informatik\Programmierung 1\week3.pptx", "Mathematik\Analysis I\vorlesung5.pdf")) {
+          foreach ($f in @("Informatik\Programmierung 1\Vorlesung\week2.pptx", "Informatik\Programmierung 1\Vorlesung\week3.pptx", "Mathematik\Analysis I\Vorlesung\vorlesung5.pdf")) {
             if (-not (Test-Path "$root\Studium\$f")) { throw "$f was not sorted" }
           }
           foreach ($f in @("week2.pptx", "week3.pptx", "Folder\vorlesung5.pdf")) {
@@ -296,7 +296,7 @@ jobs:
           Get-Content "$configDir\file-sorter.log" -Tail 6 -ErrorAction SilentlyContinue
           Write-Host "shell selection: processes seen $seen, windows at once $mostWindows, all done after $took s"
           if (Get-Process FileSorter -ErrorAction SilentlyContinue) { Stop-Process -Name FileSorter; throw "the results window did not close by itself" }
-          foreach ($f in @("Informatik\Programmierung 1\week4.pptx", "Informatik\Programmierung 1\week5.pptx", "Mathematik\Analysis I\vorlesung6.pdf")) {
+          foreach ($f in @("Informatik\Programmierung 1\Vorlesung\week4.pptx", "Informatik\Programmierung 1\Vorlesung\week5.pptx", "Mathematik\Analysis I\Vorlesung\vorlesung6.pdf")) {
             if (-not (Test-Path "$root\Studium\$f")) { throw "$f was not sorted through the shell" }
           }
           if ($mostWindows -ne 1) { throw "expected one results window for the shell selection, saw $mostWindows" }
@@ -350,7 +350,7 @@ jobs:
           }
           Write-Host "window state every 0.3 s: $($states -join ' ')"
           Copy-Item tests\fixtures\programming.pptx "$root\Downloads\week6.pptx"
-          $copy = "$root\Studium\Informatik\Programmierung 1\week6.pptx"
+          $copy = "$root\Studium\Informatik\Programmierung 1\Vorlesung\week6.pptx"
           $deadline = (Get-Date).AddSeconds(30)
           while (-not (Test-Path $copy) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
           $window = [Win.User32]::Find($p.Id)
@@ -385,7 +385,6 @@ jobs:
           @{
             watch_folder = "$root\Downloads"
             destination_root = "$root\Studium"
-            watch_on_open = $true
             background = $true
             courses = @(@{ name = "Programmierung 1"; subject = "Informatik"; keywords = @("programming") })
           } | ConvertTo-Json -Depth 5 | Set-Content "$root\config.json"
@@ -422,7 +421,7 @@ jobs:
 
           # Still sorting in the background.
           Copy-Item tests\fixtures\programming.pptx "$root\Downloads\week7.pptx"
-          $sorted = "$root\Studium\Informatik\Programmierung 1\week7.pptx"
+          $sorted = "$root\Studium\Informatik\Programmierung 1\Vorlesung\week7.pptx"
           $deadline = (Get-Date).AddSeconds(30)
           while (-not (Test-Path $sorted) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
           if (-not (Test-Path $sorted)) { Get-Content "$root\file-sorter.log"; throw "nothing was sorted in the background" }
@@ -569,7 +568,7 @@ jobs:
            "courses": [{"name": "Programmierung 1", "subject": "Informatik", "keywords": ["programming"]}]}
           JSON
           APPIMAGE_EXTRACT_AND_RUN=1 dist/FileSorter-x86_64.AppImage --sort-now --config "$root/config.json"
-          test -f "$root/Studium/Informatik/Programmierung 1/week1.pptx"
+          test -f "$root/Studium/Informatik/Programmierung 1/Vorlesung/week1.pptx"
           echo "the AppImage sorts"
 
       - name: Smoke-test the right-click entry (Files/Nautilus script)
@@ -592,7 +591,7 @@ jobs:
           test -f "$XDG_DATA_HOME/applications/file-sorter-sort.desktop"
           # What Files does when the entry is clicked: the chosen files in an environment variable.
           NAUTILUS_SCRIPT_SELECTED_FILE_PATHS="$root/Downloads/lecture one.pptx" "$script"
-          test -f "$root/Studium/Informatik/Programmierung 1/lecture one.pptx"
+          test -f "$root/Studium/Informatik/Programmierung 1/Vorlesung/lecture one.pptx"
           echo "right-click sorting works on Linux"
 
       - name: Test the AI model Laya (download laya-uni, then ask it)
@@ -619,8 +618,8 @@ jobs:
           JSON
           dist/FileSorter/file-sorter --sort-now --config "$root/config.json"
           cat "$root/file-sorter.log"
-          test -f "$root/Studium/Informatik/Programmierung 1/week1.pptx"
-          test -f "$root/Studium/Mathematik/Analysis I/scan_0042.pdf"
+          test -f "$root/Studium/Informatik/Programmierung 1/Vorlesung/week1.pptx"
+          test -f "$root/Studium/Mathematik/Analysis I/Übungen/scan_0042.pdf"
           echo "sorted on Linux, the scan by its recognised text"
 
       - uses: actions/upload-artifact@v4

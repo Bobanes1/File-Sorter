@@ -143,13 +143,7 @@ pub fn reassign(result: &SortResult, course: usize, config: &Config) -> Result<S
     let path = if result.sorted() {
         // Undo leaves the file alone in the downloads folder, so the watcher doesn't grab it
         // before it is sorted into the chosen module.
-        let back = undo(result, config)?;
-        if let Some(source) = crate::origin::source_of(&back)
-            && let Some(old) = result.sorted_course()
-        {
-            crate::origin::forget(config, &source, old);
-        }
-        back
+        undo(result, config)?
     } else {
         result.source.clone()
     };
@@ -315,7 +309,6 @@ mod tests {
         undo(&packed, &cfg).unwrap();
         crate::sorter::tests::forget_kept(&cfg);
         cfg.features.unzip = true;
-        cfg.read_file_contents = false;
         let result = sort_file(&zip_path, &cfg);
         assert_eq!(result.course(), Some("Statistics"), "{}", result.describe());
         let extracted = result.extras.extracted.clone().unwrap();

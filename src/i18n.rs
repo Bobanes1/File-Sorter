@@ -707,9 +707,6 @@ impl Lang {
     pub fn running_now(self) -> &'static str {
         self.pick("on now", "läuft gerade")
     }
-    pub fn today_lessons(self) -> &'static str {
-        self.pick("Today", "Heute")
-    }
 
     // ---------- grades ----------
     pub fn grades_title(self) -> &'static str {
@@ -965,17 +962,8 @@ impl Lang {
     }
     pub fn laya_hint(self) -> &'static str {
         self.pick(
-            "Laya, a language model fine-tuned on course files of all faculties (laya-uni, by Nils Briggen), reads documents in many languages: it sorts what the keywords don't decide, puts documents into subfolders when the rules can't, and finds deadlines in any sentence. A one-time download of about 680 MB; it runs only on this computer, needs about 1.4 GB of memory while in use and gives it back when not needed.",
-            "Laya, ein auf Kursdateien aller Fakultäten trainiertes Sprachmodell (laya-uni, von Nils Briggen), liest Dokumente in vielen Sprachen: Es ordnet zu, was die Stichwörter nicht entscheiden, legt Dokumente in Unterordner, wo die Regeln es nicht können, und findet Termine in jedem Satz. Einmaliger Download von etwa 680 MB; es läuft nur auf diesem Computer, braucht beim Arbeiten etwa 1,4 GB Arbeitsspeicher und gibt ihn danach wieder frei.",
-        )
-    }
-    pub fn laya_first(self) -> &'static str {
-        self.pick("Ask Laya first", "Laya zuerst fragen")
-    }
-    pub fn laya_first_hint(self) -> &'static str {
-        self.pick(
-            "Laya decides the module and the subfolder of every file, before the keywords and rules; they only decide when Laya isn't sure. Takes about a second per file. Off: Laya only decides what the keywords and rules don't.",
-            "Laya entscheidet bei jeder Datei zuerst über Modul und Unterordner, vor den Stichwörtern und Regeln; diese entscheiden nur, wenn Laya nicht sicher ist. Braucht etwa eine Sekunde pro Datei. Aus: Laya entscheidet nur, was Stichwörter und Regeln nicht entscheiden.",
+            "Laya, a language model fine-tuned on course files of all faculties (laya-uni, by Nils Briggen), reads documents in many languages. On: Laya alone sorts every file – module and subfolder – instead of the keywords and rules; when it isn't sure, the file stays (Activity asks when two modules are close). It also finds deadlines in any sentence. A one-time download of about 680 MB; it runs only on this computer, needs about 1.4 GB of memory while in use and gives it back when not needed.",
+            "Laya, ein auf Kursdateien aller Fakultäten trainiertes Sprachmodell (laya-uni, von Nils Briggen), liest Dokumente in vielen Sprachen. An: Laya allein sortiert jede Datei – Modul und Unterordner – statt der Stichwörter und Regeln; ist es nicht sicher, bleibt die Datei liegen (die Aktivität fragt, wenn zwei Module knapp sind). Es findet auch Termine in jedem Satz. Einmaliger Download von etwa 680 MB; es läuft nur auf diesem Computer, braucht beim Arbeiten etwa 1,4 GB Arbeitsspeicher und gibt ihn danach wieder frei.",
         )
     }
     pub fn laya_download(self) -> &'static str {
@@ -1724,6 +1712,27 @@ impl Lang {
     }
     pub fn create_subfolders(self) -> &'static str {
         self.pick("Create subfolders", "Unterordner anlegen")
+    }
+    pub fn no_subfolder_fit(self) -> &'static str {
+        self.pick("no subfolder fit", "kein Unterordner passte")
+    }
+    pub fn feature_auto_resort(self) -> &'static str {
+        self.pick("Sort leftover files into subfolders", "Liegengebliebene Dateien einsortieren")
+    }
+    pub fn feature_auto_resort_hint(self) -> &'static str {
+        self.pick(
+            "Files lying directly in a module folder (copied in by hand, synced, or sorted before) go into their subfolder by themselves, a few minutes after they came – with «Undo» in Activity; a file put back stays.",
+            "Dateien, die direkt in einem Modulordner liegen (von Hand hineinkopiert, synchronisiert oder früher sortiert), kommen ein paar Minuten danach von selbst in ihren Unterordner – mit «Rückgängig» in der Aktivität; eine zurückgelegte Datei bleibt.",
+        )
+    }
+    pub fn auto_resort_offer_title(self) -> &'static str {
+        self.pick("Sort files into subfolders?", "Dateien in Unterordner einsortieren?")
+    }
+    pub fn auto_resort_offer(self, count: usize) -> String {
+        self.fmt(
+            format!("{count} files lie directly in module folders and fit a subfolder. From now on, such files go into their subfolder by themselves – these too? Nothing is overwritten, and «Undo» in Activity puts them back."),
+            format!("{count} Dateien liegen direkt in Modulordnern und passen in einen Unterordner. Ab jetzt kommen solche Dateien von selbst in ihren Unterordner – diese auch? Nichts wird überschrieben, und «Rückgängig» in der Aktivität legt sie zurück."),
+        )
     }
     pub fn resort_existing(self) -> &'static str {
         self.pick("Sort existing files into subfolders", "Vorhandene Dateien einsortieren")

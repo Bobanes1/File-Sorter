@@ -5,11 +5,13 @@
 //! stay, and every move is noted in the history so earlier entries (undo, deadlines) follow
 //! the file. Moving them back is one step too.
 
+use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use crate::config::{Config, Course};
+use crate::ledger::KeptFiles;
 use crate::sorter::{
     ensure_not_open_elsewhere, file_name, is_candidate, move_file_with_patience, note_moved, put_back_moved,
     release_placeholder, reserve_destination, subfolder_for,
@@ -17,6 +19,65 @@ use crate::sorter::{
 
 /// How long to wait for a file another program has open before leaving it where it is.
 const PATIENCE: Duration = Duration::from_secs(1);
+/// Files put back from a subfolder (by «Undo»), which aren't moved by themselves again.
+pub const SUBFOLDER_KEPT: &str = "subfolder-kept.json";
+/// A file lying in a module folder is moved by itself only once it is this old (it may still
+/// be written, or just copied in by hand).
+pub const SETTLED: Duration = Duration::from_secs(120);
+
+/// A file as it was looked at: it is looked at again only when it changed.
+pub type Seen = HashSet<(PathBuf, u64, SystemTime)>;
+
+fn seen_key(path: &Path) -> Option<(PathBuf, u64, SystemTime)> {
+    let meta = fs::metadata(path).ok()?;
+    Some((path.to_path_buf(), meta.len(), meta.modified().ok()?))
+}
+
+/// What to move by itself: the files lying directly in the module folders that settled, that
+/// the user didn't put back, and that weren't looked at unchanged before (`seen` gets every
+/// file looked at, so the next round skips those that fit no subfolder).
+pub fn plan_settled(config: &Config, seen: &mut Seen) -> Vec<Planned> {
+    let kept = config.state_file(SUBFOLDER_KEPT).map(|f| KeptFiles::load(&f)).unwrap_or_default();
+    let now = SystemTime::now();
+    let mut planned = Vec::new();
+    for course in &config.courses {
+        let folder = config.course_folder(course);
+        let Ok(entries) = fs::read_dir(&folder) else { continue };
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.path())
+            .filter(|p| is_candidate(p, config) && !crate::cloud::is_junk(&file_name(p)))
+            .filter(|p| !crate::cloud::is_placeholder(p))
+            .collect();
+        files.sort();
+        for file in files {
+            let Some(key) = seen_key(&file) else { continue };
+            let settled = now.duration_since(key.2).is_ok_and(|age| age >= SETTLED);
+            if !settled || seen.contains(&key) || kept.contains(&file) {
+                continue;
+            }
+            seen.insert(key);
+            if let Some(sub) = subfolder_for(config, &folder, &file, None) {
+                planned.push(Planned { file, folder: folder.join(sub), module: course.label() });
+            }
+        }
+    }
+    planned
+}
+
+/// Leave these files where they are from now on (also when renamed): «Not now» on the first
+/// offer, or put back with «Undo».
+pub fn keep(config: &Config, files: impl IntoIterator<Item = PathBuf>) {
+    let Some(list) = config.state_file(SUBFOLDER_KEPT) else { return };
+    let mut kept = KeptFiles::load(&list);
+    for file in files {
+        kept.keep(&file);
+    }
+    if let Err(e) = kept.save(&list) {
+        log::info!("Could not save {}: {e}", list.display());
+    }
+}
 
 /// Create the subfolders of the list in `course`'s folder (and that folder). Returns how many
 /// folders were new.
@@ -138,6 +199,8 @@ pub fn undo(moved: &[(PathBuf, PathBuf)], config: &Config) -> (Vec<(PathBuf, Pat
             note_moved(dir, from, to);
         }
     }
+    // Put back on purpose: not moved by itself again.
+    keep(config, back.iter().map(|(_, to)| to.clone()));
     (back, stuck)
 }
 
@@ -158,6 +221,46 @@ pub fn summary(planned: &[Planned]) -> Vec<(String, String, usize)> {
 mod tests {
     use super::*;
     use crate::sorter::tests::{make_pdf, test_config};
+
+    /// By itself: only settled files, not again when looked at unchanged, and never one the
+    /// user put back.
+    #[test]
+    fn leftover_files_go_into_subfolders_by_themselves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = test_config(tmp.path());
+        config.state_dir = Some(tmp.path().join("state"));
+        config.features.subfolders = true;
+        let module = config.course_folder(&config.courses[0]);
+        fs::create_dir_all(&module).unwrap();
+        let settled = |path: &Path| {
+            let file = fs::File::options().append(true).open(path).unwrap();
+            file.set_modified(SystemTime::now() - Duration::from_secs(600)).unwrap();
+        };
+        let (old, young, other) = (module.join("Blatt 2.pdf"), module.join("Blatt 3.pdf"), module.join("Notizen.pdf"));
+        for file in [&old, &young, &other] {
+            make_pdf(file, "x");
+        }
+        settled(&old);
+        settled(&other);
+        let mut seen = Seen::new();
+        let planned = plan_settled(&config, &mut seen);
+        assert_eq!(planned.iter().map(|p| file_name(&p.file)).collect::<Vec<_>>(), ["Blatt 2.pdf"]);
+        // Looked at unchanged: not again (the young one isn't looked at yet).
+        assert!(plan_settled(&config, &mut seen).is_empty());
+        assert_eq!(seen.len(), 2);
+        // Moved, put back with «Undo»: it stays, also when looked at afresh.
+        let report = apply(&planned, &config);
+        assert_eq!(report.moved.len(), 1);
+        let (back, _) = undo(&report.moved, &config);
+        assert_eq!(back.len(), 1);
+        assert!(old.is_file());
+        settled(&old);
+        assert!(plan_settled(&config, &mut Seen::new()).is_empty());
+        // Subfolders off: nothing.
+        settled(&young);
+        config.features.subfolders = false;
+        assert!(plan_settled(&config, &mut Seen::new()).is_empty());
+    }
 
     #[test]
     fn create_plan_move_and_undo() {

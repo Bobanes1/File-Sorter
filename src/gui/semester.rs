@@ -747,45 +747,6 @@ impl App {
             self.semester.link = Some(link);
         }
     }
-
-    /// Today's lessons, for the top of «This week».
-    pub(super) fn today_lessons_ui(&mut self, ui: &mut egui::Ui) {
-        let today = Local::now().date_naive();
-        let lessons: Vec<Lesson> = self.semester.table.on(today).into_iter().cloned().collect();
-        if lessons.is_empty() {
-            return;
-        }
-        let p = fx::pal(ui);
-        let lang = self.lang;
-        let now = Local::now().naive_local();
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            ui.label(
-                RichText::new(format!("{}  {}", icon::CHALKBOARD_TEACHER, lang.today_lessons()))
-                    .family(fx::medium())
-                    .color(p.primary),
-            );
-            for l in &lessons {
-                let name = self
-                    .config
-                    .courses
-                    .iter()
-                    .find(|c| c.label() == l.module)
-                    .map_or_else(|| l.title.clone(), |c| c.name.clone());
-                let room = if l.room.is_empty() { String::new() } else { format!(", {}", l.room) };
-                let text = format!("{}–{} {name}{room}", l.start, l.end);
-                let (fill, fg) = if l.running(now) {
-                    (p.primary_container, p.on_primary_container)
-                } else {
-                    (p.container_high, p.on_surface)
-                };
-                egui::Frame::new().fill(fill).corner_radius(8).inner_margin(Margin::symmetric(10, 4)).show(ui, |ui| {
-                    ui.label(RichText::new(text).small().color(fg));
-                });
-            }
-        });
-        ui.add_space(10.0);
-    }
 }
 
 impl App {

@@ -120,13 +120,6 @@ impl Timetable {
         self.lessons.iter().map(|l| l.id).max().unwrap_or(0) + 1
     }
 
-    /// The lessons on `date`, earliest first.
-    pub fn on(&self, date: NaiveDate) -> Vec<&Lesson> {
-        let mut lessons: Vec<&Lesson> = self.lessons.iter().filter(|l| l.on(date)).collect();
-        lessons.sort_by_key(|l| l.start_time());
-        lessons
-    }
-
     /// Put in what was read from `source`, instead of what came from there before.
     pub fn replace_source(&mut self, source: &str, mut lessons: Vec<Lesson>) {
         self.lessons.retain(|l| l.source != source);

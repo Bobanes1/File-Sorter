@@ -174,18 +174,6 @@ impl App {
                 ui.add(egui::Label::new(RichText::new(lang.laya_error(e)).small().color(p.error)).wrap());
             }
         });
-        // Ask Laya first, before the keywords and rules.
-        if installed && self.config.features.laya {
-            ui.horizontal(|ui| {
-                ui.add_space(40.0);
-                ui.vertical(|ui| {
-                    let (title, hint) = (lang.laya_first(), lang.laya_first_hint());
-                    setting_row(ui, icon::LIGHTNING, title, hint, |ui| {
-                        changed |= fx::toggle(ui, &mut self.config.features.laya_first).changed();
-                    });
-                });
-            });
-        }
         if start {
             self.start_laya_setup();
         }

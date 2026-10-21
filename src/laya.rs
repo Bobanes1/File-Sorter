@@ -27,8 +27,8 @@ use serde::Deserialize;
 
 use crate::config::{Config, Course};
 
-/// laya-uni-2: its files, and the confidence it needs before it chooses a module (chosen on
-/// its validation rows, see training/laya-uni).
+/// laya-uni-2: its files (and the confidence its training chose for sorting on its own,
+/// 75 % / 2× – File Sorter sorts with less, see `ALONE`).
 const MODEL: &str = r#"{"name": "laya-uni-2", "min_probability": 0.75, "min_lead": 2.0, "files": [
  {"name": "rl_agent_config.json", "size": 4965, "sha256": "15c84ac6f5339ddbb6e7cfed4f996e70116bfecbf9e3e4344865eec139c93a66"},
  {"name": "encoder-config.json", "size": 1939, "sha256": "36b7d4898274ed6f06ce9c1f0e34034d8bd39295ab232d7cabc41a3eac821e5f"},
@@ -53,10 +53,6 @@ const RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 struct Manifest {
     name: String,
-    /// The answer must be at least this likely,
-    min_probability: f32,
-    /// and this many times as likely as the second.
-    min_lead: f32,
     files: Vec<Asset>,
 }
 
@@ -232,9 +228,6 @@ pub fn install(place: &Place, mut progress: impl FnMut(u64, u64)) -> Result<(), 
 
 static PLACE: Mutex<Option<Place>> = Mutex::new(None);
 static ON: AtomicBool = AtomicBool::new(false);
-/// Only the window, `--headless` and `--sort-now` load the model (not the right-click
-/// window, which shouldn't wait for it).
-static ALLOWED: AtomicBool = AtomicBool::new(false);
 /// The model in memory, and when it was last asked.
 static LOADED: Mutex<Option<(Arc<Laya>, Instant)>> = Mutex::new(None);
 #[cfg_attr(test, allow(dead_code))]
@@ -261,19 +254,13 @@ pub fn configure(state_dir: &Path, on: bool) {
     }
 }
 
-/// Let this process use Laya (the window, `--headless`, `--sort-now`).
-pub fn allow() {
-    ALLOWED.store(true, Ordering::Relaxed);
-}
-
 /// Set up, switched on, and not saving resources in the background.
 pub fn available() -> bool {
     #[cfg(test)]
     return tests::FAKE.with(|f| f.get().is_some());
     #[cfg(not(test))]
     {
-        ALLOWED.load(Ordering::Relaxed)
-            && ON.load(Ordering::Relaxed)
+        ON.load(Ordering::Relaxed)
             && !crate::lean::active()
             && PLACE.lock().is_ok_and(|p| p.as_ref().is_some_and(Place::installed))
             && FAILED_AT.lock().map(|f| f.is_none_or(|t| t.elapsed() > RETRY_AFTER)).unwrap_or(true)
@@ -368,63 +355,124 @@ fn option_text(course: &Course) -> String {
     option(&course.label(), &course.keywords)
 }
 
-/// The best option if the model is clearly sure of it: at least `min_probability`, and
+/// The best option if the model is sure enough of it: at least `min_probability`, and
 /// `min_lead` times as likely as the second.
-fn confident(p: &[f32], min_probability: f32, min_lead: f32) -> Option<(usize, u8)> {
-    let mut order: Vec<usize> = (0..p.len()).collect();
-    order.sort_by(|a, b| p[*b].total_cmp(&p[*a]));
+fn confident(p: &[f32], (min_probability, min_lead): (f32, f32)) -> Option<(usize, u8)> {
+    let order = ranked(p);
     let (best, second) = (p[*order.first()?], order.get(1).map_or(0.0, |i| p[*i]));
     (best >= min_probability && best >= min_lead * second).then(|| (order[0], (best * 100.0).round() as u8))
 }
+
+/// The options' places, most likely first.
+fn ranked(p: &[f32]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..p.len()).collect();
+    order.sort_by(|a, b| p[*b].total_cmp(&p[*a]));
+    order
+}
+
+/// How sure Laya must be to sort a file on its own (with Laya on, it alone decides module and
+/// subfolder): lower than laya-uni's calibrated 70 % / 2×, as chosen – it sorts more files, and
+/// sometimes wrongly. Checked on the real model in CI (`--laya-check`).
+pub const ALONE: (f32, f32) = (0.4, 1.5);
+/// How sure it must be to fill a gap the rules leave (a deadline's category).
+const GAPS: (f32, f32) = (0.6, 2.0);
+/// Not sure of one module, but these two together are this likely: it asks between them
+/// (else nothing fits, and nothing is asked).
+const BETWEEN_TWO: f32 = 0.7;
 
 /// The option for «none of these».
 const NONE: &str = "none";
 
 /// Which of `options` (id, what it is) `state` is about, or none of them (`none`: what that
-/// means here): the id and how sure Laya is, when it is clearly sure – at least 60 %, and
-/// twice as likely as the next.
+/// means here): the id and how sure Laya is, when it is sure enough (`thresholds`).
 fn pick_one(
     instructions: &str,
     options: &[(String, String)],
     none: Option<&str>,
     state: &str,
+    thresholds: (f32, f32),
 ) -> Option<(String, f64)> {
-    let mut ids: Vec<&str> = options.iter().map(|(id, _)| id.as_str()).collect();
-    let mut texts: Vec<String> = options.iter().map(|(id, about)| option(id, std::slice::from_ref(about))).collect();
+    let answers = ask_options(instructions, options, none, state)?;
+    let p: Vec<f32> = answers.iter().map(|(_, p)| *p).collect();
+    let (i, sure) = confident(&p, thresholds)?;
+    (answers[i].0 != NONE).then(|| (answers[i].0.clone(), f64::from(sure) / 100.0))
+}
+
+/// How likely each of `options` (and `none`, if given) is.
+fn ask_options(
+    instructions: &str,
+    options: &[(String, String)],
+    none: Option<&str>,
+    state: &str,
+) -> Option<Vec<(String, f32)>> {
+    let mut ids: Vec<String> = options.iter().map(|(id, _)| id.clone()).collect();
+    let text = |(id, about): &(String, String)| {
+        if about.is_empty() { id.clone() } else { option(id, std::slice::from_ref(about)) }
+    };
+    let mut texts: Vec<String> = options.iter().map(text).collect();
     if let Some(none) = none {
-        ids.push(NONE);
+        ids.push(NONE.into());
         texts.push(option(NONE, &[none.to_string()]));
     }
     let p = probabilities(instructions, &texts, state)?;
-    let (i, sure) = confident(&p, 0.6, 2.0)?;
-    (ids[i] != NONE).then(|| (ids[i].to_string(), f64::from(sure) / 100.0))
+    Some(ids.into_iter().zip(p).collect())
 }
 
-/// Which module a document belongs to: its label and how sure Laya is, when it is clearly
-/// sure (the model's `min_probability` and `min_lead`: at least 75 %, twice the next). `allowed` limits the
-/// answer to some modules (those the keywords found about equally likely).
-pub fn module_for(config: &Config, name: &str, text: &str, allowed: &[String]) -> Option<(String, f64)> {
-    let courses: Vec<&Course> =
-        config.courses.iter().filter(|c| allowed.is_empty() || allowed.contains(&c.label())).collect();
-    if courses.len() < 2 && allowed.is_empty() {
+/// Laya's choice of a file's module.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModuleChoice {
+    /// This module, this sure (0–1).
+    Sure(String, f64),
+    /// One of these two: the user decides.
+    Between(Vec<String>),
+    /// None of the modules.
+    Nothing,
+}
+
+/// Which module a document belongs to, when Laya sorts on its own (`None` when it can't be
+/// asked: the model isn't there or failed, or there are fewer than two modules).
+pub fn module_of(config: &Config, name: &str, text: &str) -> Option<ModuleChoice> {
+    let p: Vec<f32> = module_probabilities(config, name, text)?.into_iter().map(|(_, p)| p).collect();
+    let label = |i: usize| config.courses[i].label();
+    if let Some((i, sure)) = confident(&p, ALONE) {
+        return Some(ModuleChoice::Sure(label(i), f64::from(sure) / 100.0));
+    }
+    let order = ranked(&p);
+    Some(if p[order[0]] + p[order[1]] >= BETWEEN_TWO {
+        ModuleChoice::Between(vec![label(order[0]), label(order[1])])
+    } else {
+        ModuleChoice::Nothing
+    })
+}
+
+/// How likely each module is (at least two are needed).
+pub fn module_probabilities(config: &Config, name: &str, text: &str) -> Option<Vec<(String, f32)>> {
+    if config.courses.len() < 2 {
         return None;
     }
-    let options: Vec<String> = courses.iter().map(|c| option_text(c)).collect();
+    let options: Vec<String> = config.courses.iter().map(option_text).collect();
     let p = probabilities(INSTRUCTIONS, &options, &state_for(name, text))?;
-    let manifest = Manifest::get();
-    let (i, sure) = confident(&p, manifest.min_probability, manifest.min_lead)?;
-    Some((courses[i].label(), f64::from(sure) / 100.0))
+    Some(config.courses.iter().map(|c| c.label()).zip(p).collect())
 }
 
-/// Which subfolder of a module a document goes in (options: folder name, what goes there),
-/// when Laya is clearly sure; none means the module's folder itself.
-pub fn subfolder_for(name: &str, text: &str, options: &[(String, String)]) -> Option<(String, f64)> {
-    pick_one(
-        "This is a document from a university course. Which folder of the course does it belong in?",
-        options,
-        Some("none of these folders: general course information, or something that fits no folder"),
-        &state_for(name, text),
-    )
+/// Asked like the module question laya-uni was trained on: «Folder: the words that say it».
+/// (Described in sentences, with a «none of these» option, it answered «none» to an exercise
+/// sheet and a script; asked this way it got all seven test documents right.) Nothing fits:
+/// about equally likely, so not sure.
+const SUBFOLDER_QUESTION: &str = "Which folder of the university module does this file belong to?";
+
+/// Which subfolder of a module a document goes in, when Laya sorts on its own (options:
+/// folder name, the words that say it); not sure: the module's folder itself.
+pub fn subfolder_of(name: &str, text: &str, options: &[(String, String)]) -> Option<(String, f64)> {
+    if options.len() < 2 {
+        return None;
+    }
+    pick_one(SUBFOLDER_QUESTION, options, None, &state_for(name, text), ALONE)
+}
+
+/// How likely each subfolder is.
+pub fn subfolder_probabilities(name: &str, text: &str, options: &[(String, String)]) -> Option<Vec<(String, f32)>> {
+    ask_options(SUBFOLDER_QUESTION, options, None, &state_for(name, text))
 }
 
 /// What a date in a sentence is.
@@ -466,7 +514,7 @@ pub fn date_categories(sentences: &[String], categories: &[(String, String)]) ->
         return None;
     }
     let instructions = "Which kind of date is in this sentence from a university course document?";
-    Some(sentences.iter().map(|s| pick_one(instructions, categories, None, s).map(|(id, _)| id)).collect())
+    Some(sentences.iter().map(|s| pick_one(instructions, categories, None, s, GAPS).map(|(id, _)| id)).collect())
 }
 
 /// The token ids the question is made of (as the model was trained):
@@ -788,6 +836,9 @@ pub mod tests {
         };
         let pick = if instructions == INSTRUCTIONS {
             low.contains("varianz").then(|| parts.iter().position(|(id, _)| id.contains("statistik"))).flatten()
+        } else if instructions == SUBFOLDER_QUESTION {
+            // The first folder one of whose words the text has.
+            parts.iter().position(|(_, words)| words.split(", ").any(|w| w.len() > 3 && low.contains(w)))
         } else {
             parts.iter().position(|(id, about)| id != NONE && named(about)).or_else(|| {
                 if ["abgabe", "due", "rendre", "aufgabe 1"].iter().any(|w| low.contains(w)) {
@@ -841,14 +892,16 @@ pub mod tests {
 
     #[test]
     fn answers_only_when_clearly_sure() {
-        assert_eq!(confident(&[0.1, 0.8, 0.1], 0.7, 2.0), Some((1, 80)));
-        assert_eq!(confident(&[0.5, 0.3, 0.2], 0.7, 2.0), None);
-        assert_eq!(confident(&[0.72, 0.28], 0.7, 3.0), None);
-        assert_eq!(confident(&[], 0.7, 2.0), None);
+        assert_eq!(confident(&[0.1, 0.8, 0.1], (0.7, 2.0)), Some((1, 80)));
+        assert_eq!(confident(&[0.5, 0.3, 0.2], (0.7, 2.0)), None);
+        assert_eq!(confident(&[0.72, 0.28], (0.7, 3.0)), None);
+        assert_eq!(confident(&[], (0.7, 2.0)), None);
+        // Sorting alone: lower – Canossa (60 % / 16 %) is sorted, the heart cycle (39 % / 30 %) not.
+        assert_eq!(confident(&[0.16, 0.60, 0.14, 0.09], ALONE), Some((1, 60)));
+        assert_eq!(confident(&[0.39, 0.11, 0.30, 0.20], ALONE), None);
         let p = softmax(&[1.0, 2.0, 3.0], 1.0);
         assert!((p.iter().sum::<f32>() - 1.0).abs() < 1e-6 && p[2] > p[1]);
-        let manifest = Manifest::get();
-        assert_eq!((manifest.min_probability, manifest.min_lead, manifest.files.len()), (0.75, 2.0, 4));
+        assert_eq!(Manifest::get().files.len(), 4);
     }
 
     #[test]
@@ -856,7 +909,7 @@ pub mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config(tmp.path());
         assert!(!Place::new(tmp.path()).installed());
-        assert_eq!(module_for(&config, "Blatt 3.pdf", "", &[]), None);
+        assert_eq!(module_of(&config, "Blatt 3.pdf", ""), None);
         assert_eq!(date_kinds(&["Abgabe: 3.11.".into()]), None);
     }
 
@@ -924,44 +977,66 @@ pub mod tests {
         assert_eq!((found[0].category.as_str(), found[0].kind), ("c1", crate::deadlines::Kind::Exam));
         // Subfolders: a name that says nothing, read by the model.
         let options = [
-            ("Vorlesung".to_string(), "lecture slides or script".to_string()),
-            ("Übungen".to_string(), "exercise sheets or homework to solve".to_string()),
+            ("Vorlesung".to_string(), "vorlesung, skript".to_string()),
+            ("Übungen".to_string(), "übungsblatt, aufgabe".to_string()),
         ];
-        let picked = subfolder_for("scan_0042.pdf", "Blatt 4. Aufgabe 1: Zeigen Sie …", &options);
+        let picked = subfolder_of("scan_0042.pdf", "Blatt 4. Aufgabe 1: Zeigen Sie …", &options);
         assert_eq!(picked.map(|p| p.0).as_deref(), Some("Übungen"));
-        assert_eq!(subfolder_for("info.pdf", "Willkommen im Kurs", &options), None);
+        assert_eq!(subfolder_of("info.pdf", "Willkommen im Kurs", &options), None);
     }
 
-    /// «Ask Laya first»: it decides before the keywords and rules (which decide only when it
-    /// isn't sure); without it, the keywords and rules decide what they can.
+    /// With Laya on, it alone decides module and subfolder; without it, the keywords and rules.
     #[test]
-    fn asked_first_laya_decides_before_the_rules() {
+    fn with_laya_on_only_laya_sorts() {
         use crate::config::Course;
+        use crate::sorter::LeftReason;
         let tmp = tempfile::tempdir().unwrap();
         fake(stand_in);
         let mut cfg = test_config(tmp.path());
         cfg.courses.push(Course::new("Statistik", &["stat101"]));
         cfg.features.subfolders = true;
-        // The name says «programming», the text is about statistics.
+        cfg.features.laya = true;
+        let module = |cfg: &Config, file: &Path| {
+            crate::sorter::choose_course_for_test(file, cfg).map(|m| cfg.courses[m.course].label())
+        };
+        // The name says «programming», the text is about statistics: Laya decides.
         let file = cfg.watch_path().join("programming_kapitel4.txt");
         fs::write(&file, "Varianzanalyse und Regression: Schätzung der Parameter.").unwrap();
-        let module =
-            |cfg: &Config| crate::sorter::choose_course_for_test(&file, cfg).map(|m| cfg.courses[m.course].label());
-        assert_eq!(module(&cfg).as_deref(), Ok("Programming Course"));
-        cfg.features.laya_first = true;
-        assert_eq!(module(&cfg).as_deref(), Ok("Statistik"));
-        // Not sure (nothing about statistics): the keywords decide as before.
+        assert_eq!(module(&cfg, &file).as_deref(), Ok("Statistik"));
+        // Laya not sure of any module: it stays, though its name says «programming».
         let other = cfg.watch_path().join("programming_week2.txt");
         fs::write(&other, "Loops and functions.").unwrap();
-        let m = crate::sorter::choose_course_for_test(&other, &cfg).map(|m| cfg.courses[m.course].label());
-        assert_eq!(m.as_deref(), Ok("Programming Course"));
+        assert_eq!(module(&cfg, &other), Err(LeftReason::NoMatch));
+        // Laya off: the keywords.
+        cfg.features.laya = false;
+        assert_eq!(module(&cfg, &file).as_deref(), Ok("Programming Course"));
+        assert_eq!(module(&cfg, &other).as_deref(), Ok("Programming Course"));
         // Subfolders: the name says «Lösung», the text is an exercise sheet.
         let sheet = cfg.watch_path().join("Loesung_Blatt3.txt");
         fs::write(&sheet, "Blatt 3. Aufgabe 1: Zeigen Sie, dass die Folge konvergiert.").unwrap();
         let folder = |cfg: &Config| crate::sorter::subfolder_for(cfg, tmp.path(), &sheet, None);
-        assert_eq!(folder(&cfg).as_deref(), Some("Übungen"));
-        cfg.features.laya_first = false;
         assert_eq!(folder(&cfg).as_deref(), Some("Lösungen"));
+        cfg.features.laya = true;
+        assert_eq!(folder(&cfg).as_deref(), Some("Übungen"));
+        // Laya not sure of a folder: the module's folder itself, whatever the name says.
+        let info = cfg.watch_path().join("info_3.txt");
+        fs::write(&info, "Willkommen im Kurs.").unwrap();
+        assert_eq!(crate::sorter::subfolder_for(&cfg, tmp.path(), &info, None), None);
+    }
+
+    /// Between two modules Laya asks; when nothing stands out, nothing is asked.
+    #[test]
+    fn laya_asks_only_between_two() {
+        fake(|_, options, _| match options.len() {
+            3 => vec![0.45, 0.40, 0.15],
+            _ => vec![1.0 / options.len() as f32; options.len()],
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(tmp.path());
+        let between = module_of(&cfg, "x.pdf", "");
+        assert_eq!(between, Some(ModuleChoice::Between(vec![cfg.courses[0].label(), cfg.courses[1].label()])));
+        cfg.courses.push(crate::config::Course::new("Statistik", &[]));
+        assert_eq!(module_of(&cfg, "x.pdf", ""), Some(ModuleChoice::Nothing));
     }
 
     /// Downloads the model (about 680 MB, into FILE_SORTER_LAYA_DIR or a temporary folder) and
@@ -976,13 +1051,12 @@ pub mod tests {
         let place = Place::new(&root);
         install(&place, |_, _| {}).unwrap();
         let model = Laya::load(&place.model_dir()).unwrap();
-        let manifest = Manifest::get();
         for (modules, name, text, expected) in REAL_CASES {
             let options: Vec<String> = modules.iter().map(|m| m.to_string()).collect();
             let p = model.choose(INSTRUCTIONS, &options, &state_for(name, text)).unwrap().unwrap();
             println!("{name}: {p:?}");
             // Right, or unsure (then the keywords decide) – never sure of the wrong module.
-            let sure = confident(&p, manifest.min_probability, manifest.min_lead);
+            let sure = confident(&p, ALONE);
             assert!(sure.is_none_or(|(best, _)| best == expected), "{name}: {p:?}");
         }
     }

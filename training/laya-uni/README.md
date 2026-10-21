@@ -152,6 +152,7 @@ test is the same as for laya-uni-1. Published as
 | real OER PDFs: sorted / precision at 0.6 / 2.0 | 60.4 / 75.9 % | 62.5 / 94.7 % | 81.7 / 93.9 % |
 | real OER maths PDFs (15): right module first | 46.7 % | 46.7 % | 66.7 % |
 
-The app uses 0.75 / 2.0 (on validation: 79 % sorted at 95 % precision; on the real PDFs 76 % at
-94.5 %). French is still the least tested language (16 test files).
+Its calibrated pair is 0.75 / 2.0 (on validation: 79 % sorted at 95 % precision; on the real PDFs
+76 % at 94.5 %). File Sorter sorts with less (`ALONE`, 0.4 / 1.5): on validation that sorts 87 % at
+92 % precision. French is still the least tested language (16 test files).
 

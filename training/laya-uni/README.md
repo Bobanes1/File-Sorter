@@ -154,3 +154,21 @@ published as [laya-uni-1](https://github.com/NilsBriggen/laya-uni/releases/tag/l
 
 The app uses 0.7 / 2.0 (on validation: 76 % sorted at 96.5 % precision). Weak spots are formula-heavy
 maths PDFs (no gain on 15 real files) and French (only 16 test files).
+
+## laya-uni-2 (October 2026)
+
+Trained on an RTX 5090 on 8,218 rows: the synthetic rows plus about 4,400 collected real course PDFs
+(`oer/train/`), split as in step 1 (`results2/report*`, not in git). The synthetic test is the same as
+for laya-uni-1. The model is published as
+[laya-uni-2](https://github.com/NilsBriggen/laya-uni/releases/tag/laya-uni-2).
+
+| | base | laya-uni-1 | laya-uni-2 |
+|---|---|---|---|
+| unseen programs: right module first | 57.5 % | 81.8 % | 84.1 % |
+| unseen programs: precision at 0.6 / 2.0 | 77.6 % | 93.2 % | 93.0 % |
+| real OER PDFs: right module first | 59.6 % | 78.8 % | 85.0 % |
+| real OER PDFs: sorted / precision at 0.6 / 2.0 | 60.4 / 75.9 % | 62.5 / 94.7 % | 81.7 / 93.9 % |
+| real OER maths PDFs (15): right module first | 46.7 % | 46.7 % | 66.7 % |
+
+Its manifest sets 0.75 / 2.0 (on validation: 79 % sorted at 95 % precision; on the real PDFs 76 % at
+94.5 %). French is still the least tested language (16 test files, 56 %; 91 % on validation).

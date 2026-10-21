@@ -27,15 +27,15 @@ use serde::Deserialize;
 
 use crate::config::{Config, Course};
 
-/// laya-uni-1: its files, and the confidence it needs before it chooses a module (chosen on
+/// laya-uni-2: its files, and the confidence it needs before it chooses a module (chosen on
 /// its validation rows, see training/laya-uni).
-const MODEL: &str = r#"{"name": "laya-uni-1", "min_probability": 0.7, "min_lead": 2.0, "files": [
- {"name": "rl_agent_config.json", "size": 4987, "sha256": "c06f9dff24ed9f1132e5e44020381d380d3b5ea30e650f90a82ff6378215c6ff"},
+const MODEL: &str = r#"{"name": "laya-uni-2", "min_probability": 0.75, "min_lead": 2.0, "files": [
+ {"name": "rl_agent_config.json", "size": 4965, "sha256": "15c84ac6f5339ddbb6e7cfed4f996e70116bfecbf9e3e4344865eec139c93a66"},
  {"name": "encoder-config.json", "size": 1939, "sha256": "36b7d4898274ed6f06ce9c1f0e34034d8bd39295ab232d7cabc41a3eac821e5f"},
  {"name": "tokenizer.json", "size": 34363188, "sha256": "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f"},
- {"name": "model.safetensors", "size": 643835524, "sha256": "2a73a52757ff1557d59abcdb43db469327df077146ce68140292a943572925bb"}]}"#;
-/// Where the model's files are published (the release laya-uni-1 of NilsBriggen/laya-uni).
-const MODEL_URL: &str = "https://github.com/NilsBriggen/laya-uni/releases/download/laya-uni-1/";
+ {"name": "model.safetensors", "size": 643835524, "sha256": "2b48bd423d1ed84f1745f73f8964588997f771756f1e75481197d46681df9f90"}]}"#;
+/// Where the model's files are published (the release laya-uni-2 of NilsBriggen/laya-uni).
+const MODEL_URL: &str = "https://github.com/NilsBriggen/laya-uni/releases/download/laya-uni-2/";
 /// Where File Sorter 0.15–0.16 kept Laya with its own Python (removed once laya-uni is there).
 const OLD_DIR: &str = "laya";
 pub const INSTRUCTIONS: &str = "Which university module does this file belong to?";
@@ -401,7 +401,7 @@ fn pick_one(
 }
 
 /// Which module a document belongs to: its label and how sure Laya is, when it is clearly
-/// sure (as laya-uni was calibrated: at least 70 %, twice the next). `allowed` limits the
+/// sure (the model's `min_probability` and `min_lead`: at least 75 %, twice the next). `allowed` limits the
 /// answer to some modules (those the keywords found about equally likely).
 pub fn module_for(config: &Config, name: &str, text: &str, allowed: &[String]) -> Option<(String, f64)> {
     let courses: Vec<&Course> =
@@ -848,7 +848,7 @@ pub mod tests {
         let p = softmax(&[1.0, 2.0, 3.0], 1.0);
         assert!((p.iter().sum::<f32>() - 1.0).abs() < 1e-6 && p[2] > p[1]);
         let manifest = Manifest::get();
-        assert_eq!((manifest.min_probability, manifest.min_lead, manifest.files.len()), (0.7, 2.0, 4));
+        assert_eq!((manifest.min_probability, manifest.min_lead, manifest.files.len()), (0.75, 2.0, 4));
     }
 
     #[test]
